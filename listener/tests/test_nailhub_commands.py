@@ -13,10 +13,10 @@ from tests.nailhub_fixtures import OWNER, dm, settings
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_authorized_exact_commands_reply_same_dm(self):
-        for command in ('scan','status','pause','resume'):
+        for command in ('scan','status','pending','pause','resume'):
             service=SimpleNamespace(command=Mock(return_value='ok'));event=dm(raw_text='/nailhub '+command)
             self.assertTrue(await route_command(event,service,(OWNER,)))
-            service.command.assert_called_once_with(command);event.reply.assert_awaited_once_with('ok')
+            service.command.assert_called_once_with(command);event.reply.assert_awaited_once_with('ok',parse_mode=None,link_preview=False)
 
     async def test_unauthorized_metadata_consumed_without_job_reply(self):
         variants=[{'sender_id':99},{'chat_id':99},{'out':True},{'out':None},
@@ -78,3 +78,25 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
                     await telegram_io.run(listener_config(),SimpleNamespace(store=store,process=lambda m:None))
                 await handlers[0](dm())
             self.assertEqual(builders,[{}]);fake.worker.assert_not_called();fake.command.assert_not_called()
+            self.assertFalse(hasattr(fake,'notice_send'))
+
+    async def test_verified_lifecycle_binds_notices_to_the_one_existing_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg=settings(directory,owner_ids=(OWNER,));store=Store(':memory:');self.addCleanup(store.close)
+            user=SimpleNamespace(id=OWNER,bot=False,username='SotaThao')
+            client=SimpleNamespace(add_event_handler=Mock(),connect=AsyncMock(),
+                get_me=AsyncMock(return_value=SimpleNamespace(bot=False,id=42)),
+                get_entity=AsyncMock(return_value=user),send_message=AsyncMock(return_value=SimpleNamespace(id=5678)),
+                disconnect=AsyncMock(),run_until_disconnected=AsyncMock(),remove_event_handler=Mock())
+            fake=SimpleNamespace(worker=AsyncMock(),scheduler=AsyncMock(),command=Mock())
+            with patch.dict('sys.modules',{'telethon':SimpleNamespace(events=SimpleNamespace(NewMessage=lambda **k:k))}),\
+                 patch('tg_triage.telegram_io.make_client',return_value=client) as make_client,\
+                 patch('tg_triage.nailhub.config.load_optional',return_value=cfg),\
+                 patch('tg_triage.nailhub.service.Service',return_value=fake):
+                with self.assertRaises(RuntimeError):
+                    await telegram_io.run(listener_config(),SimpleNamespace(store=store,process=lambda m:None))
+                make_client.assert_called_once();client.connect.assert_awaited_once()
+                self.assertEqual(fake.notice_owner_id,OWNER)
+                result=await fake.notice_send('manual notice')
+                self.assertEqual(result.id,5678)
+                client.send_message.assert_awaited_once_with(OWNER,'manual notice',parse_mode=None,link_preview=False)

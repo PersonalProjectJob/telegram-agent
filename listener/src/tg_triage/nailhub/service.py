@@ -3,11 +3,14 @@
 import asyncio
 import json
 import logging
+import time
 
 from .browser import Browser, matches_expected
 from .model import NailHubModel
 from .state import State
+from .notices import VERSION, manual_notice, pending_messages, scan_result_text
 from .validation import NeedsHuman, proposal
+from .diagnostics import failure_details
 
 LOG = logging.getLogger(__name__)
 
@@ -28,6 +31,9 @@ class Service:
         self.state = state or State(config.db_path)
         self.model = model or NailHubModel(config)
         self.browser_factory = browser_factory
+        self.notice_send = None  # Bound only after the existing client verifies the Owner.
+        self.notice_owner_id = None
+        self._notice_next_flush = 0
 
     def command(self, command):
         if command == 'scan':
@@ -40,13 +46,55 @@ class Service:
             self.state.pause(False)
             self.state.enqueue()
             return 'NailHub resumed; scan queued.'
-        if command == 'status':
+        if command in ('status', 'pending'):
             status = self.state.status()
             counts = ', '.join(f'{k}={v}' for k, v in sorted(status['counts'].items())) or 'no posts'
-            return (f"NailHub {self.config.mode}; paused={bool(status['paused'])}; "
+            header = (f"NailHub {self.config.mode}; paused={bool(status['paused'])}; "
                     f"queued={bool(status['pending'])}; running={bool(status['running'])}; {counts}; "
-                    f"last={status['last_result']}")
+                    f"last={scan_result_text(status['last_result'])}")
+            messages = pending_messages(self.state.manual_posts(), header=header)
+            return messages[0] if len(messages) == 1 else messages
         raise ValueError('unsupported NailHub command')
+
+    async def notify_manual(self, *, now=None):
+        """Backfill/retry holds independently of scans; failures never replay site mutations."""
+        now = time.time() if now is None else now
+        if (self.notice_send is None or type(self.notice_owner_id) is not int or self.notice_owner_id <= 0
+                or now < self._notice_next_flush):
+            return
+        self._notice_next_flush = now + 5
+        recipient, sender = self.notice_owner_id, self.notice_send
+        try:
+            delivered = 0
+            for row in self.state.manual_posts():
+                row = self.state.get(row['id'])  # Never deliver a stale held-state snapshot.
+                if row is None:
+                    continue
+                text = manual_notice(row)
+                key = self.state.notice_key(row, VERSION, recipient)
+                if text is None or not self.state.notice_due(key, now):
+                    continue
+                try:
+                    sent = await asyncio.wait_for(sender(text), timeout=20)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    self.state.notice_failed(key, now)
+                    LOG.warning('NailHub manual notice delivery failed exception=%s', type(error).__name__)
+                else:
+                    message_id = getattr(sent, 'id', None)
+                    if type(message_id) is not int or message_id <= 0:
+                        message_id = None
+                    self.state.notice_sent(key, max(now, 1), recipient, message_id)
+                    LOG.info('NailHub manual notice delivered recipient=%d message_id=%s', recipient, message_id)
+                delivered += 1
+                if delivered >= 5:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._notice_next_flush = now + 300
+            LOG.warning('NailHub manual notice queue unavailable exception=%s', type(error).__name__)
 
     def check_pause(self):
         if self.state.status()['paused']:
@@ -72,6 +120,7 @@ class Service:
         browser.check_action = self.check_pause
         if not self.state.claim_post(post.id):
             return
+        intended = None
         try:
             self.check_pause()
             if post.status != self.config.draft_status or post.category != self.config.category:
@@ -108,7 +157,8 @@ class Service:
             uncertain = current and current['state'] in ('before_save', 'before_approve')
             # Only our bounded fixed validation reasons are retained; external exception bodies never are.
             reason = str(error) if isinstance(error, NeedsHuman) else 'worker operation failed; review required'
-            self.state.mark(post.id, 'uncertain' if uncertain else 'needs-human', reason)
+            self.state.mark(post.id, 'uncertain' if uncertain else 'needs-human', reason,
+                            details=failure_details(error, post, intended))
 
     async def scan(self):
         async with self.browser_factory(self.config) as browser:
@@ -134,6 +184,7 @@ class Service:
     async def worker(self, stop):
         self.state.recover_queue()
         while not stop.is_set():
+            await self.notify_manual()
             if self.state.claim_scan():
                 try:
                     result = await self.scan()

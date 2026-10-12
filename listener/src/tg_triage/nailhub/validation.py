@@ -19,6 +19,9 @@ def processing_start_date():
 
 class NeedsHuman(ValueError):
     """A proposal cannot be established from source evidence."""
+    def __init__(self, message, *, details=None):
+        super().__init__(message)
+        self.details = details
 
 
 class EvidenceError(NeedsHuman):
@@ -190,7 +193,86 @@ def _schedule(original, value, period):
     return days * hours
 
 
+PAY_WORDS = re.compile(r'\b(?:bao luong|bao(?=\s*\$?\s*\d)|luong|thu nhap|salary|pay|income|wages?|compensation|guarantee(?:d)?|commission|an chia|tips?|negotiable|thuong luong|thoa thuan|usd|dollars?)(?![a-z])')
+
+
+def source_salary_policy(original):
+    """Owner's two source-only policies. None leaves the existing period parser in charge.
+
+    Bare contact/address numbers never establish pay. Every monetary mention in
+    the no-period case must belong to a pay clause and agree on the same scalar.
+    """
+    source = folded(original)
+    negotiated = {'mode': 'negotiated', 'low': None, 'high': None, 'range': False,
+                  'rationale': 'Owner: absent or unclear numeric base salary defaults to negotiated'}
+    if not PAY_WORDS.search(source) and not MONEY.search(original) and not numeric_pay_clauses(original):
+        return negotiated
+    mentions = list(MONEY.finditer(original))
+    # Explicit bare numeric pay is permitted only immediately after a salary label.
+    bare = re.compile(rf'\b(?:bao lương|bao luong|bao|lương|luong|thu nhập|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)\s*[:=]?\s*(?:(?:từ|tu|from)\s+)?({NUMBER}\s*[kK]?)(?![\w,]|\.\d)', re.I)
+    positions = [(m.start(), m.group()) for m in mentions]
+    positions += [(m.start(1), original[m.start(1):m.end(1)]) for m in bare.finditer(original)
+                  if not any(a <= m.start(1) < a+len(t) for a,t in positions)]
+    # Preserve numeric pay-period clauses even without a currency/label, using
+    # original offsets rather than offsets into accent-normalized text.
+    for match in re.finditer(r'(?<![\w.,])' + AMOUNT.pattern, original):
+        suffix = folded(original[match.end():match.end()+100].lstrip())
+        suffix = re.sub(r'^(?:usd|dollars?)\b\s*', '', suffix)
+        if any(re.match(pattern, suffix) for pattern in PERIODS.values()):
+            if not any(a <= match.start() < a+len(t) for a,t in positions):
+                positions.append((match.start(), match.group()))
+    if not positions:
+        return negotiated  # Vague pay/commission wording or unrelated non-monetary numbers.
+    base_label = r'\b(?:bao luong|bao(?=\s*\$?\s*\d)|luong|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)(?![a-z])'
+    has_base = False
+    for position, token in positions:
+        clause = salary_context(original, position)
+        context = folded(clause)
+        prefix = folded(original[max(0, position-100):position])
+        direct_base = re.search(r'\b(?:bao luong|bao|luong|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)'
+                               r'\s*[:=]?\s*(?:(?:tu|from|up to)\s+)?\$?\s*$', prefix)
+        money_context = re.sub(r'\bthuong luong\b', ' ', context)
+        if not direct_base and re.search(r'\b(?:rent|thue|bonus|thuong|sale|sang tiem|deposit|dat coc|tips?)\b', money_context):
+            continue
+        if direct_base or re.search(base_label, context) or (numeric_pay_clauses(clause) and not re.search(r'\b(?:commission|an chia)\b', context)):
+            has_base = True
+    if not has_base:
+        return negotiated  # Rent, tips or pure commission never become numeric base salary.
+    if any(re.search(pattern, without_work_schedule(source)) for pattern in PERIODS.values()):
+        return None
+    parsed = []
+    covered_until = -1
+    for position, token in sorted(positions):
+        if position < covered_until:
+            continue  # Second monetary marker of a FULL range, not competing pay.
+        clause = salary_context(original, position)
+        context = folded(clause)
+        base_pay = re.search(r'\b(?:bao luong|bao(?=\s*\$?\s*\d)|luong|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)(?![a-z])', context)
+        alternative_commission = (re.search(r'\b(?:bao luong|guaranteed?)\b', context)
+                                  and re.search(r'\b(?:hoac|or)\s+(?:an chia|commission)\b', context))
+        if (not base_pay or re.search(r'\b(?:rent|thue|bonus|thuong|sale|sang tiem|deposit|dat coc|tips?)\b', context)
+                or (re.search(r'\b(?:commission|an chia)\b', context) and not alternative_commission)):
+            raise NeedsHuman('ambiguous salary source amount', details={'kind': 'data', 'field': 'salary_amount',
+                'source': token, 'evidence': clause, 'action': 'Đối chiếu tiền lương với tiền thuê, thưởng hoặc giá bán; chọn mức lương chính.'})
+        match = AMOUNT.match(original, position)
+        low, high, is_range = amounts(match.group() if match else token)
+        covered_until = match.end() if match else position + len(token)
+        parsed.append((low, high, is_range))
+    if len(set(parsed)) != 1:
+        raise NeedsHuman('ambiguous salary source amount', details={'kind': 'data', 'field': 'salary_amount',
+            'source': ', '.join(f'{a}-{b}' if ranged else format(a, 'f') for a,b,ranged in sorted(set(parsed))),
+            'action': 'Nội dung nêu nhiều mức tiền khác nhau; xác nhận mức lương chính và đơn vị nếu có.'})
+    low, high, is_range = parsed[0]
+    return {'mode': 'weekly', 'low': format(low, 'f'), 'high': format(high, 'f'), 'range': is_range,
+            'source_amount': f'{low}-{high}' if is_range else format(low, 'f'),
+            'period': None, 'kind': 'source', 'copy_no_period': True,
+            'rationale': 'Owner: explicit numeric salary without period copied unchanged; no conversion'}
+
+
 def salary(original, value):
+    policy = source_salary_policy(original)
+    if policy is not None:
+        return policy
     if not isinstance(value, dict) or set(value) != {'mode', 'kind', 'amount_text', 'period', 'evidence', 'schedule', 'rationale'}:
         raise NeedsHuman('invalid salary schema')
     rationale = value['rationale']
@@ -202,7 +284,7 @@ def salary(original, value):
         if (value['kind'] != 'none' or value['amount_text'] is not None or value['period'] is not None
                 or value['schedule'] is not None):
             raise NeedsHuman('hidden pay schema contains a salary claim')
-        if (MONEY.search(original) or re.search(r'\b(salary|pay|luong|income|thu nhap|commission|tip[s]?|negotiable|thuong luong|thoa thuan)\b', source)
+        if (MONEY.search(original) or PAY_WORDS.search(source)
                 or (re.search(r'\d', source) and any(re.search(p, source) for p in PERIODS.values()))):
             raise NeedsHuman('absence of salary is not established')
         return {'mode': mode, 'low': None, 'high': None, 'range': False, 'rationale': rationale}
@@ -314,7 +396,91 @@ def dedup_phones(primary, other):
 
 
 FACT_KINDS = ('salon', 'contact', 'location', 'salary', 'schedule', 'benefits', 'requirements')
-LOCATION_FIELDS = ('salon', 'address', 'city', 'state', 'zip', 'email')
+LOCATION_FIELDS = ('salon', 'address', 'city', 'state', 'zip', 'email', 'phone_primary', 'phone_other')
+
+
+def source_state_repair(post):
+    """Resolve only a current city's explicit address state/ZIP, before model evidence.
+
+    An isolated prose city/state pair is insufficient. Every matching pair must
+    agree, including mentions outside the explicit address, before any repair.
+    """
+    city = post.fields.get('city', '').strip()
+    if not city:
+        return None
+    pattern = re.compile(r'(?<!\w)' + re.escape(city) +
+        r'\s*,?\s+([A-Z]{2})(?![A-Za-z])(?:\s*(\d{5}(?:-?\d{4})?)(?!\d))?')
+    pairs = list(pattern.finditer(post.content))
+    if not pairs:
+        return None
+    explicit = []
+    for match in pairs:
+        prefix = post.content[max(0, match.start()-300):match.start()]
+        # An explicit address label must be in this same bounded sentence/line.
+        prefix = re.split(r'[\n;!?]|\.(?=\s|$)', prefix)[-1]
+        if match.group(2) and re.search(r'\b(?:dia chi(?: tiem| salon)?|address)\s*:', folded(prefix)):
+            explicit.append(match)
+    if not explicit:
+        return None
+    states = {match.group(1) for match in pairs}
+    zips = {match.group(2).replace('-', '') for match in pairs if match.group(2)}
+    if len(states) != 1 or len(zips) != 1:
+        raise NeedsHuman('location source address pairs conflict', details={'kind': 'data', 'field': 'state',
+            'current': post.fields.get('state', ''),
+            'source': '; '.join(dict.fromkeys(match.group() for match in pairs))[:220],
+            'action': 'Nội dung nêu nhiều cặp địa chỉ không thống nhất; xác nhận tiểu bang và ZIP đúng của salon.'})
+    match = explicit[0]
+    return {'value': match.group(1), 'evidence': {'start': match.start(), 'end': match.end()}}
+
+
+ADDRESS_PAIR = re.compile(
+    r'(?<!\w)\d+[A-Za-z]?\s+[^\n,;]{1,180}?\b'
+    r'(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Circle|Cir|Parkway|Pkwy|Place|Pl|Terrace|Ter|Highway|Hwy|Way)\.?[,]?'
+    r'(?:\s+(?:#\s*[A-Za-z0-9-]+|(?:Suite|Ste|Unit|Apt)\.?\s+[A-Za-z0-9-]+))?'
+    r'\s+(?P<city>[A-Za-z][A-Za-z .\x27’\-]{0,90}?)\s*,?\s+'
+    r'(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-?\d{4})?)(?!\d)')
+
+
+def current_address_repair(post):
+    """Fill missing city/ZIP from this fingerprint-bound address, never model evidence."""
+    address = post.fields.get('address', '').strip()
+    if not address or len(address) > 500 or (post.fields.get('city', '').strip() and post.fields.get('zip', '').strip()):
+        return {}
+    match = ADDRESS_PAIR.fullmatch(address)
+    if not match:
+        return {}
+    city, state, zip_code = (match.group(key).strip() for key in ('city', 'state', 'zip'))
+    # Reject a swallowed street/unit fragment instead of guessing a city boundary.
+    city_tail = re.sub(r'^St\.?\s+', '', city)
+    if re.search(r'\b(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Circle|Cir|Parkway|Pkwy|Place|Pl|Terrace|Ter|Highway|Hwy|Way)\.?\s+\w', city_tail, re.I):
+        return {}
+    for key, value in (('state', state), ('city', city), ('zip', zip_code)):
+        current = post.fields.get(key, '').strip()
+        equivalent = current.replace('-', '') == value.replace('-', '') if key == 'zip' else current == value
+        if (key == 'state' and not equivalent) or (current and not equivalent):
+            raise NeedsHuman('current address conflicts with contact field', details={'kind': 'data', 'field': key,
+                'current': current, 'source': value, 'evidence': address,
+                'action': 'Đối chiếu địa chỉ salon và trường đang có; xác nhận giá trị đúng trước khi tự điền phần còn thiếu.'})
+    # Explicit original street addresses cannot contradict the trusted existing address tail.
+    body_addresses = list(ADDRESS_PAIR.finditer(post.content))
+    for body_match in body_addresses:
+        other = (body_match.group('city').strip(), body_match.group('state'), body_match.group('zip').replace('-', ''))
+        if other != (city, state, zip_code.replace('-', '')):
+            raise NeedsHuman('original address conflicts with current address repair', details={'kind': 'data',
+                'field': 'address', 'current': address, 'source': body_match.group(),
+                'action': 'Nội dung gốc và địa chỉ hiện có không thống nhất; xác nhận địa chỉ salon trước khi bổ sung thành phố/ZIP.'})
+    body_pairs = re.compile(r'(?<!\w)(?P<city>[A-Z][A-Za-z.\x27’\-]*(?:\s+[A-Z][A-Za-z.\x27’\-]*){0,6})'
+                            r'\s*,?\s+(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-?\d{4})?)(?!\d)')
+    for body_match in body_pairs.finditer(post.content):
+        if any(start.start() <= body_match.start() and body_match.end() <= start.end() for start in body_addresses):
+            continue
+        other = (body_match.group('city'), body_match.group('state'), body_match.group('zip').replace('-', ''))
+        if other != (city, state, zip_code.replace('-', '')):
+            raise NeedsHuman('original address conflicts with current address repair', details={'kind': 'data',
+                'field': 'address', 'current': address, 'source': body_match.group(),
+                'action': 'Nội dung gốc nêu thành phố/tiểu bang/ZIP khác; xác nhận địa chỉ salon trước khi tự điền.'})
+    return {key: {'value': value, 'source_field': 'address', 'evidence': address}
+            for key, value in (('city', city), ('zip', zip_code)) if not post.fields.get(key, '').strip()}
 
 
 def normalize_extraction(post, data):
@@ -327,8 +493,24 @@ def normalize_extraction(post, data):
     if not isinstance(data, dict):
         return data  # proposal() owns strict schema validation.
     result = dict(data)
+    address_repair = current_address_repair(post)
+    grounded_state = source_state_repair(post)
+    source_policy = source_salary_policy(post.content)
+    if source_policy is not None:
+        # Evidence/schema from an unused model salary cannot block an exact source policy.
+        result['salary'] = {'mode': source_policy['mode'] if source_policy['mode'] == 'negotiated' else 'hidden',
+                            'kind': 'none', 'amount_text': None, 'period': None,
+                            'evidence': None, 'schedule': None, 'rationale': source_policy['rationale']}
     location = data.get('location')
     if isinstance(location, dict):
+        location = dict(location)
+        for key in address_repair:
+            location.pop(key, None)  # Independent trusted-address provenance, not a body quote.
+        if grounded_state is not None:
+            # Clear source evidence, not model formatting, controls this one field.
+            location.pop('state', None)
+            if grounded_state['value'] != post.fields.get('state', '').strip():
+                location['state'] = grounded_state
         result['location'] = {key:item for key,item in location.items()
             if not (key in LOCATION_FIELDS and isinstance(item, dict)
                     and set(item) == {'value', 'evidence'} and isinstance(item['value'], str)
@@ -352,7 +534,7 @@ def normalize_extraction(post, data):
             if isinstance(item, dict) and 'evidence' in item:
                 checked(item['evidence'], f'location.{key}.evidence')
     pay = result.get('salary')
-    if isinstance(pay, dict) and pay.get('mode') != 'hidden' and 'evidence' in pay:
+    if source_policy is None and isinstance(pay, dict) and pay.get('mode') != 'hidden' and 'evidence' in pay:
         checked(pay['evidence'], 'salary.evidence')
     return result
 
@@ -386,16 +568,58 @@ def require_contact(fields):
     for key, limit in (('salon', 30), ('address', 500), ('city', 255), ('state', 255), ('zip', 10)):
         value = fields.get(key, '')
         if not isinstance(value, str) or not value.strip() or len(value) > limit:
-            raise NeedsHuman('required contact location incomplete or invalid; Owner review required')
+            raise NeedsHuman('required contact location incomplete or invalid; Owner review required',
+                details={'kind': 'data', 'field': key, 'current': value,
+                         'action': 'Bổ sung hoặc sửa trường này từ nội dung gốc hay nguồn salon xác thực.'})
     if (not re.fullmatch(r'[A-Za-z]{2}', fields['state'].strip())
             or not re.fullmatch(r'[0-9]{5}(?:-?[0-9]{4})?', fields['zip'].strip())):
-        raise NeedsHuman('state or ZIP syntax invalid; Owner review required')
+        key = 'state' if not re.fullmatch(r'[A-Za-z]{2}', fields['state'].strip()) else 'zip'
+        raise NeedsHuman('state or ZIP syntax invalid; Owner review required',
+            details={'kind': 'data', 'field': key, 'current': fields[key],
+                     'action': 'Điền mã tiểu bang 2 chữ hoặc ZIP 5/9 chữ số từ địa chỉ nguồn.'})
     primary = fields.get('phone_primary', '')
     if not isinstance(primary, str) or not PHONE.fullmatch(primary.strip()):
-        raise NeedsHuman('required main phone missing or invalid; Owner review required')
+        raise NeedsHuman('required main phone missing or invalid; Owner review required',
+            details={'kind': 'data', 'field': 'phone_primary', 'current': primary,
+                     'action': 'Điền một số điện thoại liên lạc chính hợp lệ từ nguồn gốc.'})
     digits, _ = phone_key(primary)
     if len(digits) != 10 or digits[0] not in '23456789' or digits[3] not in '23456789':
-        raise NeedsHuman('required main phone missing or invalid; Owner review required')
+        raise NeedsHuman('required main phone missing or invalid; Owner review required',
+            details={'kind': 'data', 'field': 'phone_primary', 'current': primary,
+                     'action': 'Kiểm tra mã vùng và số liên lạc chính của salon.'})
+
+
+def source_only_extraction(post):
+    """Failover only for no-pay posts with complete fields and no unresolved source corrections.
+
+    A model outage cannot authorize ignoring an explicit address, new phone,
+    email, city/state pair or salon name. Such sources still need extraction.
+    """
+    policy = source_salary_policy(post.content)
+    if policy is None or policy['mode'] != 'negotiated':
+        return None
+    try:
+        require_contact(post.fields)
+    except NeedsHuman:
+        return None
+    text = post.content
+    current = ' '.join(str(post.fields.get(key, '')) for key in LOCATION_FIELDS)
+    known_phones = {phone_key(m.group()) for m in PHONE.finditer(current)}
+    if any(phone_key(m.group()) not in known_phones for m in PHONE.finditer(text)):
+        return None
+    emails = re.findall(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', text)
+    if any(email.casefold() != post.fields.get('email', '').casefold() for email in emails):
+        return None
+    # Do not silently skip an explicit address or named salon when the extractor is down.
+    if (re.search(r'\b\d+\s+[\w .#-]+\b(?:st(?:reet)?|dr(?:ive)?|rd|road|ave(?:nue)?|blvd|lane|ln|way)\b', text, re.I)
+            or re.search(r'\b[A-Z][a-z]+(?: [A-Z][a-z]+)*\s*,?\s+[A-Z]{2}\b', text)
+            or re.search(r'\b[\w]+\s+(?:Nails?\s+(?:Spa|Salon)|Nail\s+Salon)\b', text, re.I)
+            or re.search(r'\b(?:[A-Z][a-z]+|[A-Z]{2,})(?:\s+[A-Z][a-z]+)*\s+(?:Nails?|NAILS?)\b', text)):
+        return None
+    return {'salary': {'mode': 'negotiated', 'kind': 'none', 'amount_text': None, 'period': None,
+                       'evidence': None, 'schedule': None, 'rationale': policy['rationale']},
+            'location': {}, 'facts': {key: [] for key in FACT_KINDS},
+            'rationale': 'Owner: source-only no-pay fallback; complete current contact, no unresolved explicit source correction'}
 
 
 def proposal(post, data, config):
@@ -414,38 +638,86 @@ def proposal(post, data, config):
     location = data['location']
     if not isinstance(location, dict) or any(key not in LOCATION_FIELDS for key in location):
         raise NeedsHuman('unsupported location field')
-    changes = {}
+    address_repair = current_address_repair(post)
+    changes = {key: item['value'] for key, item in address_repair.items()}
     for key, item in location.items():
+        if key in address_repair:
+            continue  # This bounded repair has its own address-field provenance.
         if not isinstance(item, dict) or set(item) != {'value', 'evidence'} or not isinstance(item['value'], str):
             raise NeedsHuman('invalid location evidence')
         value = item['value'].strip()
-        if not value or len(value) > 200 or value != evidence(post.content, item['evidence']).strip():
-            raise NeedsHuman('location not present in original')
+        span = evidence(post.content, item['evidence'])
+        if not value or len(value) > 200 or not re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', span):
+            raise NeedsHuman('location not present in original', details={'kind': 'automation', 'field': key,
+                'current': post.fields.get(key, ''), 'source': 'Chưa được xác nhận từ nội dung gốc',
+                'action': 'Đối chiếu nội dung gốc; sửa trích xuất, không dùng giá trị model chưa có nguồn.'})
+        if key in ('state', 'city'):
+            city_item = location.get('city', {})
+            city = city_item.get('value', post.fields.get('city', ''))
+            state_item = location.get('state', {})
+            state = state_item.get('value', post.fields.get('state', ''))
+            pair = r'(?<!\w)' + re.escape(city.strip()) + r'\s*,?\s+' + re.escape(state.strip()) + r'(?![A-Za-z])'
+            if not re.fullmatch(r'[A-Z]{2}', state.strip()) or not re.search(pair, post.content):
+                raise NeedsHuman('location not present in original', details={'kind': 'automation', 'field': key,
+                    'current': post.fields.get(key, ''), 'source': value,
+                    'action': 'Xác nhận thành phố và tiểu bang nằm cùng địa chỉ nguồn; không dùng từ rời rạc trong bài.'})
+        if key in ('phone_primary', 'phone_other'):
+            if not PHONE.fullmatch(value):
+                raise NeedsHuman('phone field contains unrecognized data', details={'kind': 'data', 'field': key,
+                    'current': post.fields.get(key, ''), 'source': value, 'action': 'Xác nhận từng số liên lạc và phần mở rộng trước khi sửa.'})
+            digits, extension = phone_key(value)
+            if extension:
+                raise NeedsHuman('phone field contains unrecognized data', details={'kind': 'data', 'field': key,
+                    'current': post.fields.get(key, ''), 'source': value, 'action': 'Form cần giữ đúng phần mở rộng điện thoại; xử lý thủ công.'})
+            value = digits
         current = post.fields.get(key, '').strip()
-        if current and current != value:
-            raise NeedsHuman('location conflicts with current field')
-        if not current:
+        if current != value:
             changes[key] = value
     protected = entity_facts({**post.fields, **changes}, protected)
     if 'phone_other' in post.fields:
-        other = dedup_phones(post.fields.get('phone_primary', ''), post.fields['phone_other'])
-        if other != post.fields['phone_other']:
+        contact = {**post.fields, **changes}
+        other = dedup_phones(contact.get('phone_primary', ''), contact['phone_other'])
+        if other != contact['phone_other']:
             changes['phone_other'] = other
     require_contact({**post.fields, **changes})
-    pay = salary(post.content, data['salary'])
+    try:
+        pay = salary(post.content, data['salary'])
+    except NeedsHuman as error:
+        if not error.details:
+            mention = MONEY.search(post.content)
+            snippet = ''
+            if mention:
+                try:
+                    snippet = salary_context(post.content, mention.start())[:220]
+                except NeedsHuman:
+                    # Diagnostic generation must not rethrow the source validation failure.
+                    snippet = post.content[max(0, mention.start()-60):mention.start()+160]
+            source_ambiguity = str(error).startswith(('single potential', 'another monetary', 'other monetary',
+                'another numeric salary', 'ambiguous salary range', 'ambiguous salary periods',
+                'cannot assume tips/commission are salary'))
+            error.details = {'kind': 'data' if source_ambiguity else 'automation', 'field': 'salary_amount',
+                'current': post.fields.get('salary_amount', ''),
+                'source': snippet if source_ambiguity else 'Mức lương/đơn vị từ model chưa được xác nhận',
+                'evidence': snippet,
+                'action': 'Đối chiếu mức tiền, đơn vị thời gian và điều kiện trong nguồn; sửa trích xuất hoặc chọn giá trị đúng, không tự suy đoán đơn vị.'}
+        raise
     changes['salary_type'] = pay['mode']
     if pay['mode'] == 'weekly':
         precision = Decimal(1).scaleb(-config.salary_places)
         low = format(Decimal(pay['low']).quantize(precision, rounding=ROUND_DOWN), 'f')
         high = format(Decimal(pay['high']).quantize(precision, rounding=ROUND_DOWN), 'f')
-        if pay['range']:
+        if pay.get('copy_no_period') and not pay['range']:
+            changes['salary_amount'] = pay['low']
+            pay['display_policy'] = 'Owner: copy source numeric amount unchanged; no time unit inferred'
+        elif pay['range']:
             if config.range_policy != 'upper_floor_100':
                 raise NeedsHuman('range display requires explicit Owner policy')
             displayed = (Decimal(pay['high']) / 100).to_integral_value(rounding=ROUND_DOWN) * 100
             if displayed <= 0:
                 raise NeedsHuman('range rounding produces unusable zero salary')
             changes['salary_amount'] = format(displayed, 'f')
-            pay['display_policy'] = 'Owner: weekly upper bound rounded down to nearest USD 100; original range retained in content'
+            pay['display_policy'] = ('Owner: source upper bound rounded down to nearest USD 100 without conversion'
+                if pay.get('copy_no_period') else 'Owner: weekly upper bound rounded down to nearest USD 100; original range retained in content')
             pay['displayed_weekly'] = changes['salary_amount']
         else:
             changes['salary_amount'] = low
@@ -468,15 +740,26 @@ def proposal(post, data, config):
                     if parsed_end.tzinfo is None:
                         parsed_end = parsed_end.replace(tzinfo=timezone.utc)
                     if parsed_end <= datetime.fromisoformat(replacement).replace(tzinfo=timezone.utc):
-                        raise NeedsHuman('end date conflicts with Owner sentinel start date repair')
+                        raise NeedsHuman('end date conflicts with Owner sentinel start date repair',
+                            details={'kind': 'data', 'field': 'endDate', 'current': end, 'source': replacement,
+                                     'action': 'Chỉnh ngày kết thúc sau ngày bắt đầu hiện tại; chỉ ngày mặc định bắt đầu được tự sửa.'})
                 except (TypeError, ValueError, AttributeError):
-                    raise NeedsHuman('end date conflicts with Owner sentinel start date repair') from None
+                    raise NeedsHuman('end date conflicts with Owner sentinel start date repair',
+                        details={'kind': 'data', 'field': 'endDate', 'current': end, 'source': replacement,
+                                 'action': 'Kiểm tra định dạng và ngày kết thúc; không tự sửa ngày kết thúc.'}) from None
             metadata_changes['startDate'] = {'old': SENTINEL_START_DATE, 'new': replacement,
                 'policy': 'Owner: exact default sentinel becomes processing date at UTC midnight'}
             preserved['startDate'] = replacement
         expected_fields['_preserved'] = json.dumps(preserved, sort_keys=True, ensure_ascii=False)
+    field_corrections = {key: {'current': post.fields.get(key, ''), 'source': value,
+                         'evidence': evidence(post.content, location[key]['evidence'])}
+                         for key, value in changes.items() if key in location}
+    field_corrections.update({key: {'current': post.fields.get(key, ''), 'source': item['value'],
+        'evidence': item['evidence'], 'source_field': 'address',
+        'policy': 'Owner: missing city/ZIP derived from fingerprint-bound current salon address; state agrees'}
+        for key, item in address_repair.items()})
     return {'changes': changes, 'fields': expected_fields, 'salary': pay, 'facts': protected,
-            'rationale': data['rationale'], 'metadata_changes': metadata_changes}
+            'rationale': data['rationale'], 'metadata_changes': metadata_changes, 'field_corrections': field_corrections}
 
 
 def invariant_facts(original, rewritten, facts, fields, *, subset=False):

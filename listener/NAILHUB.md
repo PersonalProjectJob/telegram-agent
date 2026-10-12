@@ -56,13 +56,15 @@ Exact salary conversion uses Decimal: month*12/52, year/52, biweekly/2. Day/hour
 Owner override 2026-10-12: numeric range UI displays weekly UPPER bound rounded down to nearest USD 100
 (e.g. 6000–10000/month -> 2300/week); original range/period MUST remain in rewritten content. Audit
 retains original endpoints, exact conversions and display decision. Single amounts retain configured
-cent precision, truncated rather than rounded up. Negotiated/hidden require original evidence.
-Explicit income ranges retain potential qualifiers and use the Owner display policy; single potential income, tips/commission requiring assumed sums, or ambiguous/missing periods require human review.
+cent precision, truncated rather than rounded up. Clear numeric salary requires original evidence; absent or unclear numeric base salary uses the Owner negotiated default.
+Explicit-period income ranges retain potential qualifiers and use the Owner display policy; single potential income with an explicit period and tips/commission requiring assumed sums require human review.
+Owner field policy: absent or unclear numeric base pay in source sets negotiated (Thương lượng), replacing the prior hidden default, despite malformed model salary/evidence. Vague Bao lương trên ăn chia without an amount is negotiated; unrelated driving time, rent, tips or pure commission are not numeric base pay. Explicit numeric salary without a period is copied unchanged (repeated base pay $7000 -> 7000); no time unit is inferred or converted. No-period ranges retain both source endpoints and apply the Owner upper-bound floor100 rule without conversion (6K–10K ->10000; 1300–2380 ->2300). Repeated same ranges are accepted. Different explicit numeric base amounts/ranges still hold. Additional money alongside a clear base salary remains subject to existing source ambiguity guards. Exact explicit-period conversion/range rules remain intact.
+Source-proven contact/location corrections apply to missing AND incorrect populated fields. Unique bounded context quotes may contain repeated values. City/state must form an explicit source pair. State changes select the exact inspected option, always reselect dependent city and verify both retained values before AI.
 Address/ZIP only uses exact original spans or retained fields. No unsupported public lookup fallback.
 US phone normalization removes duplicate +1 variants while retaining distinct extensions/numbers.
 AI updates title AND content. The latest Owner override delegates content quality to the site AI
 flow: automation accepts its returned title/body without deterministic rewrite checks or a semantic
-model call. Original-source extraction/proposal checks remain required; extraction failure holds.
+model call. Original-source extraction/proposal checks remain required. Entire model JSON/request failure permits source-only absent/unclear-pay negotiated fallback only with valid required contact and no unresolved explicit address, city/state pair, named salon, new phone or email correction. Other failures hold as automation errors; they do not prove posting data is wrong.
 NailHub qwen3.5:9b uses think=false; reasoning is never stored. Generation is bounded by model.num_predict (default 2048),
 context 8192, input 12000 characters and a 600-second HTTP budget; truncation/invalid JSON holds.
 Empty location suggestions leave existing fields intact; nonempty unchanged suggestions are
@@ -80,7 +82,7 @@ proposed entity they contain. Unrecognized entity spans receive evidence correct
 validates original extraction entities. The completed site AI rewrite is accepted directly;
 no extra instruction prefix, cleanup or content verification is applied.
 Before any Edit/AI operation, salon, street address, city, state, ZIP and main phone must be
-complete and valid under the inspected form limits/US syntax. Missing values may be filled only
+complete and valid under the inspected form limits/US syntax. Missing or incorrect populated values may be corrected only
 from validated original evidence; otherwise the post needs human review. No lookup is guessed.
 
 Save has an exact pinned-origin/method/UUID UI request guard. It restores only OMITTED returned
@@ -98,8 +100,37 @@ SQLite checkpoints precede Edit/AI/Save and Approve. Restart reconciles by fresh
 Approved is terminal; saved Draft after crash requires manual continuation; unknown outcomes are
 uncertain and never blindly resaved/reapproved. Pause persists and is checked before each next action;
 an already in-flight remote call must finish/read back. No auto Reject and no unsolicited Telegram
-notifications. Exact commands in verified Owner private DM only: `/nailhub scan`, `/nailhub status`,
-`/nailhub pause`, `/nailhub resume`. Rejected namespace never becomes a GitHub issue when configured.
+group notifications. Owner-authorized manual-review notices are sent only to the verified Owner's
+private numeric peer through the existing client. Exact private-DM commands: `/nailhub scan`,
+`/nailhub status`, `/nailhub pending`, `/nailhub pause`, `/nailhub resume`. Rejected namespace never
+becomes a GitHub issue when configured.
+
+## Manual-review DM notices
+
+After startup verifies @SotaThao→1603321775 with the existing Telegram client, the worker backfills
+current needs-human/uncertain posts and sends new holds to that same numeric private peer. Each
+plain-text message contains a bounded title, clickable `https://nailhub.ai/admin/postings?id=<UUID>`
+and a fixed Vietnamese explanation/action. Unknown raw errors and original body text are omitted.
+Uncertain explicitly means the actual Save/Approve result needs checking; it does not claim Draft.
+Commands still require incoming human private sender==chat==allowlisted ID; outgoing/self/group,
+channel, forwarded and bot messages cannot trigger them. All notices/replies disable formatting
+and link previews (`parse_mode=None`, `link_preview=False`).
+
+The additive SQLite manual_notices table deduplicates successful deliveries by recipient, posting
+fingerprint, state, reason and notice-version. A reason/source/state/Owner change creates a new
+notice. Delivery is acknowledged only after awaiting the active client's send result; the returned
+message ID and verified recipient are retained for API-accepted delivery evidence without logging
+message bodies. Startup/retry uses current held rows, including when paused; resolved posts are
+rechecked immediately before delivery. No second client/session, browser action or model call is
+used to notify. Failure logs exception class only, retries no sooner than 300 seconds and never
+replays website mutations or changes scan results. Each send has a 20-second timeout, with up to
+five attempts per five-second worker batch. A lost Telegram acknowledgment or process crash
+after remote send but before local commit can cause an eventual duplicate; delivery is at least once.
+
+`/nailhub status` retains scan state/last controlled result and adds all current manual-review links
+and reasons; `/nailhub pending` also lists them. Messages split at 3500 UTF-16 units. These explicit
+status replies do not acknowledge or suppress automatic notices. Direct inspection/deletion of
+posts, review completion and actual Telegram delivery remain controller/Owner verification tasks.
 
 Enable the existing listener only after review by installing the commented systemd override template
 and setting NAILHUB_CONFIG absolute path. Keep preview first, record real flow evidence on approved
@@ -121,3 +152,9 @@ Literal salary excerpt normalization: if amount_text includes original period/qu
 
 
 Owner start-date policy: only the exact backend default sentinel 0001-01-01T00:00:00 becomes the current processing date at UTC midnight. Backend validates against DateTime.UtcNow.Date; offset-free ISO matches the observed DTO representation. Proposal records old/new values and Owner policy in metadata_changes.startDate; the UI request normalizer restores that authorized date for omitted/null/sentinel input only. Conflicting UI dates or missing audit are rejected. Real past/future dates and null/missing source dates remain unchanged. An endDate not strictly after the repaired start date holds for review and is never changed. Exact persisted startDate and all other saved fields must match before approval. This date repair adds no post-AI content checking.
+
+Manual-review DM diagnostics persist bounded field/current/source/evidence/action context in an additive SQLite column. Versioned delivery dedup includes that context and verified recipient; changed details can notify again. Unknown model/HTTP exception bodies remain suppressed. A technical extraction failure is identified separately from a source-data problem. Existing held rows without context explicitly say the field/source is not established.
+
+State-only source repair: before validating model location evidence, an exact current-city + uppercase state + ZIP under an explicit bounded Address:/Địa chỉ tiệm: context resolves the state directly. All matching current-city state/ZIP mentions must agree; conflicting pairs require manual review with source data details. Exact offsets support repeated pairs. Invalid model state formatting/evidence is replaced, or dropped when the source state already equals current state; other model contact/location fields remain validated. This does not add a full-model-outage fallback for explicit address corrections.
+
+Missing city/ZIP may be derived independently from the fingerprint-bound current salon address when it fully matches a bounded street + suffix + city + uppercase state + ZIP form and current state agrees. Example: 279 E Fairmount Ave Lakewood, NY 14750 -> city Lakewood, ZIP14750; NY is the state, not the city. Only blank city/ZIP are filled. Complete conflicting original body address/city-state-ZIP or inconsistent populated contact fields hold for review. No ZIP/city is inferred from state alone, and malformed/ambiguous address tails remain manual. Derived values have separate source_field=address audit provenance; original-content model evidence rules remain unchanged. Invalid model city/ZIP suggestions cannot block these independently proven missing fields; other model corrections still require original evidence. The existing exact city option and fresh fingerprint/Save/readback guards remain required. This performs no geocoder or public lookup.

@@ -13,14 +13,14 @@ approved_by: "Owner (user)"
 # Tự động duyệt tin NailHub trên THINKPAD
 
 ## Metadata
-- Version: v1.0.9
+- Version: v1.0.14
 - Created: 2026-10-12 17:09 (Asia/Saigon)
-- Updated: 2026-10-12 21:15 (Asia/Saigon)
+- Updated: 2026-10-12 23:59 (Asia/Saigon)
 - Status: Approved — Owner duyệt phương án và yêu cầu tiếp tục triển khai trong chat.
-- Implementation worktree: `C:/Users/AD/.codex/worktrees/nailhub-postings/AgentBuilder`, branch `codex/nailhub-postings`.
+- Implementation worktree: `C:/Users/AD/.codex/worktrees/nailhub-automation/AgentBuilder`, branch `codex/nailhub-automation`.
 - Executor đã được Owner chọn: Codex · gpt-6.1-sol · high.
 - Tracking: `.agent-tasks/T-261012-nailhub-postings-automation-on-thinkpad.md`.
-- GitHub issue / PR: chưa có; repo hiện chỉ local. Không tự commit/push.
+- GitHub: PersonalProjectJob/telegram-agent, nhánh codex/nailhub-automation; commit 7944fe1 đã push theo lệnh Owner. Chưa có issue / PR; bổ sung DM đang chưa commit.
 - Harness / data owner: AlexChu; Codex là runtime thực thi.
 
 ## 1. Mục tiêu
@@ -232,3 +232,63 @@ browser thật sau đăng nhập, không dùng đọc code thay cho kiểm chứ
 
 
 | v1.0.9 | 2026-10-12 | 21:15 | AlexChu (Codex controller) | Live Save/Approve + fresh read PASS; Owner xác nhận DM; bật quét 600 giây, 1 tin/lượt | Operational |
+
+## Bổ sung Owner: phản hồi tin cần kiểm tra thủ công qua DM
+Owner yêu cầu worker gửi link tin và lý do phải kiểm tra thủ công qua DM.
+- Chỉ gửi đến numeric Owner đã xác thực, bằng chính client Telegram của listener đang chạy.
+- Tự gửi cho tin needs-human và uncertain; gửi bù các tin đang chờ khi triển khai.
+- /nailhub status trả kèm danh sách link và lý do tiếng Việt; nội dung giới hạn an toàn Telegram.
+- Có trạng thái giao thông báo bền vững; chỉ đánh dấu đã gửi sau thành công, retry có nhịp khi lỗi.
+- Link dùng UUID đã xác thực; không để title/content thay đổi đích gửi hoặc lệnh; không gửi credential.
+- Giữ phân biệt needs-human với uncertain: uncertain cần kiểm tra trạng thái thực tế trước khi thao tác.
+- Không thêm kiểm tra nội dung sau AI, không thay lương/date policy, không tự thử lại Save/Approve.
+Trạng thái bổ sung: Operational — đã triển khai, gửi bù 2 DM và xác minh message ID thực tế; quét định kỳ đã tiếp tục.
+
+| v1.0.10 | 2026-10-12 | 21:28 | AlexChu (Codex controller) | Owner yêu cầu DM tự động kèm link/lý do tin needs-human/uncertain và danh sách trong status | Approved amendment / Implementation pending |
+
+| v1.0.11 | 2026-10-12 | 21:46 | AlexChu (Codex controller) | DM deployed; hai tin gửi bù có message ID 139/140; resume quét, full623 và independent29 PASS | Operational |
+
+### Bằng chứng triển khai DM thực tế
+- Candidate8 files: SHA256 0EAA3080129239C2047C763080CD558199B9094DCDB83958E8DEA426887C8B10.
+- Full suite623 PASS40.492s; independent29 PASS5.006s; compile và diff check PASS.
+- Bundle manifest94504DA556A5C227263F1C707CDC95D8C00BFB688230406B1397F0FD42DAB9E0.
+- Backup /var/backups/agentfleet/nailhub-dm-20261012T144420Z; source+installed5 modules cùng hash; classifier đồng thời giữ nguyên.
+- Cùng client đang chạy đã gửi Owner1603321775: tin2fe2ceb9-3d2d-45bd-880f-c99da56de92b message139; tinbde8b947-fd25-4079-8cd1-bb8759e09056 message140.
+- Proof .context/nailhub-evidence/dm-delivery-proof.json lưu ACK thực tế, link và lý do tiếng Việt. Không tạo client/session thứ hai.
+- Resume paused=False; worker running=True; hai ACK giữ nguyên sau resume. /nailhub status và /nailhub pending hiển thị link/lý do hiện tại.
+- Gửi có retry và dedup bền vững; crash sau Telegram nhận nhưng trước lưu ACK vẫn có khả năng gửi lại.
+- Harness verify Node-only không hỗ trợ repo Python; CAS same-owner lease vẫn lỗi đã ghi nhận. Không tự sửa harness. Bổ sung này chưa commit/push.
+
+## Owner amendment: input values and actionable DM
+Owner explicitly requests field/current value/action in held DM; no-pay posts use hidden salary despite model extraction errors; fields are corrected from posting content. Numeric pay without period is copied unchanged into numeric input (7000 =>7000), with no inferred conversion. Explicit periods retain approved conversion. AI rewritten content remains out of scope. Operational; .context/NAILHUB_FIELD_POLICY_SCOPE.md tracks verification/deployment.
+
+
+### v1.0.12 — source fields and actionable DM (Operational)
+- Tin không nhắc lương: chọn Không hiển thị; lỗi trích xuất lương của model không tự giữ Draft. Lương số không có đơn vị thời gian: điền nguyên số (7000), không suy đoán/quy đổi. Khoảng số lấy mức cao nhất và làm tròn xuống hàng trăm; quy đổi chỉ khi nguồn ghi rõ đơn vị.
+- Sửa cả ô đã có giá trị nếu nội dung gốc xác nhận khác; địa chỉ rõ city/state/ZIP có thể sửa state sai dù model trích xuất sai. Các nguồn mâu thuẫn thật vẫn cần kiểm tra.
+- DM v2 ghi trường, giá trị đã đọc, nguồn/căn cứ, việc cần làm, phân biệt lỗi dữ liệu với lỗi tự động hóa. Same listener/client, Owner DM numeric authentication không đổi.
+- Không kiểm tra nội dung sau nút AI; chỉ giữ kiểm tra lưu/readback/trạng thái và nguồn mới nhất.
+- Final full637 PASS31.286s; independent39 PASS2.610s; compile/diff check PASS. State-repair independent72 PASS; field-policy independent88 PASS. DOM fixture bổ sung không được tính là live E2E.
+- Guarded deployment: D6AE7modules backup20261012T152238Z; statevalidation-only backup20261012T153950Z; widgetbrowser-only backup20261012T154820Z. Tất cả18 runtimehashes khớp; classifier/telegram concurrent changes giữ nguyên.
+- Fresh actual UI read: 2fe2ceb9-3d2d-45bd-880f-c99da56de92b Approved, salary hidden, phone_other rỗng. bde8b947-fd25-4079-8cd1-bb8759e09056 Approved, salon Pure Nails Spa, state WV/city Charles Town/ZIP25414, salary7000.0, hai số khác nhau giữ nguyên.
+- Proof: .context/nailhub-evidence/nailhub-field-final-proof.json và nailhub-final-runtime-hashes.json. DM142 có ACK Owner1603321775. Sau fresh read đã resume: paused0/pending0/running0, approved4, không còn needs-human/uncertain. Quét10phút tiếp tục.
+- Harness verify chỉ hỗ trợ Node/package.json, repo Python nên không PASS gate đó; dùng kết quả Python/test/reviewer và thực tế ở trên. Không sửa harness; bổ sung này chưa commit/push.
+
+
+### v1.0.13 — Owner override: lương chưa rõ → Thương lượng (Operational)
+Quy tắc này thay thế mặc định Không hiển thị của v1.0.12: nguồn không nhắc hoặc không nêu được mức lương cụ thể thì chọn Thương lượng, amount0; không giữ Draft chỉ vì model trích xuất lương/evidence lỗi. Các câu như “Bao lương trên ăn chia” và “ăn chia” không có số lương được xử lý theo quy tắc này. Tiền tip/thuê/hoa hồng riêng không được lấy làm lương số. Mức tiền rõ, không đơn vị điền nguyên số, quy đổi đơn vị rõ và khoảng lương vẫn giữ chính sách đã duyệt. Xung đột thật của mức lương số vẫn giữ kiểm tra thủ công có chi tiết. Không đổi nội dung flow AI, contact/source/save/readback/permission guards.
+- Actual case4148d7cf-d89d-42f5-85f7-7f2712ea2494: nội dung “Bao lương trên ăn chia”, “20 phút lái xe”; trước đó model gây unrecognized amount/range dù form negotiated0. Bản sửa nguồn trực tiếp chọn negotiated;20phút không phải lương.
+- Final639 PASS28.861s; independent93 PASS7.664s; compile/diffcheckPASS. Frozen5files3509436744D2D76233B98AA83841C9115765140346B80941AF1FCEB9E1F48483.
+- Runtime chỉvalidation.py/model.py source+installed; guardedmanifest507B8575, backup/var/backups/agentfleet/nailhub-field-20261012T162643Z;18 runtimehashesPASS, classifier/Telegram giữ nguyên. Cùng listener/client, không mở Telegram session thứ hai.
+- Normalworker actualextractionvalidated133.385s, AI/Save/Approve/readbackPASS. Fresh UI navigation độc lập xác nhận Approved, salary_type negotiated, salary_amount0.
+- Proof .context/nailhub-evidence/nailhub-negotiated-final-proof.json và nailhub-negotiated-runtime-hashes.json. Resume paused0/pending0/running0, approved7, không còn needs-human/uncertain. Quét10phút tiếp tục.
+- Không sửa hàng loạt tin Approved cũ. Harness verify vẫn Node-only/package.json absent; Python scriptedtest/reviewer/liveproof ở trên. Bổ sung chưa commit/push.
+
+
+### v1.0.14 — Tự sửa city/ZIP thiếu từ địa chỉ crawl (Operational)
+Owner yêu cầu suy luận để sửa crawl khi có căn cứ. Chỉ từ tiểu bang NY không suy ra thành phố New York hay ZIP. Địa chỉ hiện có đầy đủ street/city/state/ZIP có thể làm nguồn riêng để điền ô city/ZIP còn trống. Parser bounded, state phải khớp, kiểm tra mâu thuẫn với trường đã điền/nội dung gốc; ghi audit source_field address. Không nới lỏng nguồn của các model suggestions khác. Thành phố phải tồn tại trong tùy chọn chính xác của form trước AI/Save. Không thay chính sách lương Thương lượng hay kiểm nội dung sau AI.
+- Actual2722b005-6226-4503-bce5-299e70e5515b Luxe Spa: address279 E Fairmount Ave Lakewood, NY14750, stateNY, city/ZIPtrống, bodykhôngcóđịachỉ. TựđiềnLakewood/14750,giữNY/haiđiệnthoại/Thươnglượng.
+- Freeze4535B0C4FBF893F4D6AC6CEB164C20F9E2B8DF4780EDD318A6E08EBC95E7C28E; full641PASS37.060s, independent77PASS4.263s; compile/diffcheckPASS.
+- GuardeddeployONLYvalidation.py source+installed/preimagechecks, manifest4C52C67E, backup/var/backups/agentfleet/nailhub-field-20261012T165538Z.18runtimehashesPASS; otherlistenerfilespreserved.
+- Normalworkeractualextractvalidated82.470s thenAI/Save/Approve/readbackPASS. IndependentfreshUIread: Approved, cityLakewood,stateNY,ZIP14750,salarynegotiated.
+- Proof .context/nailhub-evidence/nailhub-address-final-proof.json và nailhub-address-runtime-hashes.json. Resume paused0/pending0/running0/countsapproved8, nohumanholds. Quét10phút tiếp tục. Không commit/push bổ sung này.

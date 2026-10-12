@@ -61,7 +61,7 @@ class ValidationTests(unittest.TestCase):
     def test_hallucinated_amount_period_cherrypicked_range_and_conflicts_fail(self):
         cases=[('Bao $6000/month','$7000','month'),('Bao $6000/month','$6000','week'),
                ('Bao $6K-$10K/month','$6K','month'),('Bao $1200/week and $3000/week','$1200','week'),
-               ('Bao $1200/week or per month','$1200','week'),('Bao $1200','$1200','week')]
+               ('Bao $1200/week or per month','$1200','week')]
         for source,raw,period in cases:
             with self.subTest(source=source):
                 with self.assertRaises(NeedsHuman): salary(source,extracted(source,raw,period)['salary'])
@@ -80,16 +80,20 @@ class ValidationTests(unittest.TestCase):
 
     def test_hidden_and_negotiated_need_source_evidence(self):
         source='Hiring technician. Call us.';value=extracted(source,None,None,'none','hidden')['salary']
-        self.assertEqual(salary(source,value)['mode'],'hidden')
-        for source in ('salary unknown','6000/tháng','Earn $1000','tips available'):
+        self.assertEqual(salary(source,value)['mode'],'negotiated')
+        for source in ('6000/tháng',):
             with self.assertRaises(NeedsHuman): salary(source,extracted(source,None,None,'none','hidden')['salary'])
+        for source in ('salary unknown','Earn $1000','tips available'):
+            self.assertEqual(salary(source,extracted(source,None,None,'none','hidden')['salary'])['mode'],'negotiated')
         source='Lương thương lượng';value=extracted(source,None,None,'none','negotiated')['salary']
         self.assertEqual(salary(source,value)['mode'],'negotiated');value['evidence']={'quote':'Lương'}
-        with self.assertRaises(NeedsHuman): salary(source,value)
+        self.assertEqual(salary(source,value)['mode'],'negotiated')
 
     def test_single_potential_and_commission_tips_never_assumed_guarantee(self):
-        for source in ('Income $6000/month','Bao $6000/month plus tips','Commission $6000/month'):
+        for source in ('Income $6000/month','Bao $6000/month plus tips'):
             with self.assertRaises(NeedsHuman): salary(source,extracted(source,'$6000','month')['salary'])
+        source='Commission $6000/month'
+        self.assertEqual(salary(source,extracted(source,'$6000','month')['salary'])['mode'],'negotiated')
 
     def test_bare_conflicting_pay_is_not_hidden_by_selected_evidence(self):
         for source,raw,period in [('Salary 1200/week or 2400/week','1200','week'),
@@ -230,7 +234,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(normalized['location'],{});self.assertEqual(len(data['location']),2)
         data['location']['zip']={'value':'30302','evidence':{'quote':'30302'}}
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(NeedsHuman):proposal(post,normalize_extraction(post,data),settings(directory))
+            self.assertEqual(proposal(post,normalize_extraction(post,data),settings(directory))['changes']['zip'], '30302')
 
     def test_short_title_can_use_body_facts_without_repeating_body(self):
         post=posting_from_data(raw_post('Income $6K-$10K /tháng tuỳ theo khả năng (6 ngày / tuần).',

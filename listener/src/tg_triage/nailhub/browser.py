@@ -370,6 +370,39 @@ class Browser:
         item = await self._field(key)
         await item.fill(value)
 
+    async def selected_location(self, key, value):
+        """Read the visible react-select label, excluding hidden ARIA announcements."""
+        widget = await self._field(key)
+        labels = widget.locator('.react-select__single-value')
+        pattern = re.compile(r'^.+ - ' + re.escape(value) + r'$' if key == 'state'
+                             else r'^' + re.escape(value) + r'$')
+        await labels.filter(has_text=pattern).wait_for(state='visible')
+        if await labels.count() != 1 or not pattern.fullmatch((await labels.inner_text()).strip()):
+            raise NeedsHuman('location widget has not retained original state/city',
+                details={'kind': 'automation', 'field': key, 'source': value,
+                         'action': 'Chọn lại giá trị nguồn và xác nhận nhãn đang hiển thị giữ đúng giá trị.'})
+
+    async def select_location(self, post, changes):
+        """Inspected react-select contract: exact state option, then dependent city."""
+        if not any(key in changes for key in ('state', 'city')):
+            return
+        target = {**post.fields, **changes}
+        keys = ('state', 'city') if 'state' in changes else ('city',)
+        for key in keys:
+            value = target[key]
+            widget = await self._field(key)
+            await widget.get_by_role('combobox').fill(value)
+            name = re.compile(r'^.+ - ' + re.escape(value) + r'$') if key == 'state' else value
+            option = self.page.get_by_role('option', name=name, exact=True)
+            await option.wait_for(state='visible')
+            if await option.count() != 1:
+                raise NeedsHuman('location selection needs verified state/city option contract',
+                    details={'kind': 'automation', 'field': key, 'current': post.fields.get(key, ''),
+                             'source': value, 'action': 'Mở form và chọn đúng tùy chọn thành phố/tiểu bang từ nguồn.'})
+            await option.click()
+        for key in ('state', 'city'):
+            await self.selected_location(key, target[key])
+
     async def edit_and_rewrite(self, post, changes):
         self._live(post)
         fresh = await self.read(post.id)
@@ -384,15 +417,16 @@ class Browser:
                     await item.click()
         # Validate existing form facts before editing so a blank or default widget cannot erase data.
         for key in ('salon', 'address', 'zip', 'phone_primary', 'phone_other', 'email', 'title'):
-            if not same_form_value(key, await (await self._field(key)).input_value(), post.fields.get(key, '')):
-                raise NeedsHuman('edit form differs from original field')
+            actual = await (await self._field(key)).input_value()
+            if not same_form_value(key, actual, post.fields.get(key, '')):
+                raise NeedsHuman('edit form differs from original field', details={'kind': 'automation',
+                    'field': key if key != 'title' else 'automation', 'current': actual,
+                    'source': post.fields.get(key, ''), 'action': 'Đối chiếu form với bản đọc mới; tải lại trước khi sửa hoặc lưu.'})
         for key in ('state', 'city'):
-            item = await self._field(key)
             # react-select options load asynchronously. Wait for the source value, never invent one.
             if post.fields.get(key):
-                await item.get_by_text(re.compile(re.escape(post.fields[key]))).wait_for(state='visible')
-            if post.fields.get(key) and post.fields[key] not in await item.inner_text():
-                raise NeedsHuman('location widget has not retained original state/city')
+                await self.selected_location(key, post.fields[key])
+        await self.select_location(post, changes)
         for key, value in changes.items():
             if key == 'salary_type':
                 await (await self._field(key)).click()
@@ -401,7 +435,7 @@ class Browser:
                 if changes['salary_type'] == 'weekly':
                     await self._fill(key, value)
             elif key in ('state', 'city'):
-                raise NeedsHuman('location selection needs verified state/city option contract')
+                continue
             else:
                 await self._fill(key, value)
         async with self.page.expect_response(lambda r: self._response(r, AI_PATH, 'POST'), timeout=self.config.timeout_seconds * 1000) as response:

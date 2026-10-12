@@ -4,7 +4,17 @@ import re
 
 NAMESPACE = re.compile(r"^\s*/nailhub(?:\b|@)", re.IGNORECASE)
 COMMANDS = {"/nailhub scan": "scan", "/nailhub status": "status",
-            "/nailhub pause": "pause", "/nailhub resume": "resume"}
+            "/nailhub pause": "pause", "/nailhub resume": "resume", "/nailhub pending": "pending"}
+
+
+def make_owner_notice_sender(client, verified_owner_ids):
+    """Use the active client only, after verify_owner returned its single numeric binding."""
+    if len(verified_owner_ids) != 1 or type(verified_owner_ids[0]) is not int or verified_owner_ids[0] <= 0:
+        raise ValueError('verified single Owner binding required')
+    owner_id = verified_owner_ids[0]
+    async def send(text):
+        return await client.send_message(owner_id, text, parse_mode=None, link_preview=False)
+    return send
 
 
 async def verify_owner(client, config, me):
@@ -51,8 +61,10 @@ async def route_command(event, service, owner_ids):
         return True
     command = COMMANDS.get(text)
     if command is None:
-        await event.reply("Commands: /nailhub scan | /nailhub status | /nailhub pause | /nailhub resume")
+        await event.reply("Commands: /nailhub scan | /nailhub status | /nailhub pending | /nailhub pause | /nailhub resume",
+                          parse_mode=None, link_preview=False)
         return True
     response = service.command(command)
-    await event.reply(response)
+    for text in response if isinstance(response, list) else [response]:
+        await event.reply(text, parse_mode=None, link_preview=False)
     return True

@@ -47,8 +47,12 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
                     browser.read=AsyncMock(return_value=post);browser.action_click=AsyncMock();browser._json=AsyncMock()
                     async def field(key):
                         value=phone if key=='phone_primary' else post.fields.get(key,'')
+                        label=SimpleNamespace(wait_for=AsyncMock(),count=AsyncMock(return_value=1),
+                            inner_text=AsyncMock(return_value='Georgia - GA' if key=='state' else value),filter=Mock())
+                        label.filter.return_value=label
                         return SimpleNamespace(input_value=AsyncMock(return_value=value),
                             inner_text=AsyncMock(return_value=value),
+                            locator=Mock(return_value=label),
                             get_by_text=lambda _:SimpleNamespace(wait_for=AsyncMock()))
                     browser._field=field
                     browser.control=AsyncMock(return_value=SimpleNamespace(wait_for=AsyncMock(),

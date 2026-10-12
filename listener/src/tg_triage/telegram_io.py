@@ -486,7 +486,7 @@ async def run(config, pipeline):
     from telethon import events
 
     from .nailhub.config import load_optional
-    from .nailhub.commands import route_command, verify_owner
+    from .nailhub.commands import make_owner_notice_sender, route_command, verify_owner
     from .nailhub.service import Service
 
     nailhub_config = load_optional()
@@ -521,6 +521,9 @@ async def run(config, pipeline):
             verified_owner_ids = await verify_owner(client, nailhub_config, me)
             if not verified_owner_ids:
                 LOG.warning("NailHub commands and scheduler disabled: Owner numeric binding not verified")
+            else:
+                nailhub.notice_send = make_owner_notice_sender(client, verified_owner_ids)
+                nailhub.notice_owner_id = verified_owner_ids[0]
 
     try:
         cleanup_signals = install_signal_handlers(stop)
