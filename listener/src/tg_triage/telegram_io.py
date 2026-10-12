@@ -485,6 +485,13 @@ async def graceful_shutdown(client, worker_task, *, timeout=120, force_exit=None
 async def run(config, pipeline):
     from telethon import events
 
+    from .nailhub.config import load_optional
+    from .nailhub.commands import route_command, verify_owner
+    from .nailhub.service import Service
+
+    nailhub_config = load_optional()
+    nailhub = Service(nailhub_config) if nailhub_config else None
+    verified_owner_ids = ()
     client = make_client(config)
     react = make_reaction_sender(client)
     queue = asyncio.Queue()
@@ -492,19 +499,28 @@ async def run(config, pipeline):
     cleanup_signals = lambda: None
 
     async def handler(event):
+        if nailhub is not None and await route_command(event, nailhub, verified_owner_ids):
+            return
         await enqueue_event(event, queue, config.telegram.chat_ids, pipeline.store, stop=stop,
                             react=react, listen_all_groups=config.telegram.listen_all_groups)
 
     tasks = []
     worker_task = None
+    nailhub_worker = None
+    nailhub_lock = None
 
     async def initialize():
+        nonlocal verified_owner_ids
         await client.connect()
         me = await client.get_me()
         if me is None:
             raise ConfigError("chưa đăng nhập: chạy lệnh login")
         if getattr(me, "bot", False):
             raise ConfigError("không hỗ trợ tài khoản bot")
+        if nailhub_config is not None:
+            verified_owner_ids = await verify_owner(client, nailhub_config, me)
+            if not verified_owner_ids:
+                LOG.warning("NailHub commands and scheduler disabled: Owner numeric binding not verified")
 
     try:
         cleanup_signals = install_signal_handlers(stop)
@@ -512,7 +528,7 @@ async def run(config, pipeline):
             if config.telegram.listen_all_groups or message.chat_id in config.telegram.chat_ids:
                 queue.put_nowait(message)
         # listen_all_groups: không lọc theo chat ở Telethon; enqueue_event lọc is_group.
-        builder = (events.NewMessage() if config.telegram.listen_all_groups
+        builder = (events.NewMessage() if config.telegram.listen_all_groups or nailhub is not None
                    else events.NewMessage(chats=list(config.telegram.chat_ids)))
         client.add_event_handler(handler, builder)
         stopper = asyncio.create_task(stop.wait())
@@ -531,6 +547,12 @@ async def run(config, pipeline):
                                                        notice_send=make_group_notice_sender(client)))
         tasks = [worker_task, asyncio.create_task(heartbeat(queue)),
                  asyncio.create_task(client.run_until_disconnected()), stopper]
+        if nailhub is not None and verified_owner_ids:
+            from .runtime import ProcessLock
+            nailhub_lock = ProcessLock(Path(nailhub_config.db_path).parent)
+            nailhub_lock.__enter__()
+            nailhub_worker = asyncio.create_task(nailhub.worker(stop))
+            tasks.extend((nailhub_worker, asyncio.create_task(nailhub.scheduler(stop))))
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         if stopper in done:
             return
@@ -540,7 +562,9 @@ async def run(config, pipeline):
     finally:
         stop.set()
         try:
-            await graceful_shutdown(client, worker_task)
+            active_workers = (asyncio.gather(worker_task, nailhub_worker)
+                              if worker_task is not None and nailhub_worker is not None else worker_task)
+            await graceful_shutdown(client, active_workers)
         finally:
             remove_handler = getattr(client, "remove_event_handler", None)
             if remove_handler:
@@ -550,3 +574,5 @@ async def run(config, pipeline):
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            if nailhub_lock is not None:
+                nailhub_lock.__exit__(None, None, None)

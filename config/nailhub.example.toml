@@ -1,0 +1,78 @@
+# Optional: absent NAILHUB_CONFIG keeps the legacy listener unchanged.
+# Copy outside repo and supply an absolute path via the existing listener service.
+[worker]
+mode = "preview"                     # Live requires independent review and contract evidence.
+db_path = "/var/lib/agentfleet/nailhub/jobs.sqlite3"
+profile_path = "/var/lib/agentfleet/nailhub/profile"
+credential_file = ""                  # Optional Owner-authorized local {email,password} JSON, mode0600.
+owner_username = "SotaThao"            # Bootstrap verifies username↔numeric binding; DM auth uses ID only.
+owner_ids = []                        # Empty denies ALL commands. Verify @SotaThao numeric ID with existing client.
+interval_seconds = 600
+max_batch = 1
+max_pages = 50
+headless = true
+url = "https://nailhub.ai/admin/postings"
+# Owner override 2026-10-12: range upper weekly value rounded DOWN to nearest $100;
+# retain complete original range/period in content. Single amounts retain cents.
+range_policy = "upper_floor_100"
+
+[model]
+url = "http://127.0.0.1:11434"
+model = "qwen3.5:9b"
+think = false # Owner amendment 2026-10-12: keep extraction and semantic checks, disable thinking.
+timeout_seconds = 600
+num_predict = 2048 # Bounded generation; truncated/invalid JSON is held.
+
+[contract]
+verified = false
+verification_ref = ""                 # Required independent authenticated contract evidence before live.
+api_origin = "https://api.nailhub.ai"  # Source-backed, controller observed actual HTTP200.
+draft_status = "Draft"
+approved_status = "Approved"
+category = "JobPosting"
+salary_range = false                 # Real #price scalar input.
+salary_places = 2
+
+# Based on inspected local matching source and read-only UI; verify each against deployed version.
+# All locators must resolve to EXACTLY ONE visible element. No first-row/title identity matching.
+[selectors]
+authenticated = "h1:text-is('Posting Management')"
+next_page = "button:text-is('Next')"
+detail = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Posting Details'))"
+detail_title = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Posting Details')) h3"
+detail_content = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Posting Details')) .prose"
+edit = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Posting Details')) button:text-is('Edit')"
+edit_dialog = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Edit Posting'))"
+contact_section = "[role=dialog] button:has(> div:text-is('1. Thông tin liên lạc'))"
+posting_section = "[role=dialog] button:has(> div:text-is('2. Thông tin bài đăng'))"
+ai = "[role=dialog] button:has(> span:text-is('Viết bằng AI'))"
+editor = "[role=dialog] .ql-editor[contenteditable=true]"
+save = "[role=dialog] button:has(> span:text-is('Cập nhật'))"
+approve = "[role=dialog]:has(:is(h1,h2,h3) > span:text-is('Posting Details')) button:text-is('Approve')"
+approve_dialog = "[role=dialog]:has-text('Approve Posting?')"
+approve_confirm = "[role=dialog]:has-text('Approve Posting?') button:text-is('Approve')"
+login_open = "header button:text-is('Đăng nhập')"
+login_dialog = "[role=dialog]:has(#login-email)"
+login_email = "#login-email"
+login_password = "#login-password"
+login_submit = "[role=dialog]:has(#login-email) button:text-is('Đăng nhập')"
+
+[fields]
+salon = "#businessName"
+phone_primary = "#phone"
+phone_other = "#mobilePhone"
+email = "#email"
+address = "#address"
+zip = "#zipCode"
+title = "#post-title"
+salary_type = "#price-type"
+salary_amount = "#price"
+# react-select lacks stable ids; explicit label-associated containers from inspected source.
+# Display must retain source state/city; missing/different value blocks edits.
+state = "[role=dialog] div:has(> label[for=state])"
+city = "[role=dialog] div:has(> label[for=city])"
+
+[options]
+weekly = "[role=option]:has(> span:text-is('Có'))"
+hidden = "[role=option]:has(> span:text-is('Không'))"
+negotiated = "[role=option]:has(> span:text-is('Thương lượng'))"

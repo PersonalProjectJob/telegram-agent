@@ -13,6 +13,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from .model_gate import MODEL_GATE
+
 from .models import (CATEGORIES, CaseAnalysis, Classification, ISSUE_TYPES, PRIORITIES, TICKET_CATEGORIES,
                      TYPES, TopicGroup, VERDICTS, canonical_category, clean_reason, utf8_valid)
 
@@ -313,6 +315,10 @@ class Classifier:
         return messages if isinstance(messages, str) else build_transcript(messages)
 
     def _ask(self, body, parse, attempts=2):
+        with MODEL_GATE.enter():
+            return self._ask_serial(body, parse, attempts)
+
+    def _ask_serial(self, body, parse, attempts):
         for _ in range(attempts):
             request = Request(
                 self.settings.url + "/api/chat",
