@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import timezone
 
-from . import reactions, rules
+from . import group_notices, reactions, rules
 from .attachments import AttachmentProcessor, AttachmentResult
 from .issue_format import format_issue
 from .models import (CaseAnalysis, Classification, Decision, ISSUE_TYPES, PRIORITIES, TICKET_CATEGORIES,
@@ -190,7 +190,7 @@ def _contentless(messages, model_chat) -> bool:
     """12.13 safety block: no product content. Only contact data (no word left once e-mail, phone and
     @handle are removed), or, when the model itself called the group chat, a few words of acknowledgement.
     A photo is content. No keyword list is involved."""
-    if any(item.has_image for item in messages):
+    if any(item.has_attachment for item in messages):
         return False
     total = sum(_own_words(item.text) for item in messages)
     shares_contact = any(_EMAIL.search(item.text or "") or _PHONE.search(item.text or "") for item in messages)
@@ -207,9 +207,10 @@ def _legacy_analysis(value, messages):
 
 class Pipeline:
     def __init__(self, config, store, classifier, github=None, *, timer=time.monotonic,
-                 uploader=None, downloader=None, reactor=None):
+                 uploader=None, downloader=None, reactor=None, notice_sender=None):
         self.config = config
         self.reactor = reactor
+        self.notice_sender = notice_sender
         self.store = store
         self.classifier = classifier
         self.github = github
@@ -218,6 +219,10 @@ class Pipeline:
         self.attachments = AttachmentProcessor(
             config.attachments, store, repo=config.gh_repo,
             downloader=downloader, uploader=uploader)
+
+    def set_notice_sender(self, sender):
+        """Existing Telegram loop supplies a bounded blocking plain-text sender."""
+        self.notice_sender = sender
 
     def set_media_downloader(self, downloader):
         """Telegram transport hands over its image downloader once the client exists."""
@@ -296,7 +301,7 @@ class Pipeline:
         # A lone courtesy closes at once; a lone photo/caption waits, since the explanation
         # usually follows in the next message (12.8: the image must reach the issue).
         lone_noise = (assignment.created and rule is not None and rule.type == "noise"
-                      and not message.has_image)
+                      and not message.has_attachment)
         due = (is_command or lone_noise or aggregation.window_minutes == 0
                or assignment.message_count >= aggregation.max_messages_per_case)
         if not due:
@@ -485,7 +490,7 @@ class Pipeline:
             # Only a message with no letter at all (tier 1) is set aside by code; greetings and short
             # replies go to the model with the rest of the window (12.12).
             # A photo or a command stays in: its image or explicit type must reach an issue.
-            if (rule is not None and rule.type == "noise" and not item.has_image
+            if (rule is not None and rule.type == "noise" and not item.has_attachment
                     and not rules.is_command(item.text)):
                 plans.append(self._noise_plan(item, rule, "rule_noise"))
             else:
@@ -500,7 +505,7 @@ class Pipeline:
         if len(chunk) == 1:
             item = chunk[0]
             rule = self._rule(item, cache)
-            if rule is not None and not item.has_image:
+            if rule is not None and not item.has_attachment:
                 if rule.type == "noise":   # an empty command on its own: nothing to ticket
                     return [self._noise_plan(item, rule, REASON_SAFETY_BLOCK if rules.is_command(item.text)
                                              else "rule_noise")]
@@ -584,7 +589,7 @@ class Pipeline:
             analysis.verdict == "ticket" and analysis.actionable is False))   # a judgment: "not sure"
         unusable = action == "needs_human" and classification is None and not unsure
         missing = analysis.missing_info if analysis is not None and tier == "model" else ()
-        clarify, typed, text = None, False, None
+        clarify, typed, text = (missing if missing else None), False, None
         if missing and action == "issue":
             # 12.9: a confident ticket that still lacks information is a needs-human ticket with questions.
             action, typed, clarify = "needs_human", True, missing
@@ -609,7 +614,8 @@ class Pipeline:
         self._acknowledge(plan)   # ticket / needs_human, live or dry-run, before any issue
         if self.config.mode == "dry-run":
             found = self._images(plan.key, plan.messages, live=False)
-            result = replace(result, decision="dry_run_" + plan.action, images=found.dry_run_count)
+            result = replace(result, decision="dry_run_" + plan.action, images=found.dry_run_count,
+                             documents=found.documents_dry_run)
             self.store.finish(first, result)
             return result
         self.store.finish(first, replace(result, decision="classifying"))
@@ -623,7 +629,7 @@ class Pipeline:
                 first, plan.classification if trusted else None, plan.tier,
                 plan.action == "needs_human", self.config.ollama.model,
                 case_messages=plan.messages, key_message_ids=plan.key_ids, images=found.images,
-                notes=found.notes, clarify=plan.clarify, text=plan.text,
+                documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
                 max_quoted=len(plan.messages))
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
@@ -632,7 +638,8 @@ class Pipeline:
                 number, url = self.github.create_issue(issue)
                 result = replace(result, issue_number=number, issue_url=url,
                                  reaction_message_id=first.message_id,
-                                 reaction_message_ids=(first.message_id,), images=len(found.images))
+                                 reaction_message_ids=(first.message_id,), images=len(found.images),
+                                 documents=len(found.documents))
         except Exception as error:
             LOG.error("Message processing failed chat_id=%s message_id=%s exception=%s",
                       first.chat_id, first.message_id, type(error).__name__)
@@ -640,6 +647,8 @@ class Pipeline:
             result = replace(result, decision="error", classification=None, error=diagnostic,
                              reaction_message_id=None, reaction_message_ids=())
         self.store.finish(first, result)
+        group_notices.notify(self.store, self.notice_sender, first, result, plan.clarify,
+                             self.config.gh_repo)
         return result
 
     @staticmethod
@@ -654,6 +663,7 @@ class Pipeline:
             issue_url=created.issue_url if created else None,
             error=next((item.error for item in results if item.error), None),
             images=sum(item.images or 0 for item in results),
+            documents=sum(item.documents or 0 for item in results),
             reaction_message_id=targets[0] if targets else None, reaction_message_ids=targets)
 
     def _analyze_case(self, case_key, start, trigger=None, rule_cache=None):
@@ -709,9 +719,10 @@ class Pipeline:
         dry = result.decision.startswith("dry_run_")
         LOG.info("chat_id=%s message_id=%s tier=%s type=%s confidence=%s "
                  "decision=%s issue_number=%s latency_ms=%s case_status=%s images=%s "
-                 "attachments_dry_run=%s",
+                 "attachments_dry_run=%s documents=%s documents_dry_run=%s",
                  chat_id, message_id, result.tier,
                  value.type if value else None, value.confidence if value else None,
                  result.decision, result.issue_number, result.latency_ms,
                  case_status or CASE_STATUS.get(result.decision, "done"),
-                 0 if dry else (result.images or 0), (result.images or 0) if dry else 0)
+                 0 if dry else (result.images or 0), (result.images or 0) if dry else 0,
+                 0 if dry else (result.documents or 0), (result.documents or 0) if dry else 0)

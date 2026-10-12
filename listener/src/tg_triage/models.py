@@ -70,14 +70,25 @@ class IncomingMessage:
     has_image: bool = False
     image_size: int | None = None
     image_mime: str | None = None
+    # 12.14: a document (PDF, DOCX...) attached to the message. Only declared metadata is kept:
+    # size, MIME and the sender's file name (shown in the issue only after cleaning).
+    has_document: bool = False
+    document_size: int | None = None
+    document_mime: str | None = None
+    document_name: str | None = None
     # 12.11: True when Telegram says this message tags the listener account (Telethon
     # `message.mentioned`). Never guessed from the text.
     mentions_listener: bool = False
 
+    @property
+    def has_attachment(self) -> bool:
+        """An image or a document: media that is content in itself, even without any text."""
+        return self.has_image or self.has_document
+
     def __post_init__(self):
         # Python strings can contain lone UTF-16 surrogates, which SQLite and
         # UTF-8 HTTP cannot encode. Normalize all ingress text before persistence.
-        for name in ("sender_name", "text", "chat_username"):
+        for name in ("sender_name", "text", "chat_username", "document_name"):
             value = getattr(self, name)
             if isinstance(value, str) and not utf8_valid(value):
                 object.__setattr__(self, name, re.sub(r"[\ud800-\udfff]", "\ufffd", value))
@@ -158,6 +169,7 @@ class Decision:
     case_key: str | None = None
     reaction_message_id: int | None = None
     images: int | None = None
+    documents: int | None = None
     # 12.9: a window can create several issues; every group's first message that got an issue
     # (live only) is listed here, `reaction_message_id` being the earliest of them.
     reaction_message_ids: tuple = ()

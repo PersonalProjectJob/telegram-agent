@@ -1,4 +1,7 @@
-"""Image attachments for case issues (Assistant definition 12.8).
+"""Image and document attachments for case issues (Assistant definition 12.8 and 12.14).
+
+Documents (12.14) follow the same path as images but are accepted by extension and size only:
+the file is never opened, unpacked or executed, and its content never decides anything.
 
 Images are downloaded through an injected `downloader`, validated, uploaded to a
 per-case GitHub release through an injected `uploader`, and embedded by code as
@@ -20,6 +23,32 @@ LOG = logging.getLogger(__name__)
 
 ALLOWED_MIME = frozenset(("image/jpeg", "image/png", "image/webp"))
 ALT_TEXT = "Ảnh"
+
+# 12.14: the only document types accepted. Fixed in code, not configurable. For each extension, the
+# MIME types Telegram may report for it. The extension is read from the file name or, when the
+# name has none, from the MIME; when both are present they must agree (the MIME alone is never trusted).
+DOCUMENT_MIME = {
+    "pdf": frozenset(("application/pdf", "application/x-pdf")),
+    "docx": frozenset(("application/vnd.openxmlformats-officedocument.wordprocessingml.document",)),
+    "xlsx": frozenset(("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",)),
+    "pptx": frozenset(("application/vnd.openxmlformats-officedocument.presentationml.presentation",)),
+    "txt": frozenset(("text/plain",)),
+    "csv": frozenset(("text/csv", "application/csv", "text/x-csv", "application/vnd.ms-excel")),
+    "md": frozenset(("text/markdown", "text/x-markdown", "text/x-web-markdown", "text/plain")),
+    "json": frozenset(("application/json", "text/json")),
+    "html": frozenset(("text/html",)),
+    "zip": frozenset(("application/zip", "application/x-zip-compressed", "application/x-zip")),
+}
+DOCUMENT_EXTENSIONS = frozenset(DOCUMENT_MIME)
+# Executable / script extensions. Anything outside the allowlist is refused anyway; this set also
+# refuses a name that carries one of them anywhere (`report.exe.pdf`).
+DENIED_EXTENSIONS = frozenset((
+    "exe", "bat", "cmd", "sh", "ps1", "msi", "apk", "js", "vbs", "jar", "dll", "scr", "com", "app",
+    "dmg", "reg", "lnk", "php", "py"))
+# MIME -> extension when the name has no extension (the first listed MIME of an extension wins).
+_MIME_TO_EXTENSION = {mime: extension for extension, mimes in reversed(list(DOCUMENT_MIME.items()))
+                      for mime in sorted(mimes)}
+_MIME_TO_EXTENSION["text/plain"] = "txt"
 _SAFE_URL = re.compile(r"https://[A-Za-z0-9._~/%+-]+")
 
 
@@ -56,6 +85,29 @@ def release_tag(case_key: str) -> str:
 
 def asset_name(message_id: int, ordinal: int, extension: str) -> str:
     return f"{int(message_id)}-{int(ordinal)}.{extension}"
+
+
+def document_extension(name, mime) -> str | None:
+    """The allowlisted extension of a document, or None when it must be refused (12.14).
+
+    Only the declared file name and MIME are used; the file itself is never looked at.
+    """
+    mime = mime.split(";")[0].strip().lower() if isinstance(mime, str) else None
+    name = name.strip().rstrip(". ").lower() if isinstance(name, str) else None
+    name = re.split(r"[\\/]", name)[-1] if name else None
+    name_extension = None
+    if name and "." in name:
+        parts = name.split(".")[1:]
+        if any(part.strip() in DENIED_EXTENSIONS for part in parts):
+            return None
+        name_extension = parts[-1].strip()
+    if name_extension is not None:
+        if name_extension not in DOCUMENT_EXTENSIONS:
+            return None
+        if mime is not None and mime not in DOCUMENT_MIME[name_extension]:
+            return None
+        return name_extension
+    return _MIME_TO_EXTENSION.get(mime) if mime else None
 
 
 def sniff_extension(path) -> str | None:
@@ -125,6 +177,8 @@ class AttachmentResult:
     notes: list = field(default_factory=list)    # fixed, code-written Vietnamese notes
     dry_run_count: int = 0                       # images that passed validation in dry-run
     attempted: int = 0                           # images found on candidate messages
+    documents: list = field(default_factory=list)  # [(sender's file name or None, url)] (12.14)
+    documents_dry_run: int = 0                   # documents that passed validation in dry-run
 
 
 class AttachmentProcessor:
@@ -137,19 +191,28 @@ class AttachmentProcessor:
 
     def process(self, case_key, messages, *, live) -> AttachmentResult:
         result = AttachmentResult()
-        candidates = [m for m in messages if m.has_image]
-        if not candidates or self.settings.max_per_case == 0:
+        limits = self.settings
+        candidates = [m for m in messages if m.has_image] if limits.max_per_case > 0 else []
+        documents = ([m for m in messages if m.has_document]
+                     if limits.max_documents_per_case > 0 else [])
+        if not candidates and not documents:
             return result
         result.attempted = len(candidates)
         directory = Path(tempfile.mkdtemp(prefix="tg-triage-"))
         try:
             os.chmod(directory, 0o700)
-            accepted = self._download(case_key, candidates, directory, result)
+            accepted = self._download(case_key, candidates, directory, result) if candidates else []
+            accepted_documents = (self._download_documents(documents, directory, result)
+                                  if documents else [])
             if not live:
                 result.dry_run_count = len(accepted)
+                result.documents_dry_run = len(accepted_documents)
                 return result
+            state = {"ensured": False}   # one `release view/create` per case, images and documents
             if accepted:
-                self._upload(case_key, accepted, result)
+                self._upload(case_key, accepted, result, state)
+            if accepted_documents:
+                self._upload_documents(case_key, accepted_documents, result, state)
         finally:
             # Temporary files never outlive the case, whether or not upload worked.
             shutil.rmtree(directory, ignore_errors=True)
@@ -204,12 +267,12 @@ class AttachmentProcessor:
                 result.notes.append(f"Ảnh bị bỏ qua ({count} ảnh): {reason}")
         return accepted
 
-    def _upload(self, case_key, accepted, result):
+    def _upload(self, case_key, accepted, result, state=None):
         tag = release_tag(case_key)
+        state = state if state is not None else {"ensured": False}
         try:
             if self.uploader is None:
                 raise UploaderUnavailable("no uploader configured")
-            ensured = False
             for index, (message, path) in enumerate(accepted):
                 call_id = self.store.reserve_attachment_call(
                     case_key, message.message_id, path.name, self.settings.max_per_hour)
@@ -218,9 +281,9 @@ class AttachmentProcessor:
                         f"Ảnh bị bỏ qua ({len(accepted) - index} ảnh): đạt giới hạn ảnh mỗi giờ")
                     break
                 try:
-                    if not ensured:
+                    if not state["ensured"]:
                         self.uploader.ensure_release(tag)
-                        ensured = True
+                        state["ensured"] = True
                     url = self.uploader.upload(tag, path, path.name)
                     if not isinstance(url, str) or not _SAFE_URL.fullmatch(url):
                         raise UploadError("invalid asset url")
@@ -234,3 +297,96 @@ class AttachmentProcessor:
             LOG.warning("Attachment upload failed images=%s exception=%s",
                         len(accepted), type(error).__name__)
             result.notes.append(f"Ảnh đính kèm không tải được: {type(error).__name__}")
+
+    def _download_documents(self, candidates, directory, result):
+        """Validate each document by name, MIME and size only (12.14); count every refusal by reason.
+
+        Nothing here opens, unpacks or executes a file, and nothing logs a file name.
+        """
+        limits = self.settings
+        skipped = {"type": 0, "limit": 0, "size": 0, "failed": 0}
+        accepted, failure = [], None
+        for message in candidates:
+            extension = document_extension(message.document_name, message.document_mime)
+            if extension is None:
+                skipped["type"] += 1
+                continue
+            if len(accepted) >= limits.max_documents_per_case:
+                skipped["limit"] += 1
+                continue
+            if message.document_size is not None and message.document_size > limits.max_bytes:
+                skipped["size"] += 1
+                continue
+            try:
+                if self.downloader is None:
+                    raise DownloaderUnavailable("no downloader configured")
+                workdir = directory / str(message.message_id)
+                workdir.mkdir(mode=0o700, exist_ok=True)
+                downloaded = self.downloader(message.chat_id, message.message_id, workdir)
+                if downloaded is None:
+                    skipped["failed"] += 1
+                    continue
+                downloaded = Path(downloaded)
+                # Telethon names the file after the sender's file name: it must have stayed inside
+                # the private work directory and be a plain file (no link, no directory).
+                resolved = downloaded.resolve()
+                if (downloaded.is_symlink() or not resolved.is_file()
+                        or workdir.resolve() not in resolved.parents):
+                    raise AttachmentError("downloaded file outside work directory")
+                if downloaded.stat().st_size > limits.max_bytes:
+                    skipped["size"] += 1
+                    continue
+                final = directory / asset_name(message.message_id, len(accepted) + 1, extension)
+                os.replace(downloaded, final)
+            except Exception as error:
+                failure = failure or type(error).__name__
+                LOG.warning("Document download failed message_id=%s exception=%s",
+                            message.message_id, type(error).__name__)
+                skipped["failed"] += 1
+                continue
+            accepted.append((message, final))
+        LOG.info("Documents found=%s accepted=%s rejected_type=%s rejected_limit=%s rejected_size=%s "
+                 "failed=%s", len(candidates), len(accepted), skipped["type"], skipped["limit"],
+                 skipped["size"], skipped["failed"])
+        if failure:
+            result.notes.append(f"Tài liệu không tải được: {failure}")
+        reasons = (("type", "định dạng không được nhận"), ("limit", "vượt giới hạn số tài liệu"),
+                   ("size", "quá dung lượng cho phép"))
+        for key, reason in reasons:
+            if skipped[key]:
+                result.notes.append(f"Tài liệu bị bỏ qua ({skipped[key]} tài liệu): {reason}")
+        if skipped["failed"] and not failure:
+            result.notes.append(f"Tài liệu bị bỏ qua ({skipped['failed']} tài liệu): không tải được")
+        return accepted
+
+    def _upload_documents(self, case_key, accepted, result, state):
+        """Same mechanism as images: one `gh release upload` per file, counted in max_per_hour;
+        the first failure stops the batch and is never retried."""
+        tag = release_tag(case_key)
+        try:
+            if self.uploader is None:
+                raise UploaderUnavailable("no uploader configured")
+            for index, (message, path) in enumerate(accepted):
+                call_id = self.store.reserve_attachment_call(
+                    case_key, message.message_id, path.name, self.settings.max_per_hour)
+                if call_id is None:
+                    result.notes.append(
+                        f"Tài liệu bị bỏ qua ({len(accepted) - index} tài liệu): "
+                        "đạt giới hạn tệp đính kèm mỗi giờ")
+                    break
+                try:
+                    if not state["ensured"]:
+                        self.uploader.ensure_release(tag)
+                        state["ensured"] = True
+                    url = self.uploader.upload(tag, path, path.name)
+                    if not isinstance(url, str) or not _SAFE_URL.fullmatch(url):
+                        raise UploadError("invalid asset url")
+                except Exception:
+                    self.store.finish_attachment(call_id, "error")
+                    raise
+                self.store.finish_attachment(call_id, "uploaded")
+                result.documents.append((message.document_name, url))
+        except Exception as error:
+            LOG.warning("Document upload failed documents=%s exception=%s",
+                        len(accepted), type(error).__name__)
+            result.notes.append(f"Tài liệu không tải được: {type(error).__name__}")

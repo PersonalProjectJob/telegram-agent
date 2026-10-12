@@ -167,7 +167,8 @@ max_messages_per_window = 40  # 12.9: longest chunk of a closed window sent to t
 [attachments]
 max_bytes = 10485760       # per image
 max_per_case = 5           # 0 = never download or upload images
-max_per_hour = 60          # counts each `gh release upload`, separate from [github] max_issues_per_hour
+max_per_hour = 60          # counts each `gh release upload` (images and documents), separate from [github] max_issues_per_hour
+max_documents_per_case = 5 # 12.14: documents per issue, counted separately from images; 0 = documents off
 ```
 
 Missing sections use these defaults; a value of the wrong type or a negative value is a
@@ -310,6 +311,41 @@ it is created with a note line instead, and nothing is retried. Dry-run download
 validates but never calls `gh` or creates a release, and logs `attachments_dry_run=N`.
 Temporary files are always deleted. Issues are still created through the REST API.
 
+### Document attachments (Assistant definition 12.14)
+
+Besides images, a file the sender attached (`event.message.document`) is downloaded into the same 0700
+temporary directory, uploaded with the same `gh release upload` to release `attachments-<group key>`,
+and listed in the issue under **Tài liệu đính kèm** as plain links (`- [name](asset URL)`), never embedded
+with `![]`. The decision uses the declared file name, the declared MIME and the size only: a file is never
+opened, unpacked, scanned or executed, and its content decides nothing.
+
+- **Accepted types, fixed in code (not configurable):** `pdf`, `docx`, `xlsx`, `pptx`, `txt`, `csv`, `md`,
+  `json`, `html`, `zip` (`DOCUMENT_MIME` in `attachments.py`). The extension is read from the file name or,
+  when the name has none, from the MIME. Markdown also accepts Telegram's observed
+  `text/x-web-markdown` alias. When both exist they must agree (`a.pdf` with an `exe` or `html`
+  MIME is refused): the MIME alone is never trusted. A client that reports a generic
+  `application/octet-stream` for a file is therefore refused too.
+- **Refused without downloading:** `exe`, `bat`, `cmd`, `sh`, `ps1`, `msi`, `apk`, `js`, `vbs`, `jar`, `dll`,
+  `scr`, `com`, `app`, `dmg`, `reg`, `lnk`, `php`, `py` (also when one appears anywhere in the name, as in
+  `report.exe.pdf`) and every other extension, MIME or file without a usable name or MIME.
+  Audio, video, voice, GIF, sticker and image files are not documents (images keep the image path above).
+- **Limits:** `[attachments] max_bytes` per file (default 10 MB; checked on the declared size and again on
+  the downloaded file) and `max_documents_per_case` documents per issue (default 5, **separate** from the
+  image `max_per_case`). Extra or oversized documents are dropped and the issue says so. Each upload counts
+  in `max_per_hour` together with images.
+- **Names:** the release asset is `<message_id>-<n>.<extension>` (extension from the allowlist, never from the
+  original name). The original name is shown only as link text, after `sanitize`, e-mail/phone redaction
+  and removal of Markdown characters (`document_label` in `issue_format.py`), at most 80 characters.
+- **Failure:** a download or upload error adds `Tài liệu không tải được: <exception class>` to the issue,
+  is attempted once (the first upload failure stops the documents of that group) and never loses the issue.
+- **Dry-run:** downloads and validates, never calls `gh` or creates a release; logs `documents_dry_run=N`.
+- **Logs:** counts and reason codes only, e.g. `Documents found=3 accepted=2 rejected_type=1 rejected_limit=0
+  rejected_size=0 failed=0` and `documents=N documents_dry_run=N` in the decision line; never file names or
+  content.
+
+Privacy: documents can hold more sensitive data than screenshots, and they become release assets of the target
+repository. Confirm the target repository is private before going live, or set `max_documents_per_case = 0`.
+
 Privacy: images become release assets of the target repository. Do not enable them
 until the target repository is private (or set `max_per_case = 0`), and verify once that
 release assets render inline for repository members.
@@ -371,3 +407,28 @@ https://docs.telethon.dev/en/stable/basic/signing-in.html#using-mtproto-proxies
 The adapter also checks the installed client's signature before constructing it.
 Real Telegram reconnect/catch-up, Ollama classification quality, GitHub delivery,
 Linux permissions and systemd behavior must be verified later on the ThinkPad.
+
+
+### Group clarification and owner support
+
+In live mode, each topic that ends as `needs_human` receives a plain-text reply to its first
+Telegram message, asking the sender or Owner to confirm/add information in that same group.
+The reply includes up to three short, sanitized missing-information questions when available
+and a GitHub issue link built from the configured repository and positive issue number.
+GitHub creation failures (including an ambiguous result) ask Owner to check the repository
+before any manual retry. The issue hourly limit also produces a group notice. Normal successful
+issues, noise, chat and pending review produce no textual notice; dry-run never sends one.
+
+Notices use the existing Telegram client and event loop, with a 15-second transport timeout.
+Private chats and broadcast channels are rejected by the notice sender. SQLite `group_notices`
+reserves each chat/first-message pair before the send attempt, then records `sent` plus the
+outgoing Telegram message id, or `failed`. `reserved`, `sent` and `failed` are never automatically
+resent, including after restart; a crash or uncertain transport result can therefore leave a
+notice missing. This intentionally favors avoiding duplicate replies.
+
+Reply directly to the clarification message to associate your answer with the original group:
+ingress maps that outgoing message id back to the original first message in the same chat.
+Replies backed by a sent clarification always remain followups of their original topic, even
+when the case is full or ended in an error/rate limit. Other replies retain existing case rules. Owner answers
+are stored for review; they do not approve an issue, retry GitHub, change `needs_human`, or post
+a GitHub comment automatically. Outgoing messages remain excluded from listener ingress.

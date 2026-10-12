@@ -69,11 +69,16 @@ class AggregationConfig:
 
 @dataclass(frozen=True)
 class AttachmentsConfig:
-    """Image attachment limits (Assistant definition 12.8). max_per_case = 0 disables images."""
+    """Attachment limits (Assistant definition 12.8 images, 12.14 documents).
+
+    max_per_case = 0 disables images; max_documents_per_case = 0 disables documents. The two
+    per-case counts are separate. max_bytes applies to each file; max_per_hour counts every
+    `gh release upload` (images and documents together)."""
 
     max_bytes: int = 10 * 1024 * 1024
     max_per_case: int = 5
     max_per_hour: int = 60
+    max_documents_per_case: int = 5
 
 
 @dataclass(frozen=True)
@@ -250,7 +255,9 @@ def load_config(path, environ=None) -> Config:
         _integer(attachments_table.get("max_per_case", default_attachments.max_per_case),
                  "attachments.max_per_case", 0),
         _integer(attachments_table.get("max_per_hour", default_attachments.max_per_hour),
-                 "attachments.max_per_hour", 0))
+                 "attachments.max_per_hour", 0),
+        _integer(attachments_table.get("max_documents_per_case", default_attachments.max_documents_per_case),
+                 "attachments.max_documents_per_case", 0))
     return Config(
         mode=mode,
         telegram=TelegramConfig(

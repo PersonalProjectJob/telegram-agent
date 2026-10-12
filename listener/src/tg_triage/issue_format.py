@@ -148,19 +148,55 @@ def _first_message_line(messages) -> str:
     return ""
 
 
+MAX_DOCUMENT_LABEL = 80
+_RAW_NAME_LIMIT = 1000
+_PLACEHOLDER = re.compile("(" + re.escape(EMAIL_PLACEHOLDER) + "|" + re.escape(PHONE_PLACEHOLDER) + ")")
+_MARKDOWN_MARKS = re.compile(r"[\\`*_\[\]()!|<>~#{}^]")
+
+
+def document_label(name, fallback="tài liệu") -> str:
+    """Display text of a document link (12.14): the sender's file name made safe for Markdown.
+
+    The name goes through `sanitize` and `redact` (e-mail and phone are replaced) and then every
+    Markdown-significant character is dropped (an underscore becomes a space), so the name cannot
+    open a link, an image, emphasis or HTML. Placeholders keep their brackets, escaped. The result
+    is capped at MAX_DOCUMENT_LABEL characters without cutting a placeholder; empty becomes `fallback`.
+    """
+    base = re.split(r"[\\/]", name)[-1] if isinstance(name, str) else ""
+    cleaned = redact(sanitize(base[:_RAW_NAME_LIMIT], inline=True))
+    pieces = []
+    for part in _PLACEHOLDER.split(cleaned):
+        if part in (EMAIL_PLACEHOLDER, PHONE_PLACEHOLDER):
+            pieces.append(part.replace("[", "\\[").replace("]", "\\]"))
+        else:
+            pieces.append(_MARKDOWN_MARKS.sub(lambda mark: " " if mark[0] == "_" else "", part))
+    label, used = "", 0
+    for piece in pieces:
+        if used + len(piece) > MAX_DOCUMENT_LABEL:
+            if not piece.startswith("\\["):
+                label += piece[:MAX_DOCUMENT_LABEL - used]
+            break
+        label += piece
+        used += len(piece)
+    label = " ".join(label.split())
+    return label or fallback
+
+
 def _clean_line(value) -> str:
     return redact(sanitize(value, inline=True)) if isinstance(value, str) else ""
 
 
 def format_issue(message: IncomingMessage, classification: Classification | None,
                  tier: str, needs_human: bool, model: str = "qwen3.5:9b", *,
-                 case_messages=None, key_message_ids=None, images=(), notes=(),
+                 case_messages=None, key_message_ids=None, images=(), documents=(), notes=(),
                  clarify=None, text=None, max_quoted=None) -> Issue:
     """Render one issue. `message` is the case's (or topic group's) first message.
 
     All `case_messages` are quoted in time order; `key_message_ids` (Assistant
     definition 12.2) only marks the messages the model called key. `images` ((alt, url) pairs) and `notes` are written by code
-    (12.8), never taken from the model, so they do not pass through `sanitize`.
+    (12.8), never taken from the model, so they do not pass through `sanitize`. `documents` ((file name,
+    url) pairs, 12.14) are listed as plain links, never embedded; the sender's file name is cleaned by
+    `document_label` here, so no caller can pass a raw name into the body.
 
     Topic groups (12.9): `clarify` (None = single-case rendering) is the group's missing_info and
     adds the "Cần làm rõ" section; `text` is the model's (title, summary) for a needs-human group;
@@ -237,6 +273,10 @@ def format_issue(message: IncomingMessage, classification: Classification | None
     extras = []
     if images:
         extras.append("**Ảnh đính kèm**\n" + "\n".join(f"![{alt}]({url})" for alt, url in images))
+    if documents:
+        links = [f"- [{document_label(name, f'tài liệu {index}')}]({url})"
+                 for index, (name, url) in enumerate(documents, 1)]
+        extras.append("**Tài liệu đính kèm**\n" + "\n".join(links))
     if notes:
         extras.append("\n".join(" ".join(note.split()) for note in notes))
     body = (

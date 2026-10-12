@@ -52,10 +52,18 @@ max_messages_per_window = 40
 # Image attachments (Assistant definition 12.8): JPG/PNG/WEBP are uploaded with `gh release upload`
 # to release tag attachments-<case_key>. Images land in the target repo (public repo = public
 # images): confirm the repo is private first. max_per_case = 0 turns image upload off.
+# Documents (Assistant definition 12.14) use the same release and the same max_bytes (per file) and
+# max_per_hour (every `gh release upload`, images and documents together). max_documents_per_case is
+# counted separately from max_per_case; 0 turns document upload off.
+# The accepted document types are FIXED IN CODE and cannot be configured here: pdf, docx, xlsx, pptx,
+# txt, csv, md, json, html, zip. The type is read from the file name and the MIME, and both must agree.
+# Executable/script types (exe, bat, cmd, sh, ps1, msi, apk, js, vbs, jar, dll, scr, com, app, dmg,
+# reg, lnk, php, py) and every other extension are refused. Files are never opened or run.
 [attachments]
 max_bytes = 10485760
 max_per_case = 5
 max_per_hour = 60
+max_documents_per_case = 5
 
 [storage]
 db_path = "/var/lib/agentfleet/tg/triage.sqlite3"

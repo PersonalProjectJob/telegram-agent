@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import reactions, rules
+from . import group_notices, reactions, rules
 from .models import IncomingMessage
 from .config import ConfigError
 
@@ -93,6 +93,38 @@ def make_reaction_sender(client):
     return send
 
 
+def make_group_notice_sender(client):
+    """Use the existing client only, and refuse private chats and broadcast channels."""
+    async def send(chat_id, message_id, text):
+        from telethon.tl import types
+
+        entity = await client.get_entity(chat_id)
+        if not (isinstance(entity, types.Chat) or getattr(entity, "megagroup", False) is True):
+            return False
+        sent = await client.send_message(entity, text, reply_to=message_id, parse_mode=None,
+                                         link_preview=False)
+        notice_id = getattr(sent, "id", None)
+        return notice_id if type(notice_id) is int and notice_id > 0 else None
+
+    return send
+
+
+def make_notice_sender(send, loop, *, timeout=group_notices.TIMEOUT_SECONDS):
+    """Run a bounded send on Telethon's loop from the pipeline worker thread, once."""
+    def sender(chat_id, message_id, text):
+        future = asyncio.run_coroutine_threadsafe(
+            asyncio.wait_for(send(chat_id, message_id, text), timeout), loop)
+        try:
+            return future.result(timeout + 2)
+        except Exception as error:
+            future.cancel()
+            LOG.warning("Group notice transport failed chat_id=%s message_id=%s exception=%s",
+                        chat_id, message_id, type(error).__name__)
+            return False
+
+    return sender
+
+
 def _reply_target(event):
     """Message id this event replies to, ignoring the implicit forum-topic root."""
     target = getattr(event, "reply_to_msg_id", None)
@@ -126,6 +158,30 @@ def _image_info(event):
     if getattr(event, "document", None) and isinstance(mime, str) and mime.startswith("image/"):
         return True, size, mime
     return False, None, None
+
+
+def _document_info(event):
+    """(has_document, declared size, mime, file name) for a file the sender attached (12.14).
+
+    Photos, image files (the image path), stickers and audio/video/voice/GIF media are not documents.
+    Only declared metadata is read: the file is neither opened nor inspected here.
+    """
+    if not getattr(event, "document", None):
+        return False, None, None, None
+    if getattr(event, "photo", None):
+        return False, None, None, None
+    for kind in ("sticker", "voice", "audio", "video", "video_note", "gif"):
+        if getattr(event, kind, None):
+            return False, None, None, None
+    file = getattr(event, "file", None)
+    mime = getattr(file, "mime_type", None)
+    mime = mime if isinstance(mime, str) else None
+    if mime is not None and mime.lower().startswith("image/"):
+        return False, None, None, None   # an image file is handled by `_image_info`
+    size = getattr(file, "size", None)
+    name = getattr(file, "name", None)
+    return (True, size if type(size) is int else None, mime,
+            name if isinstance(name, str) else None)
 
 
 def make_media_downloader(client, loop, *, timeout=DOWNLOAD_TIMEOUT_SECONDS):
@@ -165,13 +221,19 @@ async def enqueue_event(event, queue, chat_ids, store, *, stop=None, react=None,
         return
     # Persist content before metadata lookups, which may await network responses.
     has_image, image_size, image_mime = _image_info(event)
+    has_document, document_size, document_mime, document_name = _document_info(event)
     sender_id = getattr(event, "sender_id", None)
+    reply_to_id = _reply_target(event)
+    if reply_to_id is not None:
+        reply_to_id = store.group_notice_reply_target(event.chat_id, reply_to_id)
     message = IncomingMessage(event.chat_id, event.id, event.date or datetime.now(timezone.utc),
                               "không rõ người gửi", event.raw_text or "",
                               sender_id=sender_id if type(sender_id) is int else None,
-                              reply_to_id=_reply_target(event),
+                              reply_to_id=reply_to_id,
                               is_forward=getattr(event, "fwd_from", None) is not None,
                               has_image=has_image, image_size=image_size, image_mime=image_mime,
+                              has_document=has_document, document_size=document_size,
+                              document_mime=document_mime, document_name=document_name,
                               mentions_listener=_mentions_listener(event))
     if not store.enqueue(message):
         return
@@ -303,16 +365,21 @@ async def _react_issue_created(pipeline, react, decision, chat_id, message_id):
                 _mark(store, chat_id, target, "ok")
 
 
-async def worker(queue, pipeline, stop=None, *, react=None):
+async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None):
     close_due = getattr(pipeline, "close_due_cases", None)
     interval = SWEEP_SECONDS if close_due is not None else None
     attach = getattr(pipeline, "set_reactor", None)
     if attach is not None and react is not None:
         # 12.10: the pipeline thread asks the event loop for the heart that precedes each issue.
         attach(make_reactor(react, asyncio.get_running_loop()))
+    attach_notice = getattr(pipeline, "set_notice_sender", None)
+    if attach_notice is not None and notice_send is not None:
+        attach_notice(make_notice_sender(notice_send, asyncio.get_running_loop()))
     try:
         await _work(queue, pipeline, stop, react, interval)
     finally:
+        if attach_notice is not None and notice_send is not None:
+            attach_notice(None)
         if attach is not None and react is not None:
             attach(None)
 
@@ -460,7 +527,8 @@ async def run(config, pipeline):
         attach_downloader = getattr(pipeline, "set_media_downloader", None)
         if attach_downloader is not None:
             attach_downloader(make_media_downloader(client, asyncio.get_running_loop()))
-        worker_task = asyncio.create_task(worker(queue, pipeline, stop, react=react))
+        worker_task = asyncio.create_task(worker(queue, pipeline, stop, react=react,
+                                                       notice_send=make_group_notice_sender(client)))
         tasks = [worker_task, asyncio.create_task(heartbeat(queue)),
                  asyncio.create_task(client.run_until_disconnected()), stopper]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

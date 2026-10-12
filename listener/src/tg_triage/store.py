@@ -36,6 +36,9 @@ CASE_MESSAGE_COLUMNS = (
     ("case_key", "TEXT"), ("sender_id", "INTEGER"), ("reply_to_id", "INTEGER"),
     ("is_forward", "INTEGER NOT NULL DEFAULT 0"), ("has_image", "INTEGER NOT NULL DEFAULT 0"),
     ("image_size", "INTEGER"), ("image_mime", "TEXT"),
+    # 12.14: document attachment metadata (declared size / MIME / file name; never the content).
+    ("has_document", "INTEGER NOT NULL DEFAULT 0"), ("document_size", "INTEGER"),
+    ("document_mime", "TEXT"), ("document_name", "TEXT"),
     # 12.9: the topic group a message belongs to, and why a message was set aside as noise.
     ("group_key", "TEXT"), ("reason", "TEXT"),
     # 12.10: reactions this account already placed on the message (heart on receipt / OK hand
@@ -183,6 +186,14 @@ class Store:
                     asset_name TEXT NOT NULL, status TEXT NOT NULL, called_at TEXT NOT NULL
                 )
             """)
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS group_notices (
+                    chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL, status TEXT NOT NULL,
+                    reserved_at TEXT NOT NULL, finished_at TEXT, notice_message_id INTEGER,
+                    PRIMARY KEY (chat_id, message_id)
+                )
+            """)
             if "github_called_at" not in existing:
                 # Old ambiguous errors may already have created issues. Reserve
                 # conservatively during the migration rather than reset quota.
@@ -207,6 +218,34 @@ class Store:
                     UPDATE messages SET decision='queued' WHERE decision='classifying' AND attempts < 2
                 """)
 
+    def reserve_group_notice(self, chat_id, message_id, kind):
+        """Commit the only transport attempt before sending; reserved is never retried."""
+        with self._lock, self.connection:
+            cursor = self.connection.execute("""
+                INSERT OR IGNORE INTO group_notices
+                (chat_id, message_id, kind, status, reserved_at)
+                VALUES (?, ?, ?, 'reserved', ?)
+            """, (chat_id, message_id, kind, self.clock().isoformat()))
+            return cursor.rowcount == 1
+
+    def finish_group_notice(self, chat_id, message_id, status, notice_message_id=None):
+        if status not in ("sent", "failed"):
+            raise ValueError("Invalid group notice status")
+        with self._lock, self.connection:
+            self.connection.execute("""
+                UPDATE group_notices SET status=?, finished_at=?, notice_message_id=?
+                WHERE chat_id=? AND message_id=? AND status='reserved'
+            """, (status, self.clock().isoformat(), notice_message_id, chat_id, message_id))
+
+    def group_notice_reply_target(self, chat_id, reply_to_id):
+        """Map replies to our outgoing notice back to the group's original message."""
+        with self._lock:
+            row = self.connection.execute("""
+                SELECT message_id FROM group_notices
+                WHERE chat_id=? AND notice_message_id=? AND status='sent'
+            """, (chat_id, reply_to_id)).fetchone()
+            return row[0] if row else reply_to_id
+
     def close(self):
         with self._lock:
             self.connection.close()
@@ -227,13 +266,14 @@ class Store:
                 INSERT OR IGNORE INTO messages
                 (chat_id, message_id, received_at, sender_name, text, tier, decision, chat_username,
                  sender_id, reply_to_id, is_forward, has_image, image_size, image_mime,
-                 mentions_listener)
-                VALUES (?, ?, ?, ?, ?, 'none', 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+                 mentions_listener, has_document, document_size, document_mime, document_name)
+                VALUES (?, ?, ?, ?, ?, 'none', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (message.chat_id, message.message_id, message.received_at.isoformat(),
                   message.sender_name, message.text, message.chat_username,
                   message.sender_id, message.reply_to_id, int(bool(message.is_forward)),
                   int(bool(message.has_image)), message.image_size, message.image_mime,
-                  int(bool(message.mentions_listener))))
+                  int(bool(message.mentions_listener)), int(bool(message.has_document)),
+                  message.document_size, message.document_mime, message.document_name))
             return cursor.rowcount == 1
 
     def reaction_done(self, chat_id, message_id, kind) -> bool:
@@ -502,6 +542,9 @@ class Store:
                 case = self._case(row["case_key"])
                 return CaseAssignment(case["case_key"], case["first_message_id"], False,
                                       row["decision"] == "followup", case["message_count"])
+            notice = self._notice_followup(message)
+            if notice is not None:
+                return notice
             target = self._find_case(message, window_minutes, max_messages, is_command)
             created = target is None
             if created:
@@ -544,6 +587,41 @@ class Store:
                 """, (target["case_key"], message.chat_id, message.message_id))
             return CaseAssignment(target["case_key"], target["first_message_id"], created,
                                   followup, target["message_count"] + 1)
+
+    def _notice_followup(self, message):
+        """A reply to a sent clarification is support data, never a fresh GitHub attempt.
+
+        Ingress maps outgoing notice ids to original ids. Accept either form here so
+        durable replay and direct store callers retain the same safe association.
+        This explicit notice-backed path bypasses normal case size/status gates.
+        """
+        if message.reply_to_id is None:
+            return None
+        source = self.connection.execute("""
+            SELECT m.case_key, m.group_key, m.issue_number, m.issue_url,
+                   c.first_message_id, c.message_count, c.last_message_at
+            FROM group_notices n
+            JOIN messages m ON m.chat_id=n.chat_id AND m.message_id=n.message_id
+            JOIN cases c ON c.case_key=m.case_key
+            WHERE n.chat_id=? AND n.status='sent'
+              AND (n.message_id=? OR n.notice_message_id=?)
+        """, (message.chat_id, message.reply_to_id, message.reply_to_id)).fetchone()
+        if source is None:
+            return None
+        last = max(_aware(datetime.fromisoformat(source["last_message_at"])),
+                   _aware(message.received_at))
+        self.connection.execute("""
+            UPDATE cases SET message_count=message_count+1, last_message_at=?
+            WHERE case_key=?
+        """, (last.isoformat(), source["case_key"]))
+        self.connection.execute("""
+            UPDATE messages SET case_key=?, group_key=?, decision='followup', tier='none',
+                                issue_number=?, issue_url=?, processed_at=?
+            WHERE chat_id=? AND message_id=?
+        """, (source["case_key"], source["group_key"], source["issue_number"], source["issue_url"],
+              self.clock().isoformat(), message.chat_id, message.message_id))
+        return CaseAssignment(source["case_key"], source["first_message_id"], False, True,
+                              source["message_count"] + 1)
 
     def _find_case(self, message, window_minutes, max_messages, is_command):
         if message.reply_to_id is not None:
@@ -773,4 +851,6 @@ def _to_message(row):
         sender_id=row["sender_id"], reply_to_id=row["reply_to_id"],
         is_forward=bool(row["is_forward"]), has_image=bool(row["has_image"]),
         image_size=row["image_size"], image_mime=row["image_mime"],
-        mentions_listener=bool(row["mentions_listener"]))
+        mentions_listener=bool(row["mentions_listener"]),
+        has_document=bool(row["has_document"]), document_size=row["document_size"],
+        document_mime=row["document_mime"], document_name=row["document_name"])
