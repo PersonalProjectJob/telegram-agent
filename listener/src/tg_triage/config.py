@@ -1,0 +1,269 @@
+"""Load TOML settings and credentials without exposing input in errors."""
+
+import math
+import os
+import re
+import tomllib
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit
+
+
+class ConfigError(ValueError):
+    """A configuration error with a safe, field-specific message."""
+
+
+@dataclass(frozen=True)
+class ProxyConfig:
+    host: str = ""
+    port: int = 443
+    secret: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True)
+class TelegramConfig:
+    session_path: str
+    chat_ids: tuple[int, ...]
+    min_text_length: int
+    proxy: ProxyConfig
+    listen_all_groups: bool = False
+
+
+@dataclass(frozen=True)
+class OllamaConfig:
+    url: str
+    model: str
+    timeout_seconds: float
+    confidence_threshold: float
+
+
+SUPPORTED_PROVIDERS = ("ollama",)
+# Assistant definition 12.12: reasoning is slow on CPU, so the default wait is generous.
+DEFAULT_MODEL_TIMEOUT_SECONDS = 600.0
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Which model judges chat / bug / task / feedback (12.12), behind a provider layer.
+
+    `name` and `timeout_seconds` are the values the provider uses; `[ollama]` keeps the server
+    address and the confidence threshold. Only provider "ollama" exists today.
+    """
+
+    provider: str = "ollama"
+    name: str = "qwen3.5:9b"
+    think: bool = True
+    timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
+
+
+@dataclass(frozen=True)
+class AggregationConfig:
+    """Case grouping (Assistant definition 12.1). window_minutes = 0 disables waiting."""
+
+    window_minutes: int = 15
+    max_messages_per_case: int = 20
+    # 12.9: a closed window longer than this is split into consecutive chunks by time and each
+    # chunk is sent to the model and verified on its own.
+    max_messages_per_window: int = 40
+
+
+@dataclass(frozen=True)
+class AttachmentsConfig:
+    """Image attachment limits (Assistant definition 12.8). max_per_case = 0 disables images."""
+
+    max_bytes: int = 10 * 1024 * 1024
+    max_per_case: int = 5
+    max_per_hour: int = 60
+
+
+@dataclass(frozen=True)
+class Config:
+    mode: str
+    telegram: TelegramConfig
+    ollama: OllamaConfig
+    max_issues_per_hour: int
+    db_path: str
+    api_id: int
+    api_hash: str = field(repr=False)
+    gh_token: str = field(default="", repr=False)
+    gh_repo: str = ""
+    aggregation: AggregationConfig = field(default_factory=AggregationConfig)
+    attachments: AttachmentsConfig = field(default_factory=AttachmentsConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+
+    def redacted(self) -> dict:
+        result = asdict(self)
+        for key in ("api_hash", "gh_token"):
+            result[key] = {"length": len(getattr(self, key))}
+        result["telegram"]["proxy"]["secret"] = {
+            "length": len(self.telegram.proxy.secret)
+        }
+        return result
+
+
+def _table(data, name):
+    value = data.get(name)
+    if not isinstance(value, dict):
+        raise ConfigError(f"{name}: required TOML table")
+    return value
+
+
+def _string(data, key, name, *, empty=False, default=None):
+    value = data.get(key, default)
+    if not isinstance(value, str) or (not empty and not value.strip()):
+        raise ConfigError(f"{name}: expected {'a string' if empty else 'a non-empty string'}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ConfigError(f"{name}: control characters are not allowed")
+    return value
+
+
+def _integer(value, name, minimum=1):
+    if type(value) is not int or value < minimum:
+        raise ConfigError(f"{name}: expected integer >= {minimum}")
+    return value
+
+
+def _optional_table(data, name):
+    """An absent section means defaults; a present non-table value is an error."""
+    if name not in data:
+        return {}
+    value = data[name]
+    if not isinstance(value, dict):
+        raise ConfigError(f"{name}: expected TOML table")
+    return value
+
+
+def _number(value, name, minimum, maximum=None):
+    if (type(value) not in (int, float) or not math.isfinite(value)
+            or value < minimum or (maximum is not None and value > maximum)):
+        raise ConfigError(f"{name}: expected finite number in the allowed range")
+    return float(value)
+
+
+def check_provider(provider):
+    """Fixed messages only: the configured value is never echoed back."""
+    if provider == "claude":
+        raise ConfigError("model.provider: 'claude' chưa hỗ trợ, hiện chỉ có 'ollama'")
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ConfigError("model.provider: expected 'ollama'")
+    return provider
+
+
+def _read_toml(path):
+    try:
+        with Path(path).open("rb") as stream:
+            data = tomllib.load(stream)
+    except (OSError, ValueError):
+        raise ConfigError("config: cannot read valid TOML") from None
+    return data
+
+
+def load_database_path(path):
+    """CSV export requires only storage settings, never account credentials."""
+    return _string(_table(_read_toml(path), "storage"), "db_path", "storage.db_path")
+
+
+def load_config(path, environ=None) -> Config:
+    env = os.environ if environ is None else environ
+    data = _read_toml(path)
+    mode = env.get("TG_TRIAGE_MODE") or data.get("mode")
+    if mode not in ("dry-run", "live"):
+        raise ConfigError("mode: expected dry-run or live")
+    try:
+        api_id = int(env.get("TG_API_ID", ""))
+    except (ValueError, TypeError):
+        raise ConfigError("TG_API_ID: required positive integer") from None
+    if api_id <= 0:
+        raise ConfigError("TG_API_ID: required positive integer")
+    api_hash_value = env.get("TG_API_HASH", "")
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", api_hash_value):
+        raise ConfigError("TG_API_HASH: required 32 hexadecimal characters")
+    gh_token = env.get("GH_TOKEN", "")
+    gh_repo = env.get("GH_REPO", "")
+    if mode == "live" and not gh_token.strip():
+        raise ConfigError("GH_TOKEN: required in live mode")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in gh_token):
+        raise ConfigError("GH_TOKEN: control characters are not allowed")
+    if (mode == "live" or gh_repo) and not re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", gh_repo):
+        raise ConfigError("GH_REPO: expected owner/repo")
+    tg = _table(data, "telegram")
+    listen_all = tg.get("listen_all_groups", False)
+    if type(listen_all) is not bool:
+        raise ConfigError("telegram.listen_all_groups: expected true or false")
+    chats = tg.get("chat_ids", [] if listen_all else None)
+    if listen_all:
+        if chats != []:
+            raise ConfigError("telegram.chat_ids: must be empty or absent when listen_all_groups is true")
+    elif (not isinstance(chats, list) or not chats
+            or any(type(chat) is not int or chat >= 0 for chat in chats)):
+        raise ConfigError("telegram.chat_ids: required non-empty list of group IDs")
+    proxy = tg.get("proxy", {})
+    if not isinstance(proxy, dict):
+        raise ConfigError("telegram.proxy: expected TOML table")
+    host = _string(proxy, "host", "telegram.proxy.host", empty=True, default="")
+    port = _integer(proxy.get("port", 443), "telegram.proxy.port")
+    if port > 65535:
+        raise ConfigError("telegram.proxy.port: expected port <= 65535")
+    if "secret" in proxy:
+        raise ConfigError("telegram.proxy.secret: forbidden in TOML; use TG_PROXY_SECRET")
+    secret = _string(env, "TG_PROXY_SECRET", "TG_PROXY_SECRET", empty=not bool(host), default="")
+    ollama = _table(data, "ollama")
+    url = _string(ollama, "url", "ollama.url")
+    try:
+        parsed = urlsplit(url)
+        valid_url = (parsed.scheme in ("http", "https") and bool(parsed.hostname)
+                     and parsed.username is None and parsed.password is None
+                     and not parsed.query and not parsed.fragment)
+        parsed.port
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        raise ConfigError("ollama.url: expected HTTP(S) URL without credentials")
+    model_table = _optional_table(data, "model")
+    provider = check_provider(_string(model_table, "provider", "model.provider", default="ollama"))
+    think = model_table.get("think", True)
+    if type(think) is not bool:
+        raise ConfigError("model.think: expected true or false")
+    # [model] wins over the older [ollama] model / timeout_seconds keys, which stay accepted.
+    model_name = (_string(model_table, "model", "model.model") if "model" in model_table
+                  else _string(ollama, "model", "ollama.model"))
+    if "timeout_seconds" in model_table:
+        timeout = _number(model_table["timeout_seconds"], "model.timeout_seconds", 0.001)
+    elif "timeout_seconds" in ollama:
+        timeout = _number(ollama["timeout_seconds"], "ollama.timeout_seconds", 0.001)
+    else:
+        timeout = DEFAULT_MODEL_TIMEOUT_SECONDS
+    aggregation_table = _optional_table(data, "aggregation")
+    attachments_table = _optional_table(data, "attachments")
+    default_aggregation, default_attachments = AggregationConfig(), AttachmentsConfig()
+    aggregation = AggregationConfig(
+        _integer(aggregation_table.get("window_minutes", default_aggregation.window_minutes),
+                 "aggregation.window_minutes", 0),
+        _integer(aggregation_table.get("max_messages_per_case", default_aggregation.max_messages_per_case),
+                 "aggregation.max_messages_per_case"),
+        _integer(aggregation_table.get("max_messages_per_window", default_aggregation.max_messages_per_window),
+                 "aggregation.max_messages_per_window"))
+    attachments = AttachmentsConfig(
+        _integer(attachments_table.get("max_bytes", default_attachments.max_bytes),
+                 "attachments.max_bytes"),
+        _integer(attachments_table.get("max_per_case", default_attachments.max_per_case),
+                 "attachments.max_per_case", 0),
+        _integer(attachments_table.get("max_per_hour", default_attachments.max_per_hour),
+                 "attachments.max_per_hour", 0))
+    return Config(
+        mode=mode,
+        telegram=TelegramConfig(
+            _string(tg, "session_path", "telegram.session_path"), tuple(chats),
+            _integer(tg.get("min_text_length"), "telegram.min_text_length", 0),
+            ProxyConfig(host, port, secret), listen_all),
+        ollama=OllamaConfig(
+            url.rstrip("/"), model_name, timeout,
+            _number(ollama.get("confidence_threshold"), "ollama.confidence_threshold", 0, 1)),
+        max_issues_per_hour=_integer(
+            _table(data, "github").get("max_issues_per_hour"), "github.max_issues_per_hour"),
+        db_path=_string(_table(data, "storage"), "db_path", "storage.db_path"),
+        api_id=api_id, api_hash=api_hash_value, gh_token=gh_token, gh_repo=gh_repo,
+        aggregation=aggregation, attachments=attachments,
+        model=ModelConfig(provider, model_name, think, timeout),
+    )

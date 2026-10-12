@@ -1,0 +1,85 @@
+"""Command-line entry point. Diagnostics never reflect raw exceptions."""
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+
+from .attachments import GhCliUploader
+from .classifier import load_prompt
+from .config import ConfigError, load_config, load_database_path
+from .github_issues import GitHubIssues
+from .pipeline import Pipeline
+from .provider import build_provider
+from .store import Store
+from .runtime import AlreadyRunning, ProcessLock, validate_data_directories
+
+
+def main(argv=None) -> int:
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(prog="tg-triage")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("run", "login", "export-csv", "check-config"):
+        command = commands.add_parser(name)
+        command.add_argument("--config", default="/etc/tg-triage/listener.toml")
+        if name == "export-csv":
+            command.add_argument("--out", required=True)
+            command.add_argument("--db")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        if args.command == "export-csv":
+            db_path = args.db or load_database_path(args.config)
+            store = Store(db_path, read_only=True)
+            try:
+                store.export_csv(args.out)
+            finally:
+                store.close()
+            return 0
+        config = load_config(args.config)
+        if args.command == "check-config":
+            print(json.dumps(config.redacted(), ensure_ascii=False, indent=2))
+        elif args.command == "login":
+            validate_data_directories(config)
+            from .telegram_io import login
+            with ProcessLock(Path(config.db_path).parent):
+                asyncio.run(login(config))
+        else:
+            validate_data_directories(config)
+            # Lock before opening the store: a second process must not recover
+            # another process's in-flight records.
+            with ProcessLock(Path(config.db_path).parent):
+                store = Store(config.db_path)
+                try:
+                    from .telegram_io import run
+                    # Fail at startup, not per window, when the topics prompt is not installed.
+                    classifier = build_provider(config, topics_prompt=load_prompt("topics.md"))
+                    github = (GitHubIssues(config.gh_repo, config.gh_token)
+                              if config.mode == "live" else None)
+                    # Issues use REST; image uploads use the gh CLI (Assistant definition 12.8).
+                    uploader = (GhCliUploader(config.gh_repo, config.gh_token)
+                                if config.mode == "live" else None)
+                    asyncio.run(run(config, Pipeline(config, store, classifier, github,
+                                                     uploader=uploader)))
+                finally:
+                    store.close()
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except ConfigError as error:
+        print(f"ConfigError: {error}", file=sys.stderr)
+        return 2
+    except AlreadyRunning:
+        print("AlreadyRunning: Telegram triage service is already running", file=sys.stderr)
+        return 3
+    except Exception as error:
+        logging.getLogger(__name__).error("Command failed exception=%s", type(error).__name__)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
