@@ -160,7 +160,7 @@ columns with safe `ALTER`, so older databases still open).
 
 ```toml
 [aggregation]
-window_minutes = 15        # 0 = no waiting: every message is its own case
+window_minutes = 2        # 0 = no waiting: every message is its own case
 max_messages_per_case = 20
 max_messages_per_window = 40  # 12.9: longest chunk of a closed window sent to the model at once
 
@@ -176,7 +176,7 @@ Missing sections use these defaults; a value of the wrong type or a negative val
 
 - A reply joins the case of the replied message (even after the window). Otherwise a message
   joins the latest case of the chat whose last message is within `window_minutes` and that
-  has the same sender (any sender for a forwarded message). A full case accepts nothing more.
+  has the same sender (including a forwarded message). A full case accepts nothing more.
 - A command (`/bug`, `/feature`, `/question`, `/task`, `/feedback`) never waits: its case is analyzed when
   it arrives, together with the earlier messages already gathered. Other cases are analyzed by
   the worker (every 15 s) once `last message + window_minutes` has passed.
@@ -190,6 +190,24 @@ Missing sections use these defaults; a value of the wrong type or a negative val
   new case. Posting a follow-up comment on the issue is not implemented yet.
 - After a restart, a case that was `analyzing` and already called GitHub becomes `error`
   and is never sent again; one that had not called GitHub is analyzed again (at most twice).
+
+Images and a request sent before or after them share the same two-minute inactivity window,
+including forwarded images from the same sender. Explicit replies take precedence. The Ollama
+provider receives validated JPG/PNG/WEBP bytes on individual user messages carrying their exact
+Telegram message IDs; both topic splitting and legacy case analysis support images. The same
+private files are reused for issue uploads and deleted after processing, including failures.
+Documents remain attachments only and are never sent to the model. Existing attachment size/count
+limits also bound vision. No OCR library or extra model request is required.
+
+A photo with no request stays `pending_review` without creating an issue. Missing/invalid media,
+vision failure or an ambiguous image/request partition produces one `needs_human` issue and an
+owner clarification in the group. An image-bearing case exceeding the model chunk limit also
+asks for clarification rather than separating an image from its request. Text-only commands still
+run immediately; a command cannot wait for an image that has not arrived yet. Model latency is
+additional to the two-minute wait and depends on the host; benchmark the actual Ollama model.
+When vision returns one valid whole-case `needs_human` group, its sanitized wording and specific
+questions are preserved in the issue and owner notice. Failed/incomplete partitions use a fixed
+clarification instead; the code never forces an uncertain visual judgment into a confident ticket.
 
 ### Topic split (Assistant definition 12.9)
 

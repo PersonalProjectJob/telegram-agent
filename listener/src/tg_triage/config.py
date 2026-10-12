@@ -60,7 +60,7 @@ class ModelConfig:
 class AggregationConfig:
     """Case grouping (Assistant definition 12.1). window_minutes = 0 disables waiting."""
 
-    window_minutes: int = 15
+    window_minutes: int = 2
     max_messages_per_case: int = 20
     # 12.9: a closed window longer than this is split into consecutive chunks by time and each
     # chunk is sent to the model and verified on its own.

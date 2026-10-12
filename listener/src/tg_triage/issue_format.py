@@ -46,6 +46,9 @@ _EMAIL = re.compile(
 # +84 901 234 567, 090-123-4567; also 090.123.4567. Longer digit runs (ids, card numbers) are left alone.
 _PHONE = re.compile(
     r"(?<![\d+])(?:\+?\d(?:[ \-]?\d){8,10}|\d{3,4}\.\d{3}\.\d{3,4})(?!\d)(?!:\d)")
+# US/Canada numbers with parentheses, including sanitize's Markdown escapes.
+_PAREN_PHONE = re.compile(
+    r"(?<![\w+])(?:\+?1[ .\-]*)?\\?\(\d{3}\\?\)[ .\-]*\d{3}[ .\-]*\d{4}(?!\d)")
 _DATE_LIKE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}-\d{2,4}")
 
 
@@ -56,6 +59,7 @@ def _phone(match) -> str:
 def redact(value: str) -> str:
     """Replace e-mail addresses and phone numbers in already-sanitized text."""
     value = _EMAIL.sub(EMAIL_PLACEHOLDER, value)
+    value = _PAREN_PHONE.sub(PHONE_PLACEHOLDER, value)
     return _PHONE.sub(_phone, value)
 
 

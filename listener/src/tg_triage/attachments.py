@@ -189,7 +189,11 @@ class AttachmentProcessor:
         self.downloader = downloader
         self.uploader = uploader
 
-    def process(self, case_key, messages, *, live) -> AttachmentResult:
+    def prepare_images(self, case_key, messages):
+        """Private, bounded batch shared by vision and upload; caller must close it."""
+        return PreparedImages(self, case_key, messages)
+
+    def process(self, case_key, messages, *, live, prepared=None) -> AttachmentResult:
         result = AttachmentResult()
         limits = self.settings
         candidates = [m for m in messages if m.has_image] if limits.max_per_case > 0 else []
@@ -201,7 +205,12 @@ class AttachmentProcessor:
         directory = Path(tempfile.mkdtemp(prefix="tg-triage-"))
         try:
             os.chmod(directory, 0o700)
-            accepted = self._download(case_key, candidates, directory, result) if candidates else []
+            if prepared is None:
+                accepted = self._download(case_key, candidates, directory, result) if candidates else []
+            else:
+                ids = {m.message_id for m in candidates}
+                accepted = [(m, p) for m, p in prepared.accepted if m.message_id in ids]
+                result.notes.extend(prepared.result.notes)
             accepted_documents = (self._download_documents(documents, directory, result)
                                   if documents else [])
             if not live:
@@ -244,6 +253,10 @@ class AttachmentProcessor:
                     skipped["không tải được"] += 1
                     continue
                 downloaded = Path(downloaded)
+                resolved = downloaded.resolve()
+                if (downloaded.is_symlink() or not resolved.is_file()
+                        or workdir.resolve() not in resolved.parents):
+                    raise AttachmentError("downloaded image outside work directory")
                 if downloaded.stat().st_size > limits.max_bytes:
                     skipped["quá dung lượng cho phép"] += 1
                     continue
@@ -390,3 +403,26 @@ class AttachmentProcessor:
             LOG.warning("Document upload failed documents=%s exception=%s",
                         len(accepted), type(error).__name__)
             result.notes.append(f"Tài liệu không tải được: {type(error).__name__}")
+
+
+class PreparedImages:
+    """Only validated image files; no documents, persisted bytes, or logged content."""
+
+    def __init__(self, processor, case_key, messages):
+        self.directory = Path(tempfile.mkdtemp(prefix="tg-triage-vision-"))
+        self.result = AttachmentResult()
+        self.accepted = []
+        try:
+            os.chmod(self.directory, 0o700)
+            candidates = [m for m in messages if m.has_image]
+            self.accepted = processor._download(case_key, candidates, self.directory, self.result)
+        except BaseException:
+            self.close()
+            raise
+
+    def for_messages(self, messages):
+        ids = {(m.chat_id, m.message_id) for m in messages}
+        return {m.message_id: p for m, p in self.accepted if (m.chat_id, m.message_id) in ids}
+
+    def close(self):
+        shutil.rmtree(self.directory, ignore_errors=True)

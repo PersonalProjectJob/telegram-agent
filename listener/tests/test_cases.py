@@ -76,13 +76,13 @@ class GroupingTests(CaseBase):
         pipeline.process(message(2, "login app nexora hai", received_at=at(1)))
         self.assertNotEqual(self.case_key(1), self.case_key(2))
 
-    def test_forward_groups_by_chat_and_time_not_by_sender(self):
+    def test_forward_requires_same_sender_or_explicit_reply(self):
         pipeline = self.pipeline()
         pipeline.process(msg(1, 0, sender=1))
         pipeline.process(msg(2, 5, sender=2, is_forward=True))
         pipeline.process(msg(3, 6, sender=3, is_forward=True, chat_id=-777))
         pipeline.process(msg(4, 40, sender=4, is_forward=True))
-        self.assertEqual(self.case_key(2), self.case_key(1))
+        self.assertNotEqual(self.case_key(2), self.case_key(1))
         self.assertEqual(self.store.get(-777, 3)["case_key"], "-777:3")
         self.assertEqual(self.case_key(4), f"{CHAT}:4")
 
