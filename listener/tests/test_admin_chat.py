@@ -95,28 +95,38 @@ class AdminTalkPipelineTests(TopicBase):
         tally = self.reconciliation()
         self.assertEqual((tally["received"], tally["issue"], tally["chat"], tally["balanced"]), (3, 0, 3, 1))
 
-    def test_c_untagged_admin_group_is_never_a_ticket_even_when_the_model_says_ticket(self):
-        # Was: the keyword guard filed it as chat. Now the model is wrong on purpose and the no-tag
-        # lock is what holds: pending_review, no GitHub call.
-        for verdict in ("ticket", "needs_human"):
-            with self.subTest(verdict=verdict):
-                self.setUp()
-                self.run_window(ADMIN, (topic([1, 2, 3], verdict=verdict, type="task", category="task",
-                                              title="Mời thành viên"),), tagged=())
-                self.assertEqual(self.github.calls, [])
-                self.assertEqual(self.decisions(1, 2, 3), ["pending_review"] * 3)
-                self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["no_direct_call"] * 3)
-                self.assertEqual(self.numbers(1, 2, 3), [None] * 3)
-                tally = self.reconciliation()
-                self.assertEqual((tally["received"], tally["issue"], tally["pending_review"],
-                                  tally["balanced"]), (3, 0, 3, 1))
+    # 12.13 changed this test (was: "untagged admin group is never a ticket even when the model says
+    # ticket"). The no-tag lock is gone: a confident task is now an automatic issue (`auto_task`);
+    # only a model that is NOT sure (needs_human) waits in pending_review (`pending_untagged`).
+    def test_c_untagged_admin_group_the_model_calls_a_task_is_an_automatic_issue(self):
+        self.run_window(ADMIN, (topic([1, 2, 3], verdict="ticket", type="task", category="task",
+                                      title="Mời thành viên"),), tagged=())
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.decisions(1, 2, 3), ["issue"] * 3)
+        self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["auto_task"] * 3)
+
+    def test_c_untagged_admin_group_the_model_is_not_sure_about_waits_for_review(self):
+        self.run_window(ADMIN, (topic([1, 2, 3], verdict="needs_human", type="task", category="task",
+                                      title="Mời thành viên"),), tagged=())
+        self.assertEqual(self.github.calls, [])
+        self.assertEqual(self.decisions(1, 2, 3), ["pending_review"] * 3)
+        self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["pending_untagged"] * 3)
+        self.assertEqual(self.numbers(1, 2, 3), [None] * 3)
+        tally = self.reconciliation()
+        self.assertEqual((tally["received"], tally["issue"], tally["pending_review"],
+                          tally["balanced"]), (3, 0, 3, 1))
 
     def test_c_the_original_text_stays_in_the_database(self):
         self.run_window(ADMIN, (topic([1, 2, 3], type="task"),), tagged=())
         self.assertEqual(self.row(2)["text"], EMAIL)
 
-    def test_c_dry_run_also_sets_it_aside(self):
+    # 12.13 changed this test (was: dry-run also sets an untagged task aside). A confident task is an issue
+    # without a tag, so dry-run records dry_run_issue; an unsure one still waits for review.
+    def test_c_dry_run_records_the_automatic_issue_and_the_unsure_group(self):
         self.run_window(ADMIN, (topic([1, 2, 3], type="task"),), mode="dry-run", tagged=())
+        self.assertEqual(self.decisions(1, 2, 3), ["dry_run_issue"] * 3)
+        self.setUp()
+        self.run_window(ADMIN, (topic([1, 2, 3], type="task", confidence=0.4),), mode="dry-run", tagged=())
         self.assertEqual(self.decisions(1, 2, 3), ["pending_review"] * 3)
 
     def test_d_a_bug_command_with_an_email_is_still_a_ticket_with_the_email_hidden(self):
@@ -173,11 +183,18 @@ class AdminTalkSingleCaseModelTests(CaseBase):
         self.clock.advance(60)
         pipeline.close_due_cases()
 
-    def test_untagged_admin_window_a_case_model_calls_a_ticket_creates_no_issue(self):
+    # 12.13 changed this test (was: an untagged window a case model calls a ticket creates no issue).
+    def test_untagged_admin_window_a_case_model_calls_a_task_is_an_automatic_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1, 2, 3], type="task")))
         self.close(pipeline, ADMIN, tagged=False)
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("issue", "auto_task"))
+
+    def test_untagged_admin_window_a_case_model_unsure_waits_for_review(self):
+        pipeline = self.pipeline(model=FakeCaseModel(ticket([1, 2, 3], type="task", confidence=0.4)))
+        self.close(pipeline, ADMIN, tagged=False)
         self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "no_direct_call"))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
 
     def test_bug_window_from_a_case_model_still_creates_an_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1, 2])))

@@ -346,6 +346,41 @@ Trước khi viết code cho §12, chế độ đang chạy trên ThinkPad (`liv
 
 **Kiểm thử:** model giả trả đúng/sai theo kịch bản; kiểm chứng chốt an toàn (không tag ⇒ không ticket, dù model nói bug); đối soát; migration; config provider.
 
+### 12.13 Bug tự động thành issue; tin có `/` hoặc `@` bắt buộc thành issue (bổ sung v1.0.9)
+
+**Thay đổi so với §12.11:** cổng "phải có tag" không áp dụng cho bug. Điều kiện tạo issue trở thành:
+
+1. **Bắt buộc tạo issue** (bỏ qua phán đoán của model khi thuộc hai trường hợp này, trừ chặn an toàn ở bước 4):
+   - Nhóm có lệnh bắt đầu bằng `/` (`/bug`, `/task`, `/feedback`, `/feature`, `/question`).
+   - Nhóm có tin **@tag** tài khoản listener (`mentions_listener`).
+2. **Tự động tạo issue** khi model phân loại nhóm là **bug** với độ tin cậy đạt ngưỡng, dù không có tag.
+3. **Task và feedback** đều tạo issue, không cần tag. Thay thế quy tắc "task và feedback không tag vào chờ xem" của bản trước.
+4. **Câu hỏi (`question`) không tạo issue**, kể cả khi có tag hoặc lệnh `/question`. Chat (`category = chat`) cũng không tạo ticket.
+4. **Chặn an toàn vẫn giữ:** nhóm không có nội dung sản phẩm (chỉ là lời xác nhận hoặc chỉ có email/số điện thoại) không thành issue, kể cả khi có `/` hoặc `@`, trừ khi là lệnh tường minh có nội dung. Email và số điện thoại vẫn được che trước khi đăng.
+
+**Ghi chú:** ký tự `@` trong email không được tính là tag. Chỉ tính `mentions_listener` từ Telegram (`event.message.mentioned`) và ký tự `/` ở đầu lệnh.
+
+**Trạng thái:** bug, task, feedback (gồm `/feature`) thành `issue` (hoặc `dry_run_issue` ở dry-run) và được ❤️/👌 như §12.10. `question`, `chat` và noise không tạo issue. `pending_review` chỉ dùng khi model không chắc (confidence dưới ngưỡng) và không có tag/lệnh.
+
+**Kiểm thử:** bug không tag ⇒ issue; task không tag ⇒ pending_review; tin có tag bất kỳ loại đã phân loại ⇒ issue; lệnh `/` ⇒ issue; email có `@` không tag ⇒ không được tính là tag; chặn an toàn vẫn hoạt động.
+
+### 12.14 Tài liệu đính kèm (bổ sung v1.0.10)
+
+**Yêu cầu:** ngoài ảnh, tin Telegram có file tài liệu (PDF, DOCX, XLSX, TXT, CSV…) cũng được đưa vào issue.
+
+**Cách làm:** tương tự ảnh (§12.8): tải qua Telethon vào thư mục tạm quyền 700, đẩy lên release `attachments-<group_key>` bằng `gh release upload`, rồi đưa đường dẫn vào mục "Tài liệu đính kèm" trong issue dưới dạng liên kết (không nhúng).
+
+**Giới hạn và an toàn:**
+- Danh sách định dạng được phép cố định trong code (ví dụ PDF, DOCX, XLSX, PPTX, TXT, CSV, JSON, ZIP). Không nhận file thực thi hay script (`.exe`, `.bat`, `.sh`, `.apk`, `.msi`, `.js`, `.ps1`, và các loại tương tự). Không mở, không chạy file.
+- Kích thước tối đa mỗi file: 10 MB (cấu hình được). Tối đa 5 file mỗi nhóm.
+- Tên file trên release được đặt lại an toàn (`<message_id>-<số thứ tự>.<đuôi>`), không dùng tên gốc.
+- Tên file gốc có thể hiển thị trong issue, nhưng đã làm sạch (không chứa ký tự Markdown, không có email hay số điện thoại).
+- Tài liệu có thể chứa thông tin nhạy cảm hơn ảnh. Vì repo test đang công khai, mục này cần xác nhận trước khi bật live.
+
+**Dry-run:** tải và kiểm tra, không đẩy lên GitHub. Ghi `documents_dry_run = N` trong log.
+
+**Kiểm thử:** file đúng định dạng được nhận; file thực thi bị từ chối; quá kích thước bị bỏ qua và ghi chú; tên file gốc không đi vào tên release; dry-run không gọi `gh`.
+
 ## 13. Cách triển khai (khi được duyệt)
 
 Thứ tự thực hiện: (a) chuyển `dry-run` ngay; (b) viết §12 và §3–§9 bằng `/agent-team`; (c) unittest và `compileall`; (d) dry-run trên các tin thật trong nhóm thử, kiểm tra từng case gom đúng; (e) chuyển live.

@@ -8,20 +8,23 @@ holding only its own messages. The model only returns JSON; this module checks t
 and decides every action. A classifier without `split_topics` (the single-message fakes) is
 treated as one group per window.
 
-Assistant definition 12.11: a group becomes an issue only when it was called directly (a message of
-the group tags the listener account, or is a /command) AND its category is bug, task or feedback with
-enough confidence. Everything else is kept in SQLite without calling GitHub or reacting: `chat`
-(talk with no work for the team), `pending_review` (looks like work but was not called directly, or
-the model was unsure) or `noise` (no letter at all, or an empty command).
+Assistant definition 12.13 (replaces the "must be tagged" gate of 12.11): a group becomes an issue when
+  - it has a /command with content, or a message that tags the listener (forced, whatever the model said:
+    a model "chat" or "unsure" gives a needs-human issue), or
+  - the model calls it bug, task or feedback (feature included) with enough confidence (automatic).
+Everything else is kept in SQLite without calling GitHub or reacting: `chat` (talk with no work for the
+team; a question, even tagged or /question, is `chat`), `pending_review` (the model was not sure and
+nobody tagged or used a command) or `noise` (no letter at all, an empty command, or the safety block:
+a group that is only contact data or an acknowledgement).
 
 Assistant definition 12.12: the model (with reasoning) judges chat / bug / task / feedback, and no
-keyword list decides it. Code keeps only the safety locks, in `_safety`: no direct call => never an
-issue whatever the model said; explicit commands stay tickets (a model "chat" sends them to
-review, logged); e-mail / phone redaction in the issue (issue_format); the hourly issue limit;
-the full reconciliation.
+keyword list decides it. Code keeps only the safety locks, in `_safety`: a structural block for groups
+with no product content, the question rule, e-mail / phone redaction in the issue (issue_format), the
+hourly issue limit and the full reconciliation. Every group logs a `reason` code (never any content).
 """
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -45,10 +48,23 @@ _RANK = {"error": 0, "rate_limited": 1, "issue": 2, "dry_run_issue": 2,
 # 12.11: groups kept in SQLite only; no GitHub call, no reaction.
 NO_TICKET_ACTIONS = ("noise", "chat", "pending_review")
 # Why a group did not become a ticket (stored per message, exported in the CSV `reason` column).
-REASON_NO_DIRECT_CALL = "no_direct_call"      # looks like work but nobody tagged the listener
+REASON_PENDING_UNTAGGED = "pending_untagged"  # the model was not sure, nobody tagged or used a command
 REASON_MODEL_CHAT = "model_chat"              # model: plain talk, nothing for the team
-REASON_DIRECT_CHAT = "direct_call_chat"       # called directly but the model said chat
-REASON_MODEL_UNSURE = "model_unsure"          # called directly but verdict/confidence not usable
+REASON_FORCED_COMMAND = "forced_command"      # a /command with content: always an issue (12.13)
+REASON_FORCED_MENTION = "forced_mention"      # a message tags the listener: always an issue (12.13)
+REASON_AUTO_PREFIX = "auto_"                  # auto_bug | auto_task | auto_feedback: confident model verdict
+REASON_QUESTION = "question_no_ticket"        # a question (model or /question) is chat, never a ticket
+REASON_SAFETY_BLOCK = "safety_block"          # only contact data / acknowledgement / empty command
+REASON_MODEL_NOISE = "model_noise"
+# A group the model called chat is an acknowledgement when its own words (command, e-mail, phone and
+# @handle removed) number at most this many; a few more are allowed when contact data is shared.
+MAX_ACK_WORDS = 3
+MAX_CONTACT_WORDS = 5
+
+_EMAIL = re.compile(r"[\w.+%\-]+@[\w\-]+(?:\.[\w\-]+)+")
+_PHONE = re.compile(r"\+?\d[\d .\-]{6,}\d")
+_HANDLE = re.compile(r"@\w+")
+_WORD = re.compile(r"\w*[^\W\d_]\w*")
 
 
 @dataclass
@@ -144,9 +160,41 @@ def _chat_value(wording):
         (wording.summary or "").strip() or "Trao đổi giữa thành viên, không có việc cho team", "low")
 
 
-def _is_direct(messages) -> bool:
-    """12.11: a message tags the listener (Telegram's own flag) or is a /command."""
-    return any(item.mentions_listener or rules.is_command(item.text) for item in messages)
+def _has_content_command(messages) -> bool:
+    """12.13: a /command that carries content. An empty command has nothing to ticket."""
+    for item in messages:
+        if rules.is_command(item.text):
+            rule = rules.evaluate(item.text)
+            if rule is not None and rule.type != "noise":
+                return True
+    return False
+
+
+def _tagged(messages) -> bool:
+    """12.13: Telegram's own `mentioned` flag only. An "@" inside an e-mail or in the text is never a tag."""
+    return any(item.mentions_listener for item in messages)
+
+
+def _own_words(text) -> int:
+    """Words of a message that are not a command prefix, e-mail, phone number or @handle (structure only)."""
+    text = text or ""
+    match = rules.COMMAND.match(text)
+    if match:
+        text = text[match.end():]
+    for pattern in (_EMAIL, _PHONE, _HANDLE):
+        text = pattern.sub(" ", text)
+    return len(_WORD.findall(text))
+
+
+def _contentless(messages, model_chat) -> bool:
+    """12.13 safety block: no product content. Only contact data (no word left once e-mail, phone and
+    @handle are removed), or, when the model itself called the group chat, a few words of acknowledgement.
+    A photo is content. No keyword list is involved."""
+    if any(item.has_image for item in messages):
+        return False
+    total = sum(_own_words(item.text) for item in messages)
+    shares_contact = any(_EMAIL.search(item.text or "") or _PHONE.search(item.text or "") for item in messages)
+    return total == 0 or (model_chat and total <= (MAX_CONTACT_WORDS if shares_contact else MAX_ACK_WORDS))
 
 
 def _legacy_analysis(value, messages):
@@ -370,34 +418,62 @@ class Pipeline:
         return replace(plan, action=action, classification=value, typed=False, text=None,
                        reason=reason, key_ids=(), chat_hint=False, clarify=())
 
-    def _safety(self, plan):
-        """12.12: the safety locks, applied after the model whatever it said. No keyword decides.
+    def _auto_reason(self, plan):
+        """`auto_<type>` when the model itself is sure enough that the group is a bug, task or feedback."""
+        value = plan.classification
+        if (plan.action == "issue" or (plan.action == "needs_human" and plan.typed)) and (
+                isinstance(value, Classification) and value.is_valid() and value.type in TICKET_CATEGORIES
+                and value.confidence >= self.config.ollama.confidence_threshold):
+            return REASON_AUTO_PREFIX + value.type
+        return None
 
-        1. Not called directly (no message tags the listener, no /command): never an issue. A group
-           the model called chat is `chat`; anything else (the model saw work) is `pending_review`.
-        2. Called directly (tag or /command): kept as a ticket unless the model called it chat (a
-           command included: shown in the log, never dropped) or was not sure => pending_review.
-        Every outcome except a ticket keeps all messages in SQLite and is reconciled.
+    def _safety(self, plan):
+        """12.13: the decision after the model, whatever it said. No keyword decides.
+
+        1. Tier-1 noise (no letter, empty command) stays noise.
+        2. A question (model type `question`, or /question) is `chat`: never a ticket, even tagged.
+        3. A /command with content, or a tag from Telegram, FORCES an issue (`forced_command`,
+           `forced_mention`): a model "chat" / "unsure" gives a `needs-human` issue, never a drop.
+        4. Otherwise the model decides: bug / task / feedback with enough confidence is an issue
+           (`auto_*`); chat is `chat`; anything unsure is `pending_review` (`pending_untagged`).
+        5. Safety block: a group with no product content (only contact data or an acknowledgement) is
+           never an issue, even forced, unless it holds an explicit command with content.
+        Every outcome except an issue keeps all messages in SQLite and is reconciled.
         """
         value = plan.classification
-        if isinstance(value, Classification) and value.type in ("feature", "question"):
-            # 12.11: feature and question are feedback; the label and the stored type say so.
-            plan = replace(plan, classification=replace(value, type="feedback"))
+        if isinstance(value, Classification) and value.type == "feature":
+            # 12.11: feature is feedback; the label and the stored type say so.
+            value = replace(value, type="feedback")
+            plan = replace(plan, classification=value)
+        explicit = _has_content_command(plan.messages)
+        forced = REASON_FORCED_COMMAND if explicit else (
+            REASON_FORCED_MENTION if _tagged(plan.messages) else None)
         if plan.action == "noise":
             return plan
-        if not _is_direct(plan.messages):
-            if plan.action == "chat" or plan.chat_hint:
+        if (isinstance(value, Classification) and value.type == "question"
+                and plan.action in ("issue", "needs_human")):
+            return self._set_aside(plan, "chat", REASON_QUESTION, replace(value, type="chat"))
+        model_chat = plan.action == "chat" or plan.chat_hint
+        if forced is None:
+            if model_chat:
                 return self._set_aside(plan, "chat", REASON_MODEL_CHAT, plan.classification)
-            return self._set_aside(plan, "pending_review", REASON_NO_DIRECT_CALL, plan.classification)
-        if plan.action == "chat" or plan.chat_hint:
-            LOG.warning("Direct call judged chat, kept for review key=%s messages=%s",
-                        plan.key, len(plan.messages))
-            return self._set_aside(plan, "pending_review", REASON_DIRECT_CHAT, plan.classification)
-        if plan.action == "needs_human" and not (plan.typed or plan.fallback):
-            LOG.warning("Direct call not judged by the model, kept for review key=%s messages=%s",
-                        plan.key, len(plan.messages))
-            return self._set_aside(plan, "pending_review", REASON_MODEL_UNSURE, plan.classification)
-        return plan
+            reason = self._auto_reason(plan)
+            if reason is None:
+                return self._set_aside(plan, "pending_review", REASON_PENDING_UNTAGGED,
+                                       plan.classification)
+            candidate = replace(plan, reason=reason)
+        elif plan.action in ("issue", "needs_human") and (not model_chat or explicit):
+            # An explicit command keeps its own type even when the model said chat.
+            candidate = replace(plan, reason=forced, chat_hint=False)
+        else:
+            # Forced, but the model said chat: the type is untrusted, a human decides.
+            candidate = replace(plan, action="needs_human", classification=None, typed=False, text=None,
+                                clarify=(), key_ids=(), chat_hint=False, fallback=False, reason=forced)
+        if not explicit and _contentless(plan.messages, model_chat):
+            LOG.info("Safety block key=%s messages=%s", plan.key, len(plan.messages))
+            return self._set_aside(plan, "noise", REASON_SAFETY_BLOCK, Classification(
+                "noise", 1.0, "Không cần xử lý", "Tin không cần tạo issue", "low"))
+        return candidate
 
     def _plan(self, case_key, messages, first, cache):
         ordered = sorted(messages, key=_order)
@@ -425,8 +501,9 @@ class Pipeline:
             item = chunk[0]
             rule = self._rule(item, cache)
             if rule is not None and not item.has_image:
-                if rule.type == "noise":   # an empty command on its own
-                    return [self._noise_plan(item, rule, "rule_noise")]
+                if rule.type == "noise":   # an empty command on its own: nothing to ticket
+                    return [self._noise_plan(item, rule, REASON_SAFETY_BLOCK if rules.is_command(item.text)
+                                             else "rule_noise")]
                 if rules.is_command(item.text):   # lone explicit command: no model needed
                     return [self._safety(Plan(f"{item.chat_id}:{item.message_id}", [item], item, "rule",
                                               "issue", rule, typed=True, clarify=()))]
@@ -468,10 +545,12 @@ class Pipeline:
                 # An empty command still fixes the type when the rest of the group is a ticket.
                 group = replace(group, type=rules.COMMAND.match(command.text)[1].lower())
         category = group.category
-        if category in TICKET_CATEGORIES:
+        # 12.13: a question (type `question` under feedback) is kept as such; `_safety` makes it chat.
+        question = group.type == "question" and category in (None, "feedback")
+        if category in TICKET_CATEGORIES and not question:
             group = replace(group, type=category)   # the category is authoritative over `type`
-        elif category is None and group.type in TICKET_TYPES:
-            group = replace(group, type=canonical_category(group.type))   # legacy answer: fold feature/question
+        elif category is None and group.type in TICKET_TYPES and not question:
+            group = replace(group, type=canonical_category(group.type))   # legacy answer: fold feature
         action, value = decide_group(group, self.config.ollama.confidence_threshold)
         if category == "chat" and group.verdict != "needs_human":
             # Plain talk with nothing for the team (12.11); a tag is judged later, by `_safety`.
@@ -485,18 +564,21 @@ class Pipeline:
         unusable = action == "needs_human" and value is None and group.verdict != "needs_human"
         return Plan(key, messages, first, "model", action, value, typed=typed, clarify=missing,
                     text=(group.title, group.summary) if action == "needs_human" else None,
-                    reason="model_noise" if action == "noise" else None, fallback=fallback or unusable,
+                    reason=REASON_MODEL_NOISE if action == "noise" else None, fallback=fallback or unusable,
                     model_reason=group.reason)
 
     def _plan_single(self, case_key, ordered, first, cache):
         """One group for the whole window, for classifiers that cannot split topics."""
         tier, action, classification, analysis = self._judge(ordered, cache)
-        reason = ("rule_noise" if tier == "rule" else "model_noise") if action == "noise" else None
+        reason = (("rule_noise" if tier == "rule" else REASON_MODEL_NOISE) if action == "noise" else None)
+        if reason == "rule_noise" and any(rules.is_command(item.text) for item in ordered):
+            reason = REASON_SAFETY_BLOCK   # an empty command
         category = analysis.category if analysis is not None else None
         chat = category == "chat" and tier == "model"
         if chat and action == "noise":
             action, reason = "chat", REASON_MODEL_CHAT
-        elif category in TICKET_CATEGORIES and tier == "model" and action == "issue":
+        elif (category in TICKET_CATEGORIES and tier == "model" and action == "issue"
+              and not (category == "feedback" and classification.type == "question")):
             classification = replace(classification, type=category)   # category over `type`
         unsure = analysis is not None and (analysis.verdict == "needs_human" or (
             analysis.verdict == "ticket" and analysis.actionable is False))   # a judgment: "not sure"
@@ -518,6 +600,8 @@ class Pipeline:
         result = Decision(plan.action, plan.tier, plan.classification, case_key=case_key,
                           reason=plan.reason, model_reason=plan.model_reason)
         first = plan.first
+        LOG.info("Group decision key=%s action=%s reason=%s messages=%s",
+                 plan.key, plan.action, plan.reason, len(plan.messages))
         if plan.action in NO_TICKET_ACTIONS:
             # noise / chat / pending_review: stored and reconciled, never sent, never reacted to.
             self.store.finish(first, result)

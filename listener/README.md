@@ -105,15 +105,14 @@ timeout_seconds = 600      # reasoning is slow on CPU; measure on the real host 
   `missing_info` (list) and `reason` (a short why). `verdict` is optional: when absent it is derived
   (`chat` = noise, a ticket category = ticket, or needs-human when `actionable` is false).
 - **`reason`** is stored for the reviewer only, in `messages.model_reason` (a new column added with a safe
-  `ALTER`; the older `reason` column keeps the code's own reason such as `no_direct_call`) and exported in the
+  `ALTER`; the older `reason` column keeps the code's own reason such as `pending_untagged`) and exported in the
   `model_reason` column of `export-csv`. It is bounded to 300 characters and is never put in an issue, a log
   line or a GitHub call. The model is told not to put e-mail or phone numbers in it.
-- **Safety locks that stay in code** (`Pipeline._safety`): a group with no message that tags the listener and
-  no explicit command is never an issue, whatever the model says (`pending_review`, or `chat` if the model said
-  chat); an explicit `/bug`, `/task`, `/feedback`, `/feature`, `/question` stays a ticket, and when the model
-  calls it chat it goes to `pending_review` with a WARNING in the log; e-mail and phone numbers are redacted
-  before an issue is rendered; the hourly issue limit; the reconciliation of every message; dry-run never
-  calls GitHub.
+- **Rules that stay in code** (`Pipeline._safety`, see "Issue creation rules (12.13)" below): a `/command`
+  with content or a Telegram tag forces an issue, a confident bug / task / feedback verdict makes one, a
+  question is never a ticket, and a group with no product content is blocked; e-mail and phone numbers are
+  redacted before an issue is rendered; the hourly issue limit; the reconciliation of every message; dry-run
+  never calls GitHub.
 - **Not verified here:** how well qwen3.5:9b reasons over real Vietnamese chat, how long a window takes on the
   ThinkPad CPU with reasoning on (set `timeout_seconds` after measuring), and whether Ollama honours the JSON
   `format` together with `think: true` on the installed version. Only fakes were run.
@@ -129,15 +128,14 @@ Enabling it stores content of every joined group in SQLite; decide deliberately.
 
 The listener never sends text to a group. With its own user account it only adds
 reactions (Assistant definition 12.10, 12.11). Only a group that became a ticket is answered, and
-a ticket needs a direct call (see "Direct call gate" below); chat and pending-review groups get none:
+a ticket follows the issue creation rules below; chat and pending-review groups get none:
 
 - **Heart:** the first message of every group whose verdict is `ticket` or `needs_human` gets a
   heart before its issue is created, in both dry-run and live. A message starting with `/bug`,
   `/feature`, `/question`, `/task` or `/feedback` (including `/bug@BotName`, any case) still gets its
   heart on receipt; the `reacted_received` flag in SQLite records it, so the same message is never
   hearted twice. Commands still decide the issue type; the heart no longer depends on them.
-  (Known gap: a command the model later calls chat ends in `pending_review`, but its receipt heart was
-  already placed when the command arrived.)
+  (A `/question` gets no heart on receipt: it is never a ticket, 12.13.)
 - **OK hand:** in live mode only, after a GitHub issue is created (issue number recorded) the first
   message of that group gets an OK hand (it replaces the heart, since an account holds one reaction
   per message). One per issue group; the `reacted_ok` flag keeps it from repeating, restarts
@@ -217,12 +215,12 @@ decides everything:
   "cảm ơn") are NOT set aside by code since 12.12: the model sees them and decides. A photo or a command is
   never set aside this way, so its image or type still reaches an issue.
 - **Not enough information:** `missing_info` non-empty on a confident ticket, a failed model call, a
-  failed partition or unusable wording gives an issue labelled `needs-human` (when the group is a direct
-  call, see below) with a "Cần làm rõ" section listing the (sanitized, at most 5 x 200 characters)
+  failed partition or unusable wording gives an issue labelled `needs-human` (when the group is tagged or
+  has a command, see below) with a "Cần làm rõ" section listing the (sanitized, at most 5 x 200 characters)
   `missing_info`, or a fixed line when there are none. The type label is kept only when it is trustworthy
   (explicit command, or a confident ticket that still lacks information). A `needs_human` VERDICT or a
-  confidence below `[ollama] confidence_threshold` is the model saying "not sure": since 12.11 that is
-  `pending_review`, not an issue.
+  confidence below `[ollama] confidence_threshold` is the model saying "not sure": since 12.13 that is
+  `pending_review` when nobody tagged or used a command, and a `needs-human` issue when somebody did.
 - **One issue per group, one group per message:** the issue quotes all messages of its group in time
   order (no 10-message cap) and nothing of any other group. Titles, summaries and questions go through the
   same sanitizer as before; model text is never executed or used as a label.
@@ -249,44 +247,52 @@ decides everything:
 - **Logs:** counts only, e.g. `Case split case_key=... groups=2 group_sizes=2,2 noise_groups=0 issues=2
   received=4 accounted=4 failed=0 reconciliation=balanced`; never message text, model output or names.
 
-### Direct call gate (Assistant definition 12.11)
+### Issue creation rules (Assistant definition 12.13, replaces the 12.11 "must be tagged" gate)
 
-Only work for the team becomes an issue: **bug**, **task** or **feedback**. Plain group talk ("invite anh
-vào repo đi" said between members) does not. A group becomes an issue only when BOTH hold:
+Only work for the team becomes an issue: **bug**, **task** or **feedback** (`feature` is feedback). The
+decision is taken after the model has judged each group, in `Pipeline._safety`:
 
-1. **Direct call:** at least one message of the group tags the listener account or is a `/bug`, `/task`,
-   `/feedback` (also `/feature`, `/question`) command. The tag is Telegram's own flag, Telethon
-   `event.message.mentioned`, stored per message in `messages.mentions_listener`; the username is never
-   guessed from the text. Other messages of the same group are still quoted in the issue as context.
-2. **Category:** the model returns `category` in `{bug, task, feedback, chat}` (`type` stays for
-   compatibility; when both are given, `category` wins). `feature` and `question` are folded into
-   `feedback` in code (labels, stored `type`, the `[feedback]` title prefix). A missing or unknown
-   `category` falls back to `type`. A model verdict with confidence below `[ollama] confidence_threshold`
-   is not a ticket.
+1. **Forced issue.** A group with a `/bug`, `/task`, `/feedback` or `/feature` command that has content
+   (`reason = forced_command`), or with a message that tags the listener (`reason = forced_mention`), is always
+   an issue, even when the model said `chat` or was not sure (then it is a `needs-human` issue with no type
+   label). The tag is only Telegram's own flag (`event.message.mentioned`, stored in
+   `messages.mentions_listener`); an `@` typed in the text or inside an e-mail address is NEVER a tag, and `/`
+   counts only as a command at the start of a message.
+2. **Automatic issue.** The model calls the group bug, task or feedback with confidence >=
+   `[ollama] confidence_threshold`: an issue without any tag (`reason = auto_bug`, `auto_task`,
+   `auto_feedback`). Below the threshold, or when the model is unsure (`actionable = false`) or failed, and
+   nobody tagged or used a command, the group is `pending_review` (`reason = pending_untagged`).
+3. **Questions are not tickets.** A model `type = question` under `feedback`, or a `/question` command, is
+   `chat` (`reason = question_no_ticket`) even when tagged: no issue, no reaction (a `/question` is not hearted
+   on receipt either).
+4. **Safety block.** A group with no product content is never an issue, even when tagged, unless it holds a
+   command with content (`reason = safety_block`, decision `noise`). This is structural, with no keyword list:
+   no word is left once e-mail, phone numbers and `@handles` are removed, or the model called the group `chat`
+   and it has at most 3 words of its own (5 when it shares contact data). A photo counts as content. An empty
+   command (`/bug` alone) is also `safety_block`.
+5. A model `chat` without a tag or command is plain `chat` (`reason = model_chat`).
 
-States of a group that is NOT a ticket (all stored in SQLite, none calls GitHub, none gets a reaction,
+Reactions are unchanged (12.10): heart then OK hand only for groups that become issues; `chat`,
+`pending_review` and `noise` get none. Every group logs `Group decision key=... action=... reason=...` (codes
+and counts only, never content).
+
+States of a group that is NOT an issue (all stored in SQLite, none calls GitHub, none gets a reaction,
 all appear in `export-csv`; the `decision`, `type`, `reason` and `mentions_listener` columns tell them apart):
 
 | decision | meaning | typical `reason` |
 |---|---|---|
-| `chat` | talk with no work for the team (the model's verdict) | `model_chat` |
-| `pending_review` | looks like work, but not called directly, or the model was not sure | `no_direct_call`, `model_unsure`, `direct_call_chat` |
-| `noise` | no letter at all, an empty command, or a model noise group | `rule_noise`, `model_noise` |
+| `chat` | talk with no work for the team, or a question | `model_chat`, `question_no_ticket` |
+| `pending_review` | the model was not sure and nobody tagged or used a command | `pending_untagged` |
+| `noise` | no letter at all, an empty command, a model noise group, or the safety block | `rule_noise`, `model_noise`, `safety_block` |
 
-(12.12 removed the `admin_chat` and `contact_or_courtesy` reasons with the keyword guards behind them: a tagged
-group that is only a greeting or an e-mail is now judged by the model; if it calls it chat the group is
-`pending_review` / `direct_call_chat`, never an issue.)
-- **Commands go through the category gate too:** a `/bug`, `/task` or `/feedback` is a direct call and
-  keeps the type the sender chose, but if the model says its category is `chat` the group is stored as
-  `pending_review` (`reason = direct_call_chat`) and a WARNING "Direct call judged chat, kept for review"
-  is logged (ids and counts only). It is never silently dropped and never an issue. A tag that the model
-  calls `chat` is handled the same way. Not called directly, the same `chat` verdict is plain `chat`.
+The category gate of 12.11 (tag AND category) no longer applies; the `no_direct_call`, `model_unsure` and
+`direct_call_chat` reasons are gone (rows written by older versions keep them).
 - **No judgment, no silence:** when the model failed, its partition was unusable or its wording was
-  unusable, a DIRECT call still gets a `needs-human` issue (the tag is the only signal left); without a
-  tag the group is `pending_review`.
+  unusable, a tagged or commanded group still gets a `needs-human` issue; without either it is
+  `pending_review`.
 - **Migration:** `mentions_listener` and the `reconciliation.chat` / `pending_review` columns are added with
   safe `ALTER`; messages stored before the upgrade have no tag recorded (`0`), so an old queued message
-  that is replayed after the upgrade is judged as "not called directly".
+  that is replayed after the upgrade is judged as untagged (a confident bug still becomes an issue).
 - A window closed as `chat` / `pending_review` / `noise` only does not take late messages as follow-ups
   (there is no issue to follow); the next message opens a new window.
 - **Not verified here:** how the real local model assigns `category` (the prompts are updated and carry a

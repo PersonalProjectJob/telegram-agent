@@ -162,7 +162,11 @@ class GroupingTests(CaseBase):
         self.assertEqual(pipeline.process(msg(1, 0, text="ok")).decision, "case_open")
         self.clock.advance(60)
         results = pipeline.close_due_cases()
-        self.assertEqual([item.decision for item in results], ["pending_review"])   # tagged + model chat
+        # 12.13 changed this: tagged + model chat was pending_review. A tag forces an issue, but a lone
+        # "ok" has no product content (<= 3 words, model chat), so the safety block stops it: noise.
+        self.assertEqual([item.decision for item in results], ["noise"])
+        self.assertEqual(self.row(1)["reason"], "safety_block")
+        self.assertEqual(self.github.calls, [])
         self.assertEqual(self.model.calls, [((1,), None)])
 
     # 12.12 changed this test: the closing message is a no-letter message instead of "ok".
@@ -189,22 +193,36 @@ class AnalysisTests(CaseBase):
         self.assertEqual(self.store.get_case(f"{CHAT}:1")["status"], "noise")
         self.assertEqual({self.row(1)["decision"], self.row(2)["decision"]}, {"noise"})
 
-    # 12.11 changed these two (was: a needs-human issue). A model that says "not sure"
-    # (needs_human verdict, or confidence below the threshold) no longer reaches the ticket gate
-    # even on a direct call: the group is kept as `pending_review`, nothing is lost or sent.
-    def test_needs_human_verdict_on_a_direct_call_is_kept_for_review_not_an_issue(self):
+    # 12.13 changed these (12.11 had: a tagged group the model is unsure about waits as `pending_review`).
+    # A tag forces an issue: an unsure model gives a needs-human issue (`forced_mention`). Without a
+    # tag or command the unsure group still waits as `pending_review` (`pending_untagged`).
+    def test_needs_human_verdict_on_a_direct_call_is_a_needs_human_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(CaseAnalysis("needs_human", None, (1,))))
         pipeline.process(msg(1, 0))
         pipeline.process(msg(2, 1))
         results = self.close_all(pipeline)
-        self.assertEqual([item.decision for item in results], ["pending_review"])
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "model_unsure"))
+        self.assertEqual([item.decision for item in results], ["needs_human"])
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "forced_mention"))
         self.assertIsNone(self.row(1)["type"])
 
-    def test_confidence_below_threshold_is_kept_for_review_not_an_issue(self):
+    def test_needs_human_verdict_without_a_tag_is_kept_for_review(self):
+        pipeline = self.pipeline(model=FakeCaseModel(CaseAnalysis("needs_human", None, (1,))))
+        pipeline.process(msg(1, 0, mentions_listener=False))
+        results = self.close_all(pipeline)
+        self.assertEqual([item.decision for item in results], ["pending_review"])
+        self.assertEqual(self.github.calls, [])
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
+
+    def test_confidence_below_threshold_with_a_tag_is_a_needs_human_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1], confidence=0.69)))
         pipeline.process(msg(1, 0))
+        self.assertEqual(self.close_all(pipeline)[0].decision, "needs_human")
+        self.assertEqual(len(self.github.calls), 1)
+
+    def test_confidence_below_threshold_without_a_tag_is_kept_for_review(self):
+        pipeline = self.pipeline(model=FakeCaseModel(ticket([1], confidence=0.69)))
+        pipeline.process(msg(1, 0, mentions_listener=False))
         self.assertEqual(self.close_all(pipeline)[0].decision, "pending_review")
         self.assertEqual(self.github.calls, [])
 
@@ -496,13 +514,13 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual((old["decision"], old["issue_number"], old["case_key"]), ("issue", 9, None))
                 self.assertEqual(store.count_recent_issues(), 1)
                 self.assertEqual([item.message_id for item in store.queued_messages()], [2])
-                # An old queued row can be processed with the new pipeline. 12.11: the old database
-                # never recorded a tag, so the migrated row is "not called directly" and the work-like
-                # text waits in `pending_review` instead of becoming an issue.
+                # An old queued row can be processed with the new pipeline. The old database never
+                # recorded a tag (so the row is untagged). 12.13 changed this test (was: pending_review):
+                # a confident bug needs no tag and becomes an automatic issue.
                 github = FakeGitHub()
                 pipeline = Pipeline(config("live", window=0), store, FakeClassifier(classification()), github)
-                self.assertEqual(pipeline.process(store.queued_messages()[0]).decision, "pending_review")
-                self.assertEqual(github.calls, [])
+                self.assertEqual(pipeline.process(store.queued_messages()[0]).decision, "issue")
+                self.assertEqual(len(github.calls), 1)
                 self.assertEqual(store.get(-5, 2)["case_key"], "-5:2")
             finally:
                 store.close()

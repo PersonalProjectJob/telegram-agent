@@ -13,6 +13,9 @@ host = ""
 port = 443
 
 # Model server address and the confidence below which a model answer is not trusted as a ticket.
+# Issue rules (Assistant definition 12.13): a /command with content or a Telegram tag always makes an issue;
+# a bug, task or feedback the model is sure about (confidence >= the threshold) makes one without any tag;
+# a question (or /question) and plain chat make none; an unsure untagged group waits as pending_review.
 [ollama]
 url = "http://127.0.0.1:11434"
 confidence_threshold = 0.7

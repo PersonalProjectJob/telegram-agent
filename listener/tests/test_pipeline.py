@@ -59,19 +59,25 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(model.calls, [])
         self.assertEqual(github.calls, [])
 
+    # 12.13 changed these two: below the threshold an UNTAGGED message waits for review; a TAGGED one is
+    # forced into a needs-human issue (12.11 had pending_review for both).
     def test_model_noise_requires_confidence_threshold(self):
-        # 12.11: below the threshold a direct call is kept for review (was a needs-human issue).
         for index, (confidence, expected) in enumerate(((0.7, "noise"), (0.69, "pending_review")), 1):
             result = Pipeline(config(), self.store, FakeClassifier(
-                classification(type="noise", confidence=confidence))).process(message(index))
+                classification(type="noise", confidence=confidence))).process(
+                    message(index, mentions_listener=False))
             self.assertEqual(result.decision, expected)
+        low = Pipeline(config(), self.store, FakeClassifier(
+            classification(type="noise", confidence=0.69))).process(message(9))
+        self.assertEqual(low.decision, "dry_run_needs_human")
 
     def test_model_issue_threshold_is_inclusive(self):
-        # 12.11: below the threshold a direct call is kept for review (was a needs-human issue).
         for index, (confidence, expected) in enumerate(((0.7, "dry_run_issue"), (0.69, "pending_review")), 1):
             result = Pipeline(config(), self.store, FakeClassifier(
-                classification(confidence=confidence))).process(message(index))
+                classification(confidence=confidence))).process(message(index, mentions_listener=False))
             self.assertEqual(result.decision, expected)
+        low = Pipeline(config(), self.store, FakeClassifier(classification(confidence=0.69))).process(message(9))
+        self.assertEqual(low.decision, "dry_run_needs_human")
 
     def test_rate_limit_applies_to_confident_and_human_issues(self):
         github = FakeGitHub()

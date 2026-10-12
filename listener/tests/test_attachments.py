@@ -97,8 +97,10 @@ class ImageInIssueTests(AttachmentBase):
     def test_a_case_the_model_sets_aside_downloads_and_uploads_nothing(self):
         pipeline = self.build()
         self.model.analysis = CaseAnalysis("noise", classification(type="noise", confidence=0.9), (1,), "chat")
-        result = pipeline.process(photo(1, text="ok"))
-        self.assertEqual(result.decision, "pending_review")   # tagged, but the model called it chat
+        # 12.13 changed this: the photo is untagged now (a tagged one is forced into an issue, so its
+        # image would be uploaded). Untagged + model chat => chat, nothing downloaded.
+        result = pipeline.process(photo(1, text="ok", mentions_listener=False))
+        self.assertEqual(result.decision, "chat")
         self.assertEqual((self.downloader.calls, self.uploader.uploads, self.uploader.releases), ([], [], []))
 
     def test_case_without_images_does_not_touch_gh_or_telegram(self):

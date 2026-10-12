@@ -362,14 +362,27 @@ class NeedsHumanTests(TopicBase):
         self.assertIn("Thiếu ngữ cảnh.", issue.body)
         self.assertIsNone(self.row(1)["type"])
 
-    def test_needs_human_verdict_on_a_direct_call_is_kept_for_review_not_an_issue(self):
+    # 12.13 changed this test (was: a needs_human verdict on a direct call is kept for review). A tag
+    # forces an issue: a needs-human one. The untagged variant below still waits for review.
+    def test_needs_human_verdict_on_a_direct_call_is_a_needs_human_issue(self):
         pipeline = self.pipeline(FakeTopicModel((topic(
             [1, 2], verdict="needs_human", title="Chưa rõ", summary="Thiếu ngữ cảnh."),)))
         self.window(pipeline, ("cái này sao vậy", "xem giúp mình"))
         self.close(pipeline)
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.decisions(1, 2), ["needs_human"] * 2)
+        self.assertEqual(self.row(1)["reason"], "forced_mention")
+        self.assertEqual(self.reconciliation()["needs_human"], 2)
+
+    def test_needs_human_verdict_without_a_tag_is_kept_for_review(self):
+        pipeline = self.pipeline(FakeTopicModel((topic(
+            [1, 2], verdict="needs_human", title="Chưa rõ", summary="Thiếu ngữ cảnh."),)))
+        for index, text in enumerate(("cái này sao vậy", "xem giúp mình"), 1):
+            pipeline.process(msg(index, index, text=text, mentions_listener=False))
+        self.close(pipeline)
         self.assertEqual(self.github.calls, [])
         self.assertEqual(self.decisions(1, 2), ["pending_review"] * 2)
-        self.assertEqual(self.row(1)["reason"], "model_unsure")
+        self.assertEqual(self.row(1)["reason"], "pending_untagged")
         self.assertEqual(self.reconciliation()["pending_review"], 2)
 
     def test_a_ticket_without_missing_info_has_no_clarify_section(self):
@@ -388,14 +401,24 @@ class NeedsHumanTests(TopicBase):
             "topic": "t", "message_ids": [1], "verdict": "ticket", "missing_info": ["x" * 500]}]}))
         self.assertEqual(len(parsed[0].missing_info[0]), 200)
 
-    def test_low_confidence_group_on_a_direct_call_is_kept_for_review_not_an_issue(self):
-        # 12.11 (b): a ticket needs a category AND a confidence at the threshold (was: needs-human issue).
+    # 12.13 changed this test (was: a low-confidence group on a direct call is kept for review): a tag
+    # forces an issue, so it is a needs-human issue; the model's guess stays visible for the reviewer.
+    def test_low_confidence_group_on_a_direct_call_is_a_needs_human_issue(self):
         pipeline = self.pipeline(FakeTopicModel((topic([1], confidence=0.5),)))
         self.window(pipeline, ("app nexora bị lỗi",))
         self.close(pipeline)
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.decisions(1), ["needs_human"])
+        self.assertEqual(self.row(1)["type"], "bug")
+        self.assertEqual(self.row(1)["reason"], "forced_mention")
+
+    def test_low_confidence_group_without_a_tag_is_kept_for_review_not_an_issue(self):
+        pipeline = self.pipeline(FakeTopicModel((topic([1], confidence=0.5),)))
+        pipeline.process(msg(1, 1, text="app nexora bị lỗi", mentions_listener=False))
+        self.close(pipeline)
         self.assertEqual(self.github.calls, [])
         self.assertEqual(self.decisions(1), ["pending_review"])
-        self.assertEqual(self.row(1)["type"], "bug")   # the model's guess stays visible for the reviewer
+        self.assertEqual(self.row(1)["type"], "bug")
 
     def test_an_unusable_group_becomes_needs_human_without_losing_the_partition(self):
         pipeline = self.pipeline(FakeTopicModel((topic([1], title=""), topic([2], type="admin"))))

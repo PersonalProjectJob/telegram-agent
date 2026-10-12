@@ -54,30 +54,40 @@ def provider_pipeline(test, *responses, mode="live", limit=20, window=0):
 class SafetyLockTests(unittest.TestCase):
     """The locks that no model answer can open, through the real provider and a fake Ollama."""
 
-    def test_a_no_tag_group_the_model_calls_a_bug_is_never_an_issue(self):
+    # 12.13 changed this test (was: a no-tag group the model calls a bug is never an issue). A confident
+    # bug needs no tag: it is an automatic issue (`auto_bug`). Below the threshold it waits for review.
+    def test_a_no_tag_group_the_model_calls_a_bug_is_an_automatic_issue(self):
         pipeline = provider_pipeline(self, envelope(group_json([1], confidence=0.99)))
         result = pipeline.process(message(1, "không đăng nhập được app nexora", mentions_listener=False))
         row = self.store.get(CHAT, 1)
-        self.assertEqual((result.decision, row["decision"], row["reason"]),
-                         ("pending_review", "pending_review", "no_direct_call"))
+        self.assertEqual((result.decision, row["decision"], row["reason"]), ("issue", "issue", "auto_bug"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(row["issue_number"], 101)
+        self.assertEqual(row["model_reason"], REASON)
+
+    def test_a_no_tag_group_the_model_is_not_sure_is_a_bug_waits_for_review(self):
+        pipeline = provider_pipeline(self, envelope(group_json([1], confidence=0.5)))
+        result = pipeline.process(message(1, "không đăng nhập được app nexora", mentions_listener=False))
+        row = self.store.get(CHAT, 1)
+        self.assertEqual((result.decision, row["reason"]), ("pending_review", "pending_untagged"))
         self.assertEqual(self.github.calls, [])
         self.assertIsNone(row["issue_number"])
         self.assertEqual(row["type"], "bug")                     # what the model thought is kept for the reviewer
         self.assertEqual(row["model_reason"], REASON)
 
-    def test_a_command_the_model_calls_chat_is_kept_for_review_with_a_warning(self):
-        # A two-message window, so the model is asked; the command does not make it a ticket by itself.
+    # 12.13 changed this test (was: a command the model calls chat is kept for review with a warning).
+    # A /command with content is a forced issue whatever the model said; the command's own type is kept.
+    def test_a_command_the_model_calls_chat_is_still_a_forced_issue(self):
         pipeline = provider_pipeline(self, envelope(group_json(
             [1, 2], category="chat", type="task", actionable=False, reason="Chỉ là trao đổi thường.")),
             window=15)
         pipeline.process(msg(1, 0, text="hôm nay họp mấy giờ nhỉ", mentions_listener=False))
-        with self.assertLogs("tg_triage.pipeline", level="WARNING") as logs:
-            pipeline.process(msg(2, 1, text="/bug nút lưu không bấm được", mentions_listener=False))
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual([self.store.get(CHAT, i)["decision"] for i in (1, 2)], ["pending_review"] * 2)
-        self.assertEqual(self.store.get(CHAT, 2)["reason"], "direct_call_chat")
+        pipeline.process(msg(2, 1, text="/bug nút lưu không bấm được", mentions_listener=False))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.github.calls[0].labels[0], "bug")
+        self.assertEqual([self.store.get(CHAT, i)["decision"] for i in (1, 2)], ["issue"] * 2)
+        self.assertEqual(self.store.get(CHAT, 2)["reason"], "forced_command")
         self.assertEqual(self.store.get(CHAT, 2)["model_reason"], "Chỉ là trao đổi thường.")
-        self.assertTrue(any("Direct call judged chat" in line for line in logs.output))
 
     def test_a_tagged_message_the_model_calls_a_task_is_one_issue(self):
         pipeline = provider_pipeline(self, envelope(group_json(
@@ -88,12 +98,23 @@ class SafetyLockTests(unittest.TestCase):
         self.assertEqual(self.github.calls[0].labels, ("task", "triage", "source:telegram"))
         self.assertEqual(self.store.get(CHAT, 1)["issue_number"], 101)
 
-    def test_a_tagged_message_the_model_finds_unclear_is_kept_for_review_not_an_issue(self):
+    # 12.13 changed this test (was: a tagged message the model finds unclear is kept for review).
+    # A tag forces an issue: an unclear message gives a needs-human issue (`forced_mention`).
+    def test_a_tagged_message_the_model_finds_unclear_is_a_needs_human_issue(self):
         pipeline = provider_pipeline(self, envelope(group_json(
             [1], actionable=False, confidence=0.3, missing_info=["Bạn cần gì?"])))
         pipeline.process(message(1, "@vlink_bot cái này sao vậy", mentions_listener=True))
         row = self.store.get(CHAT, 1)
-        self.assertEqual((row["decision"], row["reason"]), ("pending_review", "model_unsure"))
+        self.assertEqual((row["decision"], row["reason"]), ("needs_human", "forced_mention"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+
+    def test_a_no_tag_message_the_model_finds_unclear_waits_for_review(self):
+        pipeline = provider_pipeline(self, envelope(group_json(
+            [1], actionable=False, confidence=0.3, missing_info=["Bạn cần gì?"])))
+        pipeline.process(message(1, "cái này sao vậy", mentions_listener=False))
+        row = self.store.get(CHAT, 1)
+        self.assertEqual((row["decision"], row["reason"]), ("pending_review", "pending_untagged"))
         self.assertEqual(self.github.calls, [])
 
     def test_a_command_the_model_finds_unclear_is_still_a_ticket_for_a_human(self):
@@ -124,8 +145,9 @@ class SafetyLockTests(unittest.TestCase):
         answer = json.dumps({"groups": [
             json.loads(group_json([1]))["groups"][0],
             json.loads(group_json([2], category="chat", type="task", actionable=False))["groups"][0],
-            json.loads(group_json([3]))["groups"][0]]}, ensure_ascii=False)
+            json.loads(group_json([3], confidence=0.5))["groups"][0]]}, ensure_ascii=False)
         pipeline = provider_pipeline(self, envelope(answer), window=15)
+        # 12.13: the third group is a bug the model is not sure about and nobody tagged: pending_review.
         for index, (text, tagged) in enumerate((("app crash khi mở", True), ("trưa nay ăn gì", False),
                                                  ("app crash lần nữa", False)), 1):
             pipeline.process(msg(index, index, text=text, mentions_listener=tagged))
@@ -464,13 +486,14 @@ class SingleCaseMissingInfoTests(CaseBase):
         self.assertEqual(self.row(1)["model_reason"], REASON)
 
     def test_a_case_model_ticket_that_is_not_actionable_waits_for_review(self):
+        # 12.13: without a tag (was: tagged, pending_review). A tagged one would be a needs-human issue.
         analysis = CaseAnalysis("ticket", classification(), (1,), "bug", False, REASON)
         pipeline = self.pipeline(model=FakeCaseModel(analysis))
-        pipeline.process(msg(1, 0, text="app lỗi đăng nhập"))
+        pipeline.process(msg(1, 0, text="app lỗi đăng nhập", mentions_listener=False))
         self.clock.advance(60)
         pipeline.close_due_cases()
         self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "model_unsure"))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
 
 
 if __name__ == "__main__":

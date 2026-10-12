@@ -177,8 +177,8 @@ async def enqueue_event(event, queue, chat_ids, store, *, stop=None, react=None,
         return
     if stop is not None and stop.is_set():
         return  # Preserve catch-up updates during shutdown without metadata waits.
-    if react is not None and rules.is_command(message.text):
-        # Chỉ tin mới (enqueue True); lỗi reaction đã được react() nuốt và log.
+    if react is not None and rules.is_command(message.text) and rules.command_type(message.text) != "question":
+        # 12.13: /question is never a ticket, so it gets no heart. Chỉ tin mới (enqueue True); lỗi reaction đã được react() nuốt và log.
         if await reactions.react(react, message.chat_id, message.message_id, reactions.RECEIVED):
             _mark(store, message.chat_id, message.message_id, "received")
     try:

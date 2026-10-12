@@ -20,7 +20,8 @@ Quy tắc bắt buộc về số tin:
 Bốn loại (category), mỗi nhóm đúng một loại:
 - bug: có người báo một chức năng đang có chạy sai, hỏng, chậm hoặc cho kết quả không đúng và mong team khắc phục.
 - task: có người nhờ hoặc giao team làm một việc cụ thể, hoặc nêu rõ một công việc cần được thực hiện.
-- feedback: góp ý, đề xuất tính năng hoặc cải tiến, hoặc một câu hỏi mà team cần trả lời hay cân nhắc.
+- feedback: góp ý, đề xuất tính năng hoặc cải tiến. Một câu hỏi thuần (hỏi thông tin, không đề nghị team làm gì)
+  chọn category feedback với type question; code sẽ không tạo issue cho câu hỏi.
 - chat: trao đổi giữa các thành viên với nhau (chào hỏi, cảm ơn, xác nhận, hẹn giờ, trao đổi nội bộ, chia sẻ
   thông tin liên hệ...) mà không đặt yêu cầu nào cho team hay cho trợ lý.
 

@@ -19,6 +19,12 @@ def is_command(text: str) -> bool:
     return COMMAND.match(text or "") is not None
 
 
+def command_type(text: str) -> str | None:
+    """The lower-case command name (bug, feature, question, task, feedback) at the start, else None."""
+    match = COMMAND.match(text or "")
+    return match[1].lower() if match else None
+
+
 def _noise():
     return Classification("noise", 1.0, "Không cần xử lý", "Tin không cần tạo issue", "low")
 

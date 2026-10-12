@@ -1,5 +1,6 @@
-"""Assistant definition 12.11: a ticket needs a direct call (tag or command) AND a bug / task /
-feedback category; everything else is kept in SQLite as chat / pending_review / noise.
+"""Assistant definition 12.11 / 12.13: bug, task and feedback become issues (a tag or a /command with
+content forces one, a confident model verdict makes one on its own); questions and chat, noise and
+unsure untagged groups are kept in SQLite as chat / noise / pending_review.
 
 Offline: fake Telegram events, fake model, fake GitHub, in-memory or temporary SQLite.
 """
@@ -73,14 +74,32 @@ class Test37To42(GateBase):
         self.assertEqual((row["issue_number"], self.github.calls, beats.calls), (None, [], []))
         self.assertEqual(self.store.get_case(f"{CHAT}:1")["status"], "chat")
 
-    # 12.12 changed this test (was: the keyword guard files untagged admin talk as chat even when the
-    # model says task). The guard is gone: when the model wrongly says task, the no-tag lock still
-    # keeps it out of GitHub, as pending_review (kept for the reviewer) instead of chat.
-    def test_37_untagged_talk_the_model_wrongly_calls_a_task_is_still_not_a_ticket(self):
+    # 12.13 changed this test (was: untagged talk the model calls a task is still not a ticket ->
+    # pending_review / no_direct_call). Task and feedback no longer need a tag: a confident task is an
+    # automatic issue (`auto_task`), hearted like any issue. Not sure (below the threshold) => pending_review.
+    def test_37_untagged_talk_the_model_calls_a_task_is_an_automatic_issue(self):
         beats = Beats()
         self.run_window((INVITE,), (topic([1], type="task", category="task"),), beats=beats)
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "no_direct_call"))
-        self.assertEqual((self.github.calls, beats.calls), ([], []))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("issue", "auto_task"))
+        self.assertEqual((len(self.github.calls), beats.calls), (1, [(CHAT, 1, HEART)]))
+
+    def test_37_untagged_task_or_feedback_below_the_threshold_waits_for_review(self):
+        for category in ("task", "feedback"):
+            with self.subTest(category=category):
+                self.setUp()
+                beats = Beats()
+                self.run_window((INVITE,), (topic([1], type=category, category=category, confidence=0.5),),
+                                beats=beats)
+                self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]),
+                                 ("pending_review", "pending_untagged"))
+                self.assertEqual((self.github.calls, beats.calls), ([], []))
+
+    def test_37_untagged_feedback_is_an_automatic_issue(self):
+        self.run_window(("nên thêm nút xuất Excel ở màn báo cáo",),
+                        (topic([1], type="feature", category="feedback", title="Thêm nút xuất Excel"),))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"], self.row(1)["type"]),
+                         ("issue", "auto_feedback", "feedback"))
+        self.assertEqual(self.github.calls[0].labels, ("feedback", "triage", "source:telegram"))
 
     def test_38_the_same_text_with_a_tag_is_a_task_and_one_issue(self):
         beats = Beats()
@@ -95,20 +114,52 @@ class Test37To42(GateBase):
         self.assertEqual(beats.calls, [(CHAT, 1, HEART)])          # the heart; the OK hand is the worker's
         self.assertEqual(results[0].reaction_message_ids, (1,))
 
-    def test_39_a_real_bug_without_a_tag_waits_for_review_and_is_in_the_csv(self):
+    # 12.13 changed this test (was: a real bug without a tag waits for review): a confident bug is an
+    # automatic issue (`auto_bug`), hearted and (live) OK-handed; below the threshold it waits, in the CSV.
+    def test_39_a_real_bug_without_a_tag_is_an_automatic_issue(self):
         beats = Beats()
-        self.run_window((REAL_BUG,), (topic([1], type="bug", category="bug"),), beats=beats)
+        results = self.run_window((REAL_BUG,), (topic([1], type="bug", category="bug"),), beats=beats)
+        row = self.row(1)
+        self.assertEqual((row["decision"], row["reason"], row["type"]), ("issue", "auto_bug", "bug"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(beats.calls, [(CHAT, 1, HEART)])        # the heart; the OK hand is the worker's
+        self.assertEqual(results[0].reaction_message_ids, (1,))
+        self.assertFalse(row["mentions_listener"])
+
+    def test_39_a_bug_without_a_tag_below_the_threshold_waits_for_review_and_is_in_the_csv(self):
+        beats = Beats()
+        self.run_window((REAL_BUG,), (topic([1], type="bug", category="bug", confidence=0.6),), beats=beats)
         row = self.row(1)
         self.assertEqual((row["decision"], row["reason"], row["type"]),
-                         ("pending_review", "no_direct_call", "bug"))
+                         ("pending_review", "pending_untagged", "bug"))
         self.assertEqual((self.github.calls, beats.calls, row["issue_number"]), ([], [], None))
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "review.csv"
             self.store.export_csv(out)
             rows = list(csv.DictReader(io.StringIO(out.read_text(encoding="utf-8-sig"))))
         self.assertEqual([(item["decision"], item["reason"], item["type"], item["mentions_listener"])
-                          for item in rows], [("pending_review", "no_direct_call", "bug", "0")])
+                          for item in rows], [("pending_review", "pending_untagged", "bug", "0")])
         self.assertEqual(rows[0]["text"], REAL_BUG)
+
+    def test_39_an_automatic_bug_in_dry_run_is_hearted_but_never_ok_handed(self):
+        beats = Beats()
+        results = self.run_window((REAL_BUG,), (topic([1], type="bug", category="bug"),), mode="dry-run",
+                                  beats=beats)
+        self.assertEqual((self.decisions(1), self.row(1)["reason"]), (["dry_run_issue"], "auto_bug"))
+        self.assertEqual((self.github.calls, beats.calls, results[0].reaction_message_ids),
+                         ([], [(CHAT, 1, HEART)], ()))
+
+    def test_39_an_email_with_an_at_sign_is_not_a_tag_the_bug_is_automatic_not_forced(self):
+        text = "đăng nhập lỗi, báo cho em qua linh@example.com nhé"
+        self.run_window((text,), (topic([1], type="bug", category="bug"),))
+        row = self.row(1)
+        self.assertEqual((row["decision"], row["reason"], row["mentions_listener"]), ("issue", "auto_bug", 0))
+        self.assertNotIn("linh@example.com", self.github.calls[0].title + self.github.calls[0].body)
+
+    def test_39_the_same_email_group_the_model_calls_chat_is_chat_not_forced(self):
+        self.run_window(("em gửi mail linh@example.com cho anh rồi nhé",), (chat_group([1]),))
+        row = self.row(1)
+        self.assertEqual((row["decision"], row["reason"], self.github.calls), ("chat", "model_chat", []))
 
     def test_40_a_bug_command_needs_no_tag(self):
         self.run_window(("/bug nút lưu không bấm được",), (topic([1], type="bug", category="bug"),))
@@ -117,24 +168,61 @@ class Test37To42(GateBase):
         self.assertFalse(self.row(1)["mentions_listener"])
         self.assertEqual(self.decisions(1), ["issue"])
 
-    # 12.12 changed this test (was: code hard-blocks an e-mail / greeting / phone number even with a
-    # tag, whatever the model says). The hard block is gone with its word lists. Now the model
-    # judges: when it calls the tagged group chat, nothing is sent and nothing is reacted to, and the
-    # group is kept for review (not dropped) with a warning in the log.
-    def test_41_a_tagged_email_or_greeting_the_model_calls_chat_is_kept_for_review_not_an_issue(self):
+    # 12.13 changed this test (was: a tagged email / greeting the model calls chat is kept as
+    # pending_review / direct_call_chat). A tag now forces an issue, EXCEPT when the group has no product
+    # content: the safety block (`safety_block`) keeps it out of GitHub, structurally and without keywords
+    # (no word once e-mail / phone / @handle are removed; or a few words when the model said chat).
+    def test_41_a_tagged_email_or_greeting_the_model_calls_chat_is_the_safety_block_not_an_issue(self):
         cases = (("linh@example.com",), ("chào anh",), ("Số em là 0901234567 nhé",),
-                 ("xin chào mọi người ạ", "linh@example.com"), ("@vlink_bot ok em cảm ơn nhé",))
+                 ("xin chào mọi người ạ", "linh@example.com"), ("@vlink_bot ok",), ("linh@example.com", "0901234567"))
         for texts in cases:
             with self.subTest(texts=texts):
                 self.setUp()
                 beats = Beats()
-                with self.assertLogs("tg_triage.pipeline", level="WARNING"):
-                    self.run_window(texts, (chat_group(list(range(1, len(texts) + 1))),),
-                                    tagged=range(1, 9), beats=beats)
+                self.run_window(texts, (chat_group(list(range(1, len(texts) + 1))),),
+                                tagged=range(1, 9), beats=beats)
                 self.assertEqual(self.github.calls, [])
                 self.assertEqual(beats.calls, [])
-                self.assertEqual(set(self.decisions(*range(1, len(texts) + 1))), {"pending_review"})
-                self.assertEqual(self.row(1)["reason"], "direct_call_chat")
+                self.assertEqual(set(self.decisions(1)), {"noise"})
+                self.assertEqual(self.row(1)["reason"], "safety_block")
+
+    def test_41_a_tagged_group_that_is_only_contact_data_is_blocked_even_when_the_model_says_bug(self):
+        for texts in (("linh@example.com",), ("linh@example.com", "0901234567")):
+            with self.subTest(texts=texts):
+                self.setUp()
+                self.run_window(texts, (topic(list(range(1, len(texts) + 1)), type="bug", category="bug"),),
+                                tagged=range(1, 9))
+                self.assertEqual(self.github.calls, [])
+                self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("noise", "safety_block"))
+
+    def test_41_an_empty_command_is_not_an_issue_even_with_a_tag(self):
+        self.run_window(("/bug",), (topic([1], type="bug", category="bug"),), tagged=(1,))
+        self.assertEqual((self.github.calls, self.decisions(1), self.row(1)["reason"]),
+                         ([], ["noise"], "safety_block"))
+
+    def test_41_the_safety_block_never_touches_a_real_bug(self):
+        # A short real report, and a bug that also shares contact data, stay issues.
+        for texts in (("app crash",), ("lỗi đăng nhập", "mail em linh@example.com")):
+            with self.subTest(texts=texts):
+                self.setUp()
+                self.run_window(texts, (topic(list(range(1, len(texts) + 1)), type="bug", category="bug"),),
+                                tagged=range(1, 9))
+                self.assertEqual(len(self.github.calls), 1)
+                self.assertEqual(self.row(1)["decision"], "issue")
+
+    # 12.13: a tag forces an issue whatever the model said; when the model said chat the type is not
+    # trusted, so it is a needs-human issue (label `needs-human`, no type), hearted once.
+    def test_41_a_tagged_group_the_model_calls_chat_is_a_forced_needs_human_issue(self):
+        for text in ("@vlink_bot ok em cảm ơn nhé", "hôm nay họp mấy giờ nhỉ", INVITE):
+            with self.subTest(text=text):
+                self.setUp()
+                beats = Beats()
+                self.run_window((text,), (chat_group([1]),), tagged=(1,), beats=beats)
+                self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]),
+                                 ("needs_human", "forced_mention"))
+                self.assertEqual(len(self.github.calls), 1)
+                self.assertEqual(self.github.calls[0].labels, ("needs-human", "source:telegram"))
+                self.assertEqual(beats.calls, [(CHAT, 1, HEART)])
 
     # The model, not a word list, now decides; the one lock left is "no tag and no command".
     def test_41_a_tagged_group_the_model_calls_a_task_is_a_ticket_whatever_its_words(self):
@@ -179,7 +267,8 @@ class Test37To42(GateBase):
         beats = Beats()
         results = self.run_window(
             (REAL_BUG, INVITE, "app crash khi mở"),
-            (topic([1], type="bug", category="bug"), chat_group([2]), topic([3], type="bug", category="bug")),
+            (topic([1], type="bug", category="bug"), chat_group([2]),
+             topic([3], type="bug", category="bug", confidence=0.5)),   # 12.13: an unsure untagged bug waits
             mode="dry-run", tagged=(1,), beats=beats)
         self.assertEqual(self.github.calls, [])
         self.assertEqual(self.decisions(1, 2, 3), ["dry_run_issue", "chat", "pending_review"])
@@ -199,7 +288,7 @@ class WorkerReactionGate(unittest.IsolatedAsyncioTestCase):
         send = Recorder()
         github = NumberedGitHub()
         model = FakeTopicModel((topic([1], type="bug", category="bug"), chat_group([2]),
-                                topic([3], type="bug", category="bug")))
+                                topic([3], type="bug", category="bug", confidence=0.5)))   # 12.13: unsure
         pipeline = Pipeline(config("live", window=15), store, model, github)
         queue = asyncio.Queue()
         for item in (msg(1, 1, text=REAL_BUG, mentions_listener=True), msg(2, 2, text=INVITE,
@@ -231,7 +320,8 @@ class WorkerReactionGate(unittest.IsolatedAsyncioTestCase):
 
 class CategoryMappingTests(GateBase):
     def test_feature_and_question_commands_are_feedback(self):
-        for command in ("/feature", "/question", "/feedback", "/Feedback@Bot"):
+        # 12.13 changed this test: /question is no longer a ticket (see the question tests below).
+        for command in ("/feature", "/feedback", "/Feedback@Bot"):
             with self.subTest(command=command):
                 self.setUp()
                 self.run_window((f"{command} thêm nút xuất Excel",), (topic([1], type="bug"),))
@@ -246,13 +336,58 @@ class CategoryMappingTests(GateBase):
                 self.run_window((f"{command} làm việc này",), (topic([1], type="feature"),))
                 self.assertEqual(self.github.calls[0].labels[0], command[1:])
 
-    def test_model_feature_and_question_are_folded_into_feedback(self):
-        for kind in ("feature", "question"):
-            with self.subTest(kind=kind):
+    def test_model_feature_is_folded_into_feedback(self):
+        self.run_window(("nhờ a thêm nút xuất Excel",), (topic([1], type="feature"),), tagged=(1,))
+        self.assertEqual(self.github.calls[0].labels, ("feedback", "triage", "source:telegram"))
+        self.assertEqual(self.row(1)["type"], "feedback")
+
+    # 12.13 (coordinator update): a question is never a ticket, tagged or not, and gets no reaction.
+    def test_a_question_command_is_chat_without_an_issue_or_a_reaction(self):
+        for command in ("/question", "/Question@Bot"):
+            with self.subTest(command=command):
                 self.setUp()
-                self.run_window(("nhờ a thêm nút xuất Excel",), (topic([1], type=kind),), tagged=(1,))
-                self.assertEqual(self.github.calls[0].labels, ("feedback", "triage", "source:telegram"))
-                self.assertEqual(self.row(1)["type"], "feedback")
+                beats = Beats()
+                self.run_window((f"{command} khi nào ra bản mới?",), (topic([1], type="bug"),), beats=beats)
+                row = self.row(1)
+                self.assertEqual((row["decision"], row["reason"], row["type"]),
+                                 ("chat", "question_no_ticket", "chat"))
+                self.assertEqual((self.github.calls, beats.calls), ([], []))
+
+    def test_a_model_question_is_chat_even_with_a_tag_and_gets_no_reaction(self):
+        for category in ("feedback", None):
+            for tagged in ((), (1,)):
+                with self.subTest(category=category, tagged=tagged):
+                    self.setUp()
+                    beats = Beats()
+                    self.run_window(("khi nào ra bản mới vậy?",),
+                                    (topic([1], type="question", category=category),), tagged=tagged,
+                                    beats=beats)
+                    self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]),
+                                     ("chat", "question_no_ticket"))
+                    self.assertEqual((self.github.calls, beats.calls), ([], []))
+                    self.assertEqual(self.store.get_case(f"{CHAT}:1")["status"], "chat")
+
+    def test_a_question_only_wins_under_feedback_not_over_a_bug_category(self):
+        self.run_window((REAL_BUG,), (topic([1], type="question", category="bug"),))
+        self.assertEqual((self.decisions(1), self.github.calls[0].labels[0]), (["issue"], "bug"))
+
+    def test_a_question_command_is_not_hearted_on_receipt(self):
+        async def run(text):
+            store = Store(":memory:")
+            self.addCleanup(store.close)
+            send = Recorder()
+            event = SimpleNamespace(
+                out=False, is_private=False, chat_id=CHAT, id=1, date=NOW, raw_text=text,
+                message=SimpleNamespace(mentioned=False),
+                get_sender=AsyncMock(return_value=SimpleNamespace(first_name="A", last_name="B")),
+                get_chat=AsyncMock(return_value=SimpleNamespace(username=None)))
+            await telegram_io.enqueue_event(event, asyncio.Queue(), config().telegram.chat_ids, store,
+                                            react=send)
+            return send.calls
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        self.assertEqual(loop.run_until_complete(run("/question khi nào xong?")), [])
+        self.assertEqual(loop.run_until_complete(run("/bug lỗi đăng nhập")), [(CHAT, 1, HEART)])
 
     def test_the_model_category_wins_over_a_conflicting_type(self):
         self.run_window(("nhờ a thêm nút xuất Excel",), (topic([1], type="bug", category="feedback"),),
@@ -280,33 +415,44 @@ class ChatAndReviewStateTests(GateBase):
                 self.assertEqual(self.decisions(1), ["chat"])
                 self.assertEqual(self.row(1)["type"], "chat")
 
-    def test_a_tag_on_a_chat_group_is_kept_for_review_and_logged_not_dropped(self):
+    # 12.13 changed these two (was: a tag / a command on a group the model calls chat is kept for review
+    # and logged). Both are forced issues now; the log carries the reason code only, never the content.
+    def test_a_tag_on_a_chat_group_is_a_forced_needs_human_issue_and_the_log_has_no_content(self):
         beats = Beats()
-        with self.assertLogs("tg_triage.pipeline", level="WARNING") as logs:
+        with self.assertLogs("tg_triage.pipeline", level="INFO") as logs:
             self.run_window(("hôm nay họp mấy giờ nhỉ",), (chat_group([1]),), tagged=(1,), beats=beats)
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]),
-                         ("pending_review", "direct_call_chat"))
-        self.assertEqual((self.github.calls, beats.calls), ([], []))
-        self.assertTrue(any("Direct call judged chat" in line for line in logs.output))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "forced_mention"))
+        self.assertEqual((len(self.github.calls), beats.calls), (1, [(CHAT, 1, HEART)]))
+        self.assertTrue(any("reason=forced_mention" in line for line in logs.output))
         self.assertNotIn("họp mấy giờ", "\n".join(logs.output))
 
-    def test_a_command_the_model_calls_chat_is_kept_for_review_and_logged(self):
+    def test_a_command_the_model_calls_chat_is_a_forced_issue_with_the_commands_type(self):
         beats = Beats()
-        with self.assertLogs("tg_triage.pipeline", level="WARNING") as logs:
-            self.run_window(("hôm nay họp", "/bug app crash khi mở"), (chat_group([1, 2]),), beats=beats)
-        self.assertEqual(self.decisions(1, 2), ["pending_review"] * 2)
-        self.assertEqual(self.row(2)["reason"], "direct_call_chat")
-        self.assertEqual((self.github.calls, beats.calls), ([], []))
-        self.assertTrue(any("Direct call judged chat" in line for line in logs.output))
+        self.run_window(("hôm nay họp", "/bug app crash khi mở"), (chat_group([1, 2]),), beats=beats)
+        self.assertEqual(self.decisions(1, 2), ["issue"] * 2)
+        self.assertEqual(self.row(2)["reason"], "forced_command")
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.github.calls[0].labels[0], "bug")
+        self.assertEqual(beats.calls, [(CHAT, 1, HEART)])
+
+    def test_a_command_beats_a_tag_for_the_reason_and_both_beat_a_model_chat(self):
+        self.run_window(("/task làm báo cáo tuần",), (chat_group([1]),), tagged=(1,))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("issue", "forced_command"))
 
     def test_a_command_stays_a_ticket_when_the_model_picks_another_ticket_category(self):
         self.run_window(("/bug app crash khi mở",), (topic([1], type="task", category="task"),))
         self.assertEqual(self.github.calls[0].labels[0], "bug")
 
-    def test_a_tagged_group_below_the_confidence_threshold_waits_for_review(self):
+    # 12.13 changed this test (was: a tagged group below the threshold waits for review).
+    def test_a_tagged_group_below_the_confidence_threshold_is_a_needs_human_issue(self):
         self.run_window((REAL_BUG,), (topic([1], category="bug", confidence=0.4),), tagged=(1,))
+        self.assertEqual((len(self.github.calls), self.decisions(1)), (1, ["needs_human"]))
+        self.assertEqual(self.row(1)["reason"], "forced_mention")
+
+    def test_an_untagged_group_below_the_confidence_threshold_waits_for_review(self):
+        self.run_window((REAL_BUG,), (topic([1], category="bug", confidence=0.4),))
         self.assertEqual((self.github.calls, self.decisions(1)), ([], ["pending_review"]))
-        self.assertEqual(self.row(1)["reason"], "model_unsure")
+        self.assertEqual(self.row(1)["reason"], "pending_untagged")
 
     def test_a_tagged_ticket_that_only_misses_information_is_still_a_ticket(self):
         self.run_window((REAL_BUG,), (topic([1], category="bug", missing_info=("Máy nào?",)),),
@@ -329,7 +475,8 @@ class ChatAndReviewStateTests(GateBase):
         # message (5th) is still noise by code, so every state is counted.
         self.run_window(
             (REAL_BUG, INVITE, "app crash khi mở", "ok", "👍"),
-            (topic([1], type="bug", category="bug"), chat_group([2]), topic([3], type="bug", category="bug"),
+            (topic([1], type="bug", category="bug"), chat_group([2]),
+             topic([3], type="bug", category="bug", confidence=0.5),   # 12.13: unsure and untagged => waits
              chat_group([4])),
             tagged=(1,))
         self.assertEqual(self.decisions(1, 2, 3, 4, 5), ["issue", "chat", "pending_review", "chat", "noise"])
@@ -366,9 +513,15 @@ class SingleCaseModelTests(CaseBase):
         self.clock.advance(60)
         return pipeline.close_due_cases()
 
-    def test_untagged_ticket_waits_for_review(self):
+    # 12.13 changed this test (was: an untagged ticket waits for review): a confident bug is an issue.
+    def test_untagged_confident_ticket_is_an_automatic_issue(self):
         self.assertEqual(self.run_case(CaseAnalysis("ticket", classification(), (1,)), False)[0].decision,
-                         "pending_review")
+                         "issue")
+        self.assertEqual(len(self.github.calls), 1)
+
+    def test_untagged_unsure_ticket_waits_for_review(self):
+        analysis = CaseAnalysis("ticket", classification(confidence=0.4), (1,))
+        self.assertEqual(self.run_case(analysis, False)[0].decision, "pending_review")
         self.assertEqual(self.github.calls, [])
 
     def test_tagged_ticket_is_an_issue_and_feature_is_feedback(self):
@@ -376,11 +529,18 @@ class SingleCaseModelTests(CaseBase):
         self.assertEqual(self.run_case(analysis, True)[0].decision, "issue")
         self.assertEqual(self.github.calls[0].labels[0], "feedback")
 
-    def test_category_chat_is_chat_untagged_and_review_when_tagged(self):
+    # 12.13 changed this test (was: ... and pending_review when tagged): a tag forces an issue.
+    def test_category_chat_is_chat_untagged_and_a_needs_human_issue_when_tagged(self):
         chat = CaseAnalysis("noise", classification(type="noise", confidence=0.9), (1,), "chat")
         self.assertEqual(self.run_case(chat, False)[0].decision, "chat")
+        self.assertEqual(self.github.calls, [])
         self.setUp()
-        self.assertEqual(self.run_case(chat, True)[0].decision, "pending_review")
+        self.assertEqual(self.run_case(chat, True)[0].decision, "needs_human")
+        self.assertEqual(len(self.github.calls), 1)
+
+    def test_a_case_model_question_is_chat_even_when_tagged(self):
+        analysis = CaseAnalysis("ticket", classification(type="question"), (1,), "feedback")
+        self.assertEqual(self.run_case(analysis, True)[0].decision, "chat")
         self.assertEqual(self.github.calls, [])
 
 
@@ -568,6 +728,27 @@ class ParserTests(unittest.TestCase):
                             self.assertIsInstance(entry["actionable"], bool)
                             self.assertTrue(entry["reason"].strip())
                             self.assertIsInstance(entry["missing_info"], list)
+
+
+class AtSignTests(GateBase):
+    """12.13: only Telegram's `mentioned` flag is a tag; an "@" in the text or in an e-mail is not."""
+
+    def test_an_at_handle_typed_in_the_text_without_the_flag_is_not_a_tag(self):
+        self.run_window(("@vlink_bot hôm nay họp mấy giờ nhỉ",), (chat_group([1]),))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("chat", "model_chat"))
+        self.assertEqual(self.github.calls, [])
+
+    def test_an_email_in_a_chat_group_does_not_force_an_issue(self):
+        self.run_window(("mail của em là linh@example.com nha anh",), (chat_group([1]),))
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("chat", "model_chat"))
+
+    def test_the_reason_of_an_untagged_email_bug_is_auto_bug_and_of_a_tagged_one_forced_mention(self):
+        text = "lỗi đăng nhập, mail em linh@example.com"
+        self.run_window((text,), (topic([1], type="bug", category="bug"),))
+        self.assertEqual(self.row(1)["reason"], "auto_bug")
+        self.setUp()
+        self.run_window((text,), (topic([1], type="bug", category="bug"),), tagged=(1,))
+        self.assertEqual(self.row(1)["reason"], "forced_mention")
 
 
 class RulesTests(unittest.TestCase):
