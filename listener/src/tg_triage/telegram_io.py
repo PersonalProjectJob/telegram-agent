@@ -5,6 +5,7 @@ import getpass
 import inspect
 import logging
 import os
+import re
 import signal
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -210,7 +211,7 @@ def make_media_downloader(client, loop, *, timeout=DOWNLOAD_TIMEOUT_SECONDS):
 
 
 async def enqueue_event(event, queue, chat_ids, store, *, stop=None, react=None,
-                        listen_all_groups=False):
+                        listen_all_groups=False, ignored_command_prefixes=()):
     if event.out or event.is_private:
         return
     if listen_all_groups:
@@ -218,6 +219,12 @@ async def enqueue_event(event, queue, chat_ids, store, *, stop=None, react=None,
         if not event.is_group:
             return
     elif event.chat_id not in chat_ids:
+        return
+    text = getattr(event, "raw_text", "") or ""
+    if isinstance(text, str) and any(
+            re.match(r"^\s*" + re.escape(prefix) + r"(?:@[A-Za-z0-9_]+)?(?=\s|$)", text, re.I)
+            for prefix in ignored_command_prefixes):
+        LOG.info("decision=ignored_prefix chat_id=%s message_id=%s", event.chat_id, event.id)
         return
     # Persist content before metadata lookups, which may await network responses.
     has_image, image_size, image_mime = _image_info(event)
@@ -493,7 +500,8 @@ async def run(config, pipeline):
 
     async def handler(event):
         await enqueue_event(event, queue, config.telegram.chat_ids, pipeline.store, stop=stop,
-                            react=react, listen_all_groups=config.telegram.listen_all_groups)
+                            react=react, listen_all_groups=config.telegram.listen_all_groups,
+                            ignored_command_prefixes=config.telegram.ignored_command_prefixes)
 
     tasks = []
     worker_task = None

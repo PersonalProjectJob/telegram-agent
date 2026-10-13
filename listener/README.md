@@ -457,3 +457,5 @@ Replies backed by a sent clarification always remain followups of their original
 when the case is full or ended in an error/rate limit. Other replies retain existing case rules. Owner answers
 are stored for review; they do not approve an issue, retry GitHub, change `needs_human`, or post
 a GitHub comment automatically. Outgoing messages remain excluded from listener ingress.
+
+For isolated THINKPAD deployment and rollback, see [deploy/README.md](../deploy/README.md).

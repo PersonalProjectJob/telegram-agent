@@ -1,6 +1,7 @@
 mode = "dry-run"
 
 [telegram]
+ignored_command_prefixes = ["/nailhub"] # Other service commands are ignored before storage/triage.
 session_path = "/var/lib/agentfleet/tg/gateway.session"
 chat_ids = [-1001234567890]
 # true = listen to every group/supergroup (not private chats/channels); chat_ids must then be empty or omitted

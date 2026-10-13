@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from .model_lock import MODEL_LOCK, LockUnavailable
+
 from .models import (CATEGORIES, CaseAnalysis, Classification, DETAIL_LIST_KEYS, DETAIL_STRING_KEYS,
                      ISSUE_TYPES, PRIORITIES, TICKET_CATEGORIES,
                      TYPES, TopicGroup, VERDICTS, canonical_category, clean_reason, utf8_valid)
@@ -385,12 +387,16 @@ class Classifier:
                 data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with self.opener(request, timeout=self.settings.timeout_seconds) as response:
-                    envelope = json.loads(response.read())
+                with MODEL_LOCK.enter():
+                    with self.opener(request, timeout=self.settings.timeout_seconds) as response:
+                        envelope = json.loads(response.read())
                 # Only `content` is read. `message.thinking` (the reasoning) is deliberately ignored:
                 # it is never parsed, logged or stored.
                 content = envelope["message"]["content"]
                 result = parse(content)
+            except LockUnavailable as error:
+                LOG.error("model_lock I/O failed exception=%s", type(error).__name__)
+                return None
             except (URLError, OSError) as error:
                 LOG.warning("Ollama request failed exception=%s", type(error).__name__)
                 if hasattr(error, "close"):
