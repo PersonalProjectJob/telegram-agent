@@ -5,6 +5,8 @@ Contract evidence must be verified separately before live mode. Imports Playwrig
 """
 
 import json
+import asyncio
+import time
 import os
 import re
 from decimal import Decimal
@@ -15,11 +17,15 @@ from urllib.parse import urlencode, urlparse
 
 from .credentials import load_credentials
 from .validation import NeedsHuman, Posting, PHONE, SENTINEL_START_DATE, phone_key, processing_start_date
+from .categories import (SUPPORTED_CATEGORIES, CATEGORY_LABELS, category_change_valid,
+                         category_repair_valid)
 
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.I)
 LIST_PATH = '/api/v1/Admin/postings'
 AI_PATH = '/api/v1/AI/AIEnhanced'
-TYPES = {'Guaranteed': 'weekly', 'NoGuaranteed': 'hidden', 'Negotiable': 'negotiated'}
+TYPES = {'Guaranteed': 'weekly', 'NoGuaranteed': 'hidden', 'Negotiable': 'negotiated',
+         'Fixed': 'fixed', None: 'not_applicable'}
+TRANSLATION_PATH = '/api/v1/Postings/GetTranslation'
 PRESERVED = ('coverImage', 'images', 'videoUrls', 'specialNotes', 'isPublic', 'country', 'isUrgent',
              'pricePeriod', 'minPrice', 'maxPrice', 'priceNegotiable', 'priceCurrency', 'startDate', 'endDate',
              'isVIP', 'publishedAt', 'expiresAt', 'hashtags', 'extraInformation', 'yearsInOperation', 'workingHours')
@@ -101,7 +107,8 @@ def equivalent_fields(actual, expected):
 
 def matches_expected(post, expected, *, status):
     actual_fields = dict(post.fields)
-    if status == 'Approved' and '_preserved' in actual_fields and '_preserved' in expected.get('fields', {}):
+    if (status == 'Approved' and not expected.get('audit', {}).get('category_only_repair')
+            and '_preserved' in actual_fields and '_preserved' in expected.get('fields', {})):
         actual = json.loads(actual_fields['_preserved'])
         wanted = json.loads(expected['fields']['_preserved'])
         # AdminChangePostingStatus owns this one transition. All other facts remain exact.
@@ -144,7 +151,14 @@ def prepare_save_payload(data, original, expected):
     # Missing GET fields remain UNKNOWN and are never synthesized as null or sent by this normalizer.
     # The acceptance scope is preservation of the data this UI/API actually exposes.
     for key in preserved:
-        if key not in result:
+        if (key == 'startDate' and expected.get('audit', {}).get('category_only_repair')
+                and category_repair_valid(original, expected) and preserved[key] is not None):
+            if key in result and result[key] not in (None, preserved[key]):
+                raise NeedsHuman('UI changed an untouched field')
+            # AdminUpdate uses request.StartDate ?? posting.StartDate. Category-only
+            # repair retains the exact stored date without revalidating its past day.
+            result[key] = None
+        elif key not in result:
             result[key] = preserved[key]
         elif (key == 'startDate' and start_repair and original_preserved.get(key) == SENTINEL_START_DATE
               and result[key] in (None, SENTINEL_START_DATE)):
@@ -161,7 +175,8 @@ def prepare_save_payload(data, original, expected):
 
 def safe_save_payload(data, original, expected):
     """Verify exactly the identified UI submission, including untouched media and date facts."""
-    if (not isinstance(data, dict) or data.get('postingCategory') != original.category
+    if (not isinstance(data, dict) or not category_change_valid(original, expected)
+            or data.get('postingCategory') != expected.get('category')
             or data.get('status') != original.status or data.get('title') != expected['fields']['title']
             or plain(data.get('content', '')) != expected['content']):
         return False
@@ -169,7 +184,12 @@ def safe_save_payload(data, original, expected):
                'zip': 'zipCode', 'phone_primary': 'phone', 'phone_other': 'mobilePhone', 'email': 'email'}
     if any(str(data.get(remote) or '') != expected['fields'][key] for key, remote in mapping.items()):
         return False
-    if TYPES.get(data.get('priceType')) != expected['fields']['salary_type']:
+    target = expected['category']
+    allowed = {'JobPosting': ('Guaranteed', 'NoGuaranteed', 'Negotiable'),
+               'SalonForSale': ('Fixed', 'Negotiable'), 'Portfolio': (None,)}
+    if data.get('priceType') not in allowed[target] or TYPES.get(data.get('priceType')) != expected['fields']['salary_type']:
+        return False
+    if target == 'Portfolio' and (data.get('priceType') is not None or data.get('price') is not None):
         return False
     try:
         if Decimal(str(data.get('price') or 0)) != Decimal(expected['fields']['salary_amount'] or '0'):
@@ -327,7 +347,7 @@ class Browser:
                 if post.id in seen:
                     raise NeedsHuman('duplicate posting identity across pages')
                 seen.add(post.id)
-                if post.status == self.config.draft_status and post.category == self.config.category:
+                if post.status == self.config.draft_status and post.category in SUPPORTED_CATEGORIES:
                     results.append(post)
             if not data['hasNextPage']:
                 return results
@@ -359,8 +379,8 @@ class Browser:
     def _live(self, post):
         if self.config.mode != 'live' or not self.config.verified or not self.config.verification_ref:
             raise NeedsHuman('live requires VERIFIED authenticated contract')
-        if not post or post.status != self.config.draft_status or post.category != self.config.category:
-            raise NeedsHuman('only identified recruitment Draft is mutable')
+        if not post or post.status != self.config.draft_status or post.category not in SUPPORTED_CATEGORIES:
+            raise NeedsHuman('only identified supported Draft is mutable')
 
     async def _field(self, key):
         return await self.one(self.config.fields.get(key))
@@ -403,8 +423,7 @@ class Browser:
         for key in ('state', 'city'):
             await self.selected_location(key, target[key])
 
-    async def edit_and_rewrite(self, post, changes):
-        self._live(post)
+    async def _open_edit(self, post):
         fresh = await self.read(post.id)
         if fresh.fingerprint != post.fingerprint:
             raise NeedsHuman('post changed since original snapshot')
@@ -426,18 +445,64 @@ class Browser:
             # react-select options load asynchronously. Wait for the source value, never invent one.
             if post.fields.get(key):
                 await self.selected_location(key, post.fields[key])
+    async def select_category(self, post, target):
+        if target == post.category:
+            return
+        if target not in SUPPORTED_CATEGORIES:
+            raise NeedsHuman('unsupported category selection')
+        trigger = await self.one('[role=dialog] #posting-category')
+        await trigger.click()
+        option = self.page.get_by_role('option', name=CATEGORY_LABELS[target], exact=True)
+        await option.wait_for(state='visible')
+        if await option.count() != 1:
+            raise NeedsHuman('category option is missing or ambiguous')
+        async with self.page.expect_response(lambda response: self._response(response, TRANSLATION_PATH, 'POST')) as received:
+            await option.click()
+        translation = await self._json(await received.value)
+        titles = translation.get('translations') if isinstance(translation, dict) else None
+        if not isinstance(titles, list) or any(not isinstance(value, str) for value in titles):
+            raise NeedsHuman('category title translation completion unverified')
+        title = await self._field('title')
+        translated_title = titles[0] if titles else post.fields['title']
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            # Category change remounts the trigger and asynchronously changes title.
+            current = await self.one('[role=dialog] #posting-category')
+            if ((await current.inner_text()).strip() == CATEGORY_LABELS[target]
+                    and await title.input_value() == translated_title):
+                await title.fill(post.fields['title'])
+                return
+            await asyncio.sleep(.05)
+        raise NeedsHuman('category selection or title translation completion unverified')
+
+    async def _apply_changes(self, post, changes):
         await self.select_location(post, changes)
         for key, value in changes.items():
             if key == 'salary_type':
+                if value == 'not_applicable':
+                    continue  # Portfolio submit contract nulls both pay fields.
                 await (await self._field(key)).click()
-                await (await self.one(self.config.options.get(value))).click()
+                if value == 'fixed':
+                    item = self.page.get_by_role('option', name='Nhập giá', exact=True)
+                    await item.wait_for(state='visible')
+                    if await item.count() != 1:
+                        raise NeedsHuman('sale price option is missing or ambiguous')
+                    await item.click()
+                else:
+                    await (await self.one(self.config.options.get(value))).click()
             elif key == 'salary_amount':
-                if changes['salary_type'] == 'weekly':
+                if changes['salary_type'] in ('weekly', 'fixed'):
                     await self._fill(key, value)
-            elif key in ('state', 'city'):
+            elif key in ('state', 'city', 'category'):
                 continue
             else:
                 await self._fill(key, value)
+
+    async def edit_and_rewrite(self, post, changes):
+        self._live(post)
+        await self._open_edit(post)
+        await self.select_category(post, changes.get('category', post.category))
+        await self._apply_changes(post, changes)
         async with self.page.expect_response(lambda r: self._response(r, AI_PATH, 'POST'), timeout=self.config.timeout_seconds * 1000) as response:
             await self.action_click('ai')
         await self._json(await response.value)
@@ -460,8 +525,13 @@ class Browser:
         finally:
             await page.close()
 
-    async def save(self, post, expected):
-        self._live(post)
+    async def save(self, post, expected, *, _category_repair=False):
+        if _category_repair:
+            if (self.config.mode != 'live' or not self.config.verified or not self.config.verification_ref
+                    or not category_repair_valid(post, expected)):
+                raise NeedsHuman('approved category repair is not authorized')
+        else:
+            self._live(post)
         await self.authenticated()
         await self.assert_fresh(post)
         # Abort a UI request which would silently drop a protected field, before it reaches NailHub.
@@ -480,6 +550,21 @@ class Browser:
             await self.page.unroute(route_pattern, guard)
         # Navigation issues fresh GET, bypassing SPA query cache. No automatic re-save.
         return await self.read(post.id)
+
+    async def category_only_repair(self, post, expected):
+        if (self.config.mode != 'live' or not self.config.verified or not self.config.verification_ref
+                or not category_repair_valid(post, expected)):
+            raise NeedsHuman('approved category repair is not authorized')
+        await self._open_edit(post)
+        editor = await self.control('editor')
+        if canonical_text(await editor.inner_text()) != post.content:
+            raise NeedsHuman('category-only editor differs from fresh content')
+        await self.select_category(post, expected['category'])
+        await self._apply_changes(post, {key: expected['fields'][key] for key in ('salary_type', 'salary_amount')})
+        if (await (await self._field('title')).input_value() != post.fields['title']
+                or canonical_text(await editor.inner_text()) != post.content):
+            raise NeedsHuman('category-only edit changed protected title/content')
+        return await self.save(post, expected, _category_repair=True)
 
     async def guard_save(self, route, post, expected):
         request = route.request

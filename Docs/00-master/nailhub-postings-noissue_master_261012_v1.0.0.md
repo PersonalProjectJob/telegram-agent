@@ -13,9 +13,9 @@ approved_by: "Owner (user)"
 # Tự động duyệt tin NailHub trên THINKPAD
 
 ## Metadata
-- Version: v1.0.14
+- Version: v1.0.17
 - Created: 2026-10-12 17:09 (Asia/Saigon)
-- Updated: 2026-10-12 23:59 (Asia/Saigon)
+- Updated: 2026-10-13 09:51 (Asia/Saigon)
 - Status: Approved — Owner duyệt phương án và yêu cầu tiếp tục triển khai trong chat.
 - Implementation worktree: `C:/Users/AD/.codex/worktrees/nailhub-automation/AgentBuilder`, branch `codex/nailhub-automation`.
 - Executor đã được Owner chọn: Codex · gpt-6.1-sol · high.
@@ -292,3 +292,43 @@ Owner yêu cầu suy luận để sửa crawl khi có căn cứ. Chỉ từ ti�
 - GuardeddeployONLYvalidation.py source+installed/preimagechecks, manifest4C52C67E, backup/var/backups/agentfleet/nailhub-field-20261012T165538Z.18runtimehashesPASS; otherlistenerfilespreserved.
 - Normalworkeractualextractvalidated82.470s thenAI/Save/Approve/readbackPASS. IndependentfreshUIread: Approved, cityLakewood,stateNY,ZIP14750,salarynegotiated.
 - Proof .context/nailhub-evidence/nailhub-address-final-proof.json và nailhub-address-runtime-hashes.json. Resume paused0/pending0/running0/countsapproved8, nohumanholds. Quét10phút tiếp tục. Không commit/push bổ sung này.
+
+
+### v1.0.15 — giá dịch vụ / mức thu nhập cao nhất (Operational)
+- Giá dịch vụ khách trả, ví dụ “Giá gội đầu: $70, $110, $170”, không phải lương. Nếu chỉ có các giá này và không có mức thu nhập thợ thì chọn Thương lượng.
+- Owner chốt tin có cả giá dịch vụ và thu nhập rõ: bỏ giá dịch vụ, quy đổi các mức thu nhập thợ theo đơn vị cục bộ của từng khoản, lấy cao nhất và làm tròn xuống hàng trăm. Actual2500+/2tuần và2900+/2tuần →1450→1400/tuần.
+- Nhiều mức theo tay nghề:1000/1500tuần và700–900/tuần →1500. Monthly6000–8000→8000×12/52→1846.15→1800.
+- Không lấy tiền thuê/tip/thưởng/hoa hồng riêng làm lương chính; đơn vị thực sự mâu thuẫn vẫn HOLD có chi tiết. Số lương không đơn vị vẫn điền nguyên không suy đoán.
+- Source salary policy tính từ nguồn đủ rõ trước salary model schema/evidence, sửa các lỗi model negotiated-with-numeric và1000/1500 chưa nhận. Dùng raw original offsets/unmasked evidence kể cả Unicode NFD.
+- Final644PASS33.168s; independent98PASS7.229s; frozen6manifestC550691669C8FBB91DE889D7F7C3784E62ABD35ED17AC39222104A1C0A99B655. Runtimevalidation/modelonly.
+- Guardeddeploymanifest246D6B31 backup/var/backups/agentfleet/nailhub-field-20261013T014511Z;18runtimehashesPASS, classifier/Telegram unchanged. Requeuedonly1a3b/6f03/56dc salaryholds. Existingworker maxbatch1; normalworker liveverificationPASS.
+- Các lỗi canonical tiểu bang LA/Louisiana,KY/Ky đã được chẩn đoán nhưng không thuộc diff này. Không commit/push bổ sung này.
+
+
+2026-10-13 08:58 LivePASS: normalexistingworker3casesactualAI/Save/Approve/readback; independentfreshUI allApproved:1a3bweekly1400.0,6f03weekly1500.0,56dcweekly1800.0. Proof .context/nailhub-evidence/nailhub-service-price-final-proof.json and nailhub-service-price-runtime-hashes.json. Resume paused0/pending0/running0/countsapproved48needs-human12; otherholdsuntouched. Full644PASS33.168s, independent98PASS7.229s,18runtimehashesPASS, freezeC5506916/manifest246D6B31/backup20261013T014511Z. HarnessverifyNode-onlyexit1/no package.json; no forgedgate. No commit/push.
+
+
+### v1.0.16 — Giá bán/sang nhượng thấp nhất (Operational)
+- Owner chốt chỉ lấy giá bán/sang nhượng thấp nhất, không lấy số thấp nhất trong mọi khoản tiền. Khoảng giá bán lấy đầu thấp; K là nghìn. Điền nguyên giá, không quy đổi tuần và không làm tròn hàng trăm.
+- Bỏ doanh thu, tiền thuê, giá dịch vụ, tip và lương thợ khỏi các giá bán ứng viên. Tin vừa bán tiệm vừa tuyển thợ ưu tiên giá bán; giữ nguyên danh mục hiện có.
+- Phải có ngữ cảnh bán/sang nhượng tiệm rõ ràng; không lấy giá sản phẩm/dịch vụ, giá định kỳ hay câu phủ định việc bán làm giá sang nhượng.
+- Actual03908741-40a8-4579-b941-374a1a9c54d2: “Bán tiệm với giá 60k” và doanh thu30k–35k/tháng →60000. Normal worker AI/Save/Approve/readback thành công; fresh UI navigation xác nhận Approved, salary_type weekly (ô số “Có”), salary_amount60000.0. Đây là giá bán nguyên số theo Owner, không phải thu nhập tuần.
+- Full646PASS37.006s; independent100PASS8.466s; frozen4manifestD9B62A57A4B4EE070C607CAE10EB08105348AAAF7E3F653D3177773485DB5178. Runtime chỉvalidation/model;18hashesPASS giữ classifier/Telegram.
+- Guardeddeploymanifest38855C41, backup/var/backups/agentfleet/nailhub-field-20261013T021021Z. Chỉ requeue tin0390; các hold khác giữ nguyên. Proof .context/nailhub-evidence/nailhub-sale-price-final-proof.json và nailhub-sale-price-runtime-hashes.json. Resume paused0/pending0/running0,approved50,needs-human11.
+- Harnessverify exit1: Không thấy package.json — harness-verify hiện chỉ hỗ trợ project Node. Không giả lập gate; Python tests/reviewer/live proof ở trên. Bổ sung chưa commit/push.
+
+Changelog v1.0.16 | 2026-10-13 09:16 (Asia/Saigon) | AlexChu (Codex controller) | Owner sale-price minimum amendment deployed and fresh UI verified.
+
+
+### v1.0.17 — Danh mục theo nội dung gốc (Operational)
+- Owner yêu cầu sửa Danh mục theo ý định bài: tuyển thợ → Cần thợ nail (JobPosting); bán/sang tiệm → Sang nhượng tiệm (SalonForSale); thợ tìm chỗ làm → Tìm việc (Portfolio). Tin vừa bán tiệm vừa tuyển thợ ưu tiên Sang nhượng tiệm. Quy tắc này thay thế việc giữ nguyên danh mục của v1.0.16.
+- Phân loại từ nguồn gốc có căn cứ, trước AI; hỗ trợ đủ ba danh mục trong proposal, Save payload, readback và recovery. Giá bán dùng Nhập giá/Fixed; không rõ giá dùng Thương lượng; Tìm việc không có ô lương, gửi null. Giữ chính sách giá bán thấp nhất và thu nhập thợ cao nhất đã duyệt.
+- Sửa đúng hai tin Approved đã xác định qua UI, không viết AI hay duyệt lại: 987c7202-2124-4e6d-90d0-05e55dff1f33 Westmont → SalonForSale, Thương lượng/0; 03908741-40a8-4579-b941-374a1a9c54d2 → SalonForSale, Fixed/60000. Không đổi số tiền. Fresh navigation/read xác nhận cả hai vẫn Approved, nội dung/tiêu đề/liên lạc/địa chỉ/ngày lưu và ngày xuất bản giữ nguyên.
+- Form đổi danh mục gọi GetTranslation bất đồng bộ; adapter đợi phản hồi rồi khôi phục tiêu đề gốc. Category-only repair giới hạn đúng hai ID, paused+idle, fingerprint hiện tại, checkpoint bền vững và bảo vệ mọi dữ liệu khác; không mở sửa hàng loạt Approved.
+- Actual HTTP400 POSTING_START_DATE_CANNOT_BE_PAST: ngày đã lưu 2026-10-12 nhỏ hơn ngày xử lý. Backend AdminUpdatePostingCommand giữ ngày cũ khi request StartDate=null. Category-only repair dùng biểu diễn null có guard khi ngày lưu không đổi; readback vẫn xác nhận ngày lưu và publication nguyên vẹn. Không đổi ngày thật để vượt validator.
+- Initial freeze 4B3733E68F6BFD26E078AC83A38B738D0DB341B3AE138509F7513554F0FDBD0C: full656 PASS36.237s, independent110 PASS8.058s. Final date guard freeze60153FCB2D4BEBDB9D1A4CEB389CED622B592C13BF2FC54CB7D733102887B772: full657 PASS47.843s, independent59 PASS5.100s. Compile/diff checks PASS.
+- Guarded initial deploy manifest7235FD98 backup/var/backups/agentfleet/nailhub-field-20261013T023857Z; date guard manifest8D30D273 backup/var/backups/agentfleet/nailhub-field-20261013T024535Z. Final22 source/installed runtime hashes PASS; classifier và Telegram giữ nguyên, cùng listener/client.
+- Actual UI screenshot hiển thị Westmont: Sang nhượng tiệm. Proof: .context/nailhub-evidence/nailhub-category-final-proof.json, nailhub-category-final-proof.png, nailhub-category-runtime-hashes.json. Sau proof đã resume paused0/pending1/running0, approved50/needs-human11; các hold khác giữ nguyên. Scripted Draft regression PASS; không coi category-only live repair là live full Draft E2E.
+- Harness verify exit1 vì Python repo không có package.json (tool chỉ hỗ trợ Node); CAS same-owner expired lease vẫn từ chối takeover/heartbeat. Không giả lập gate hay sửa harness. Code/runtime/evidence ở trên là kết quả kiểm tra thực tế. Bổ sung chưa commit/push.
+
+Changelog v1.0.17 | 2026-10-13 09:51 (Asia/Saigon) | AlexChu (Codex controller) | Owner category amendment deployed; two Approved examples corrected and freshly verified.

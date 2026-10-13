@@ -74,7 +74,7 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_verified_live_wrong_status_category_identity_block(self):
         with tempfile.TemporaryDirectory() as directory:
             browser=Browser(settings(directory,mode='live',verified=True,verification_ref='offline fake'),page=Mock())
-            for post in (posting_from_data(raw_post(status='Approved')),posting_from_data(raw_post(postingCategory='SalonForSale'))):
+            for post in (posting_from_data(raw_post(status='Approved')),posting_from_data(raw_post(postingCategory='CommonPosting'))):
                 with self.assertRaises(NeedsHuman):await browser.edit_and_rewrite(post,{})
             with self.assertRaises(NeedsHuman):await browser.read('title-as-id')
 

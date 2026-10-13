@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ..config import ConfigError
+from .categories import SUPPORTED_CATEGORIES
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class NailHubConfig:
     range_policy: str = 'upper_floor_100'
     owner_username: str = 'SotaThao'
     num_predict: int = 2048
+    categories: tuple = SUPPORTED_CATEGORIES
 
 
 def load_optional(env=None):
@@ -109,10 +111,12 @@ def load_config(path):
         range_policy = worker.get('range_policy', 'upper_floor_100')
         if range_policy not in ('hold', 'upper_floor_100'):
             raise ValueError()
-        if (contract.get('category', 'JobPosting') != 'JobPosting'
+        categories = contract.get('categories', list(SUPPORTED_CATEGORIES))
+        if (not isinstance(categories, list) or tuple(categories) != SUPPORTED_CATEGORIES
+                or contract.get('category', 'JobPosting') != 'JobPosting'
                 or contract.get('draft_status', 'Draft') != 'Draft'
                 or contract.get('approved_status', 'Approved') != 'Approved'):
-            raise ConfigError('Only JobPosting Draft -> Approved contract is supported')
+            raise ConfigError('Only verified recruitment/sale/seeker Draft -> Approved contract is supported')
         return NailHubConfig(db, profile, tuple(ids), mode, interval, batch, url,
                              ollama.rstrip("/"), "qwen3.5:9b", timeout, verified, reference,
                              selectors, fields, options, contract.get("draft_status", "Draft"),

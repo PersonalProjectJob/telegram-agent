@@ -9,7 +9,8 @@ from .browser import Browser, matches_expected
 from .model import NailHubModel
 from .state import State
 from .notices import VERSION, manual_notice, pending_messages, scan_result_text
-from .validation import NeedsHuman, proposal
+from .validation import NeedsHuman, Posting, proposal
+from .categories import SUPPORTED_CATEGORIES, APPROVED_CATEGORY_REPAIRS, category_repair_expected
 from .diagnostics import failure_details
 
 LOG = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ class Service:
             try:
                 actual = await browser.read(job['id'])
                 expected = json.loads(job['expected'])
-                if job['state'] == 'before_approve' and matches_expected(actual, expected, status=self.config.approved_status):
+                if job['state'] in ('before_approve', 'category_before_save') and matches_expected(actual, expected, status=self.config.approved_status):
                     observed = {**actual.snapshot(), 'audit': expected.get('audit', {})}
                     self.state.mark(job['id'], 'approved', 'approval established by fresh read after restart', expected=observed)
                 elif matches_expected(actual, expected, status=self.config.draft_status):
@@ -123,11 +124,11 @@ class Service:
         intended = None
         try:
             self.check_pause()
-            if post.status != self.config.draft_status or post.category != self.config.category:
+            if post.status != self.config.draft_status or post.category not in SUPPORTED_CATEGORIES:
                 raise NeedsHuman('unsupported status or category')
             data = await model_call(self.model.extract, post)
             intended = proposal(post, data, self.config)
-            expected = {**post.snapshot(), 'fields': intended['fields'], 'audit': intended}
+            expected = {**post.snapshot(), 'category': intended['category'], 'fields': intended['fields'], 'audit': intended}
             if self.config.mode == 'preview':
                 self.state.mark(post.id, 'preview', intended['rationale'], expected={**expected, 'audit': intended})
                 return
@@ -159,6 +160,38 @@ class Service:
             reason = str(error) if isinstance(error, NeedsHuman) else 'worker operation failed; review required'
             self.state.mark(post.id, 'uncertain' if uncertain else 'needs-human', reason,
                             details=failure_details(error, post, intended))
+
+    async def repair_category(self, browser, post_id):
+        """Explicit controller invocation only; never scheduled or exposed as a DM command.
+
+        Owner pauses the normal worker before this two-record repair. Retained
+        original source decides intent; fresh Approved data binds every write.
+        """
+        status = self.state.status()
+        if post_id not in APPROVED_CATEGORY_REPAIRS or not status['paused'] or status['running']:
+            raise NeedsHuman('approved category repair requires authorized ID and paused worker')
+        row = self.state.get(post_id)
+        if not row or row['state'] != 'approved':
+            raise NeedsHuman('approved category repair durable source is unavailable or locked')
+        source = Posting(**json.loads(row['original']))
+        current = await browser.read(post_id)
+        expected = category_repair_expected(current, source)
+        if not self.state.begin_category_repair(post_id, expected):
+            raise NeedsHuman('approved category repair is already active or locked')
+        try:
+            actual = await browser.category_only_repair(current, expected)
+            if not matches_expected(actual, expected, status='Approved'):
+                raise NeedsHuman('category-only fresh read differs from expected state')
+        except Exception:
+            self.state.mark(post_id, 'uncertain', 'category-only Save outcome unverified', expected=expected,
+                details={'kind': 'automation', 'field': 'category', 'current': current.category, 'source': expected['category'],
+                         'evidence': source.fields.get('title', ''),
+                         'action': 'Kiểm tra Danh mục và trạng thái lưu hiện tại; chưa xác nhận kết quả sửa, không tự lưu lại.'})
+            raise
+        finally:
+            self.state.finish_scan('category-only correction checked')
+        self.state.mark(post_id, 'approved', 'category-only correction verified; other facts preserved', expected=expected)
+        return actual
 
     async def scan(self):
         async with self.browser_factory(self.config) as browser:

@@ -6,7 +6,7 @@ LABELS = {'salon': 'Tên tiệm', 'address': 'Địa chỉ salon', 'city': 'Thà
           'state': 'Tiểu bang', 'zip': 'Mã bưu điện', 'email': 'Email',
           'phone_primary': 'Số điện thoại chính', 'phone_other': 'Số điện thoại khác',
           'salary_amount': 'Mức lương', 'salary_type': 'Loại lương',
-          'startDate': 'Ngày bắt đầu', 'endDate': 'Ngày kết thúc', 'automation': 'Tự động hóa'}
+          'startDate': 'Ngày bắt đầu', 'endDate': 'Ngày kết thúc', 'category': 'Danh mục', 'automation': 'Tự động hóa'}
 
 
 def safe(value, limit=220):

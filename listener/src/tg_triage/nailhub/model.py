@@ -57,7 +57,12 @@ Owner policy: a numeric salary without any explicit pay period is copied unchang
 Repeated identical salary mentions are one amount. Explicit base pay remains usable with an alternative commission option.
 Owner default: when salary is absent, vague, or has no usable numeric BASE pay, choose negotiated.
 Do not use hidden for absent salary. Pure rent/tips/commission amounts are not base salary.
-Keep clear numeric salary, explicit periods and ranges; conflicting explicit numeric base amounts require review.
+Ignore explicitly labelled customer service prices when identifying worker pay.
+Owner sale policy: an explicitly associated salon/business sale or transfer asking price takes precedence
+even in mixed hiring posts. Code selects the lowest asking endpoint literally, ignoring revenue/rent/wages;
+never treat unrelated product sales or negated sale wording as a salon asking price.
+Keep clear numeric salary, explicit periods and ranges. Multiple worker amounts with their own clear units
+use the highest weekly endpoint, floored to USD100 by code; unknown or conflicting unit associations require review.
 Daily/hourly require explicit days/week and hours/day or hours/week in cited schedule, no defaults.
 location values must be exact original substrings. Suggest missing OR incorrect populated
 salon/address/city/state/zip/email/phone_primary/phone_other fields when explicit original text proves the correct value.

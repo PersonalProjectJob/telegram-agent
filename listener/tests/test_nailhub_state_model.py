@@ -130,7 +130,7 @@ class ConfigModelTests(unittest.TestCase):
             http=FakeHTTP(*[{'message':{'content':json.dumps(invalid)}} for _ in range(2)])
             with self.assertRaises(NeedsHuman):NailHubModel(cfg,opener=http).extract(post)
             self.assertEqual(len(http.calls),2)
-            post=posting_from_data(raw_post('Salary 1200/week or 2400/week'))
+            post=posting_from_data(raw_post('Salary 1200/week or monthly'))
             data=extracted(post.content,'1200','week');http=FakeHTTP({'message':{'content':json.dumps(data)}})
             with self.assertRaises(NeedsHuman):NailHubModel(cfg,opener=http).extract(post)
             self.assertEqual(len(http.calls),1)

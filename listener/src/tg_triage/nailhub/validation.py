@@ -196,13 +196,168 @@ def _schedule(original, value, period):
 PAY_WORDS = re.compile(r'\b(?:bao luong|bao(?=\s*\$?\s*\d)|luong|thu nhap|salary|pay|income|wages?|compensation|guarantee(?:d)?|commission|an chia|tips?|negotiable|thuong luong|thoa thuan|usd|dollars?)(?![a-z])')
 
 
+def without_service_prices(original):
+    """Mask only labelled customer-price lists; preserve original evidence offsets.
+
+    Generic 'giá' and unlabelled money are deliberately insufficient. A salary
+    following the list remains visible to all existing pay/conflict guards.
+    """
+    service = (r'(?:gội\s+đầu(?:\s+dưỡng\s+sinh)?|goi\s+dau(?:\s+duong\s+sinh)?|'
+               r'head\s+spa|hair\s+wash|shampoo|manicure|pedicure|wax(?:ing)?|lashes)')
+    item = rf'\$\s*{NUMBER}(?:\s*[kK])?(?:\s*[-–—]\s*\$?\s*{NUMBER}(?:\s*[kK])?)?'
+    expression = (rf'(?<!\w)(?:giá|gia|prices?)\s+{service}\s*:\s*'
+                  rf'{item}(?:[ \t]*,[ \t]*{item})*(?![\w,]|\.\d)')
+    price_list = re.compile(expression + '|' + unicodedata.normalize('NFD', expression), re.I)
+    return price_list.sub(lambda match: ' ' * len(match.group()), original)
+
+
+def multiple_source_salaries(original, *, audit_original=None):
+    """Owner: highest of multiple explicit worker-pay clauses, each with local unit.
+
+    No unit is borrowed from another clause, heading or work schedule. Unknown
+    money remains subject to the existing ambiguity guard rather than discarded.
+    """
+    local_period = '|'.join(PERIODS.values()) + r'|/\s*2\s*weeks?\b|\btuan\b'
+    local_amount = AMOUNT.pattern.replace('[-–—]', '[-–—/]')
+    pattern = re.compile(r'(?<![\w.,])(?P<amount>' + local_amount +
+                         r')\+?\s*(?:USD\b|dollars?\b)?\s*(?P<period>' + local_period + ')', re.I)
+    matches = list(pattern.finditer(folded(original)))
+    if not matches:
+        return None
+    if len(matches) == 1 and not re.search(r'[-–—/]', matches[0].group('amount')):
+        return None  # Existing single-scalar policy remains unchanged.
+    values = []
+    for index, match in enumerate(matches):
+        clause = salary_context(folded(original), match.start())
+        prefix_start = max((boundary.end() for boundary in re.finditer(r'[\n;!?]|\.(?=\s|$)',
+                           folded(original)[:match.start()])), default=0)
+        if index:
+            prefix_start = max(prefix_start, matches[index-1].end())
+        prefix = folded(original)[prefix_start:match.start()]
+        if re.search(r'\b(?:rent|thue|bonus|thuong|sale|sang tiem|deposit|dat coc|tips?|commission|an chia)\b', prefix):
+            return None  # Never select money explicitly labelled as non-base pay.
+        if not (PAY_WORDS.search(clause) or re.search(r'\beverything\s*:\s*$', prefix)
+                or not re.search(r'[a-z]', clause[:clause.find(match.group())])):
+            return None
+        unit = match.group('period')
+        period = next((key for key, regex in PERIODS.items() if re.fullmatch(regex, unit)), None)
+        if re.fullmatch(r'/\s*2\s*weeks?', unit):
+            period = 'biweek'
+        if unit == 'tuan':
+            period = 'week'
+        if period not in ('week', 'month', 'year', 'biweek'):
+            return None  # Day/hour still require explicit validated work schedule.
+        following = folded(original)[match.end():].split('\n', 1)[0].split(';', 1)[0]
+        following = pattern.split(following, maxsplit=1)[0]
+        if any(re.search(regex, without_work_schedule(following)) for regex in PERIODS.values()):
+            return None
+        low, high, _ = amounts(match.group('amount').replace('/', '-'))
+        def weekly(amount):
+            return (amount * 12 / 52 if period == 'month' else amount / 52 if period == 'year'
+                    else amount / 2 if period == 'biweek' else amount)
+        values.extend((weekly(low), weekly(high)))
+    # Folded-source offsets are used consistently for all monetary coverage.
+    text = folded(original)
+    if any(not any(m.start() <= money.start() and money.end() <= m.end() for m in matches)
+           for money in MONEY.finditer(text)):
+        return None
+    # A bare salary without its own time unit cannot inherit a neighbouring unit.
+    for label in re.finditer(r'\b(?:bao luong|bao|luong|thu nhap|salary|pay|income|wages?|compensation)'
+                             r'\s*[:=]?\s*\$?\s*(?P<number>\d)', text):
+        if not any(m.start() <= label.start('number') < m.end() for m in matches):
+            return None
+    result = {'mode': 'weekly', 'low': str(min(values)), 'high': str(max(values)), 'range': True,
+              'rationale': 'Owner: highest explicit worker income across locally evidenced periods; floor weekly display to 100'}
+    if len(matches) == 1:
+        def original_offset(target):
+            offset = 0
+            for index, character in enumerate(original):
+                normalized = folded(character)
+                if offset == target and normalized:
+                    return index
+                offset += len(normalized)
+            return len(original)
+        raw_start = original_offset(matches[0].start('amount'))
+        raw_end = original_offset(matches[0].end('amount'))
+        audit_original = original if audit_original is None else audit_original
+        clause = salary_context(audit_original, raw_start)
+        result.update(source_amount=audit_original[raw_start:raw_end].strip(),
+                      period=period, qualification_evidence=clause,
+                      kind='potential' if re.search(r'\b(?:income|thu nhap|tuy|depending|potential)\b', folded(clause)) else 'guaranteed')
+    return result
+
+
+def source_sale_price(original):
+    """Owner: explicit salon sale asking prices precede worker salary.
+
+    Amount association is lexical and bounded, never the minimum of all money
+    in a mixed posting. Revenue and wages do not become an asking price.
+    """
+    text = folded(original)
+    if re.search(r'\b(?:not|never|no\s+longer)\s+(?:(?:currently|actually)\s+)?for\s+(?:sale|transfer)\b'
+                 r'|\b(?:khong|chua)\s+(?:(?:can|muon)\s+)?(?:ban|sang(?:\s+nhuong)?)\s+tiem\b'
+                 r'|\btiem\s+(?:khong|chua)\s+(?:ban|sang(?:\s+nhuong)?)\b', text):
+        return None  # Contradictory business-sale intent cannot authorize an override.
+    business = r'(?:tiem(?:\s+nails?)?|(?:nail\s+)?salon|business)'
+    sale = (rf'(?:\b(?:ban|sang(?:\s+nhuong)?|chuyen\s+nhuong|nhuong\s+lai)\s+{business}\b'
+            rf'|\b{business}\s+(?:for\s+sale|for\s+transfer)\b)')
+    connector = r'\s*(?:(?:voi\s+gia|gia\s+ban|gia\s+sang|gia|voi|chi|la|asking\s+price|price|for|at)\s*)?[:=]?\s*'
+    direct = re.compile(sale + connector + r'(?P<amount>' + AMOUNT.pattern + r')(?![\w,]|\.\d)')
+    candidates = []
+    positive_heads = []
+    for head in re.finditer(sale, text):
+        prefix = salary_context(text, head.start()).split(head.group(), 1)[0]
+        if re.search(r'\b(?:khong|chua|not|never|no\s+longer)\b', prefix):
+            continue
+        positive_heads.append(head)
+    for match in direct.finditer(text):
+        if any(head.start() == match.start() for head in positive_heads):
+            candidates.append(match)
+    # A separate bare asking label is allowed only directly after a positive
+    # business-sale heading/price clause, with no intervening prose to reassign it.
+    asking = re.compile(r'\b(?:gia\s+(?:ban|sang\s+nhuong|sang|chuyen\s+nhuong)|asking\s+price|sale\s+price)'
+                        + connector + r'(?P<amount>' + AMOUNT.pattern + r')(?![\w,]|\.\d)')
+    for match in asking.finditer(text):
+        if any(a.start() <= match.start() < a.end() for a in candidates):
+            continue
+        anchors = positive_heads + candidates
+        if any(0 <= match.start()-anchor.end() <= 300 and
+               not text[anchor.end():match.start()].strip(' \t\r\n.:;,-') for anchor in anchors):
+            candidates.append(match)
+    values = []
+    for match in candidates:
+        suffix = text[match.end():match.end()+60].lstrip()
+        suffix = re.sub(r'^(?:usd|dollars?)\b\s*', '', suffix)
+        if any(re.match(regex, suffix) for regex in PERIODS.values()):
+            continue  # Periodic income/rent is not a literal asking price.
+        if (re.match(r'(?:per\b|/|moi\b|each\b)\s*\w', suffix)
+                or re.match(r'(?:for\s+)?(?:manicure|pedicure|service|dich\s+vu|goi\s+dau|wax|lashes)\b', suffix)):
+            continue
+        low, _, _ = amounts(match.group('amount'))
+        values.append(low)
+    if not values:
+        return None
+    price = str(min(values))
+    return {'mode': 'weekly', 'low': price, 'high': price, 'range': False,
+            'copy_no_period': True, 'sale_asking_price': True,
+            'rationale': 'Owner: lowest explicit salon sale/transfer asking endpoint, literal value; no conversion or rounding'}
+
+
 def source_salary_policy(original):
     """Owner's two source-only policies. None leaves the existing period parser in charge.
 
     Bare contact/address numbers never establish pay. Every monetary mention in
     the no-period case must belong to a pay clause and agree on the same scalar.
     """
+    sale_price = source_sale_price(original)
+    if sale_price is not None:
+        return sale_price
+    audit_original = original
+    original = without_service_prices(original)
     source = folded(original)
+    multiple = multiple_source_salaries(original, audit_original=audit_original)
+    if multiple is not None:
+        return multiple
     negotiated = {'mode': 'negotiated', 'low': None, 'high': None, 'range': False,
                   'rationale': 'Owner: absent or unclear numeric base salary defaults to negotiated'}
     if not PAY_WORDS.search(source) and not MONEY.search(original) and not numeric_pay_clauses(original):
@@ -279,7 +434,8 @@ def salary(original, value):
     if not isinstance(rationale, str) or len(rationale) > 240:
         raise NeedsHuman('invalid bounded rationale')
     mode = value['mode']
-    source = folded(original)
+    pay_source = without_service_prices(original)
+    source = folded(pay_source)
     if mode == 'hidden':
         if (value['kind'] != 'none' or value['amount_text'] is not None or value['period'] is not None
                 or value['schedule'] is not None):
@@ -314,7 +470,9 @@ def salary(original, value):
     source_raw = numeric_span.group().strip()
     start = original.index(span) if 'quote' in value['evidence'] else value['evidence']['start']
     raw_start = start + numeric_span.start() + len(numeric_span.group()) - len(numeric_span.group().lstrip())
-    original_clause = salary_context(original, raw_start)
+    if not pay_source[raw_start:raw_start+len(source_raw)].strip():
+        raise NeedsHuman('salary evidence selects a service price')
+    original_clause = salary_context(pay_source, raw_start)
     qualification = folded(original_clause)
     if re.search(r'\b(commission|tip[s]?)\b', qualification):
         raise NeedsHuman('cannot assume tips/commission are salary')
@@ -328,12 +486,12 @@ def salary(original, value):
     if MONEY.search(span[:numeric_span.start()] + span[numeric_span.end():]):
         raise NeedsHuman('another monetary amount in salary evidence requires review')
     end = start + len(span)
-    if any(not (start <= m.start() and m.end() <= end) for m in MONEY.finditer(original)):
+    if any(not (start <= m.start() and m.end() <= end) for m in MONEY.finditer(pay_source)):
         raise NeedsHuman('other monetary clause requires review')
     # Compare against the selected amount itself, not just its enclosing evidence:
     # one long quote can contain several conflicting bare salary clauses.
-    clauses = numeric_pay_clauses(original)
-    selected_start = len(folded(original[:raw_start]))
+    clauses = numeric_pay_clauses(pay_source)
+    selected_start = len(folded(pay_source[:raw_start]))
     selected_end = selected_start + len(folded(source_raw))
     if any(not (m.start() <= selected_start and selected_end <= m.end()) for m in clauses):
         raise NeedsHuman('another numeric salary clause requires review')
@@ -483,6 +641,18 @@ def current_address_repair(post):
             for key, value in (('city', city), ('zip', zip_code)) if not post.fields.get(key, '').strip()}
 
 
+def category_price_policy(post):
+    from .categories import category_proposal
+    target = category_proposal(post)['target']
+    if target == 'Portfolio':
+        return {'mode': 'not_applicable', 'low': None, 'high': None, 'range': False,
+                'rationale': 'Owner: seeker category has no salary/price fields in the inspected form'}
+    if target == 'SalonForSale':
+        return source_sale_price(post.content) or {'mode': 'negotiated', 'low': None, 'high': None, 'range': False,
+                'rationale': 'Owner: no explicit salon asking price; negotiated, never worker salary or revenue'}
+    return source_salary_policy(post.content)
+
+
 def normalize_extraction(post, data):
     """Drop empty/no-op location suggestions, then validate literal evidence with safe paths.
 
@@ -495,7 +665,7 @@ def normalize_extraction(post, data):
     result = dict(data)
     address_repair = current_address_repair(post)
     grounded_state = source_state_repair(post)
-    source_policy = source_salary_policy(post.content)
+    source_policy = category_price_policy(post)
     if source_policy is not None:
         # Evidence/schema from an unused model salary cannot block an exact source policy.
         result['salary'] = {'mode': source_policy['mode'] if source_policy['mode'] == 'negotiated' else 'hidden',
@@ -623,6 +793,9 @@ def source_only_extraction(post):
 
 
 def proposal(post, data, config):
+    from .categories import category_proposal
+    category_change = category_proposal(post)
+    target_category = category_change['target']
     if not isinstance(data, dict) or set(data) != {'salary', 'location', 'facts', 'rationale'}:
         raise NeedsHuman('invalid extraction schema')
     if not isinstance(data['rationale'], str) or len(data['rationale']) > 240:
@@ -681,7 +854,7 @@ def proposal(post, data, config):
             changes['phone_other'] = other
     require_contact({**post.fields, **changes})
     try:
-        pay = salary(post.content, data['salary'])
+        pay = category_price_policy(post) or salary(post.content, data['salary'])
     except NeedsHuman as error:
         if not error.details:
             mention = MONEY.search(post.content)
@@ -708,7 +881,8 @@ def proposal(post, data, config):
         high = format(Decimal(pay['high']).quantize(precision, rounding=ROUND_DOWN), 'f')
         if pay.get('copy_no_period') and not pay['range']:
             changes['salary_amount'] = pay['low']
-            pay['display_policy'] = 'Owner: copy source numeric amount unchanged; no time unit inferred'
+            pay['display_policy'] = ('Owner: lowest explicit salon sale asking price, literal; no conversion or rounding'
+                if pay.get('sale_asking_price') else 'Owner: copy source numeric amount unchanged; no time unit inferred')
         elif pay['range']:
             if config.range_policy != 'upper_floor_100':
                 raise NeedsHuman('range display requires explicit Owner policy')
@@ -724,12 +898,14 @@ def proposal(post, data, config):
             pay['display_policy'] = 'single amount truncated to verified field precision'
     else:
         changes['salary_amount'] = ''
+    if target_category == 'SalonForSale' and changes['salary_type'] == 'weekly':
+        changes['salary_type'] = 'fixed'
     expected_fields = dict(post.fields)
     expected_fields.update(changes)
     metadata_changes = {}
     if '_preserved' in expected_fields:
         preserved = json.loads(expected_fields['_preserved'])
-        if pay['mode'] == 'weekly':
+        if pay['mode'] == 'weekly' and target_category == 'JobPosting':
             preserved['pricePeriod'] = 'Weekly'
         if preserved.get('startDate') == SENTINEL_START_DATE:
             replacement = processing_start_date()
@@ -758,7 +934,13 @@ def proposal(post, data, config):
         'evidence': item['evidence'], 'source_field': 'address',
         'policy': 'Owner: missing city/ZIP derived from fingerprint-bound current salon address; state agrees'}
         for key, item in address_repair.items()})
-    return {'changes': changes, 'fields': expected_fields, 'salary': pay, 'facts': protected,
+    if target_category != post.category:
+        changes['category'] = target_category
+        field_corrections['category'] = {'current': post.category, 'source': target_category,
+            'evidence': '; '.join(item['quote'] for item in category_change['evidence']),
+            'policy': category_change['policy']}
+    return {'changes': changes, 'category': target_category, 'category_change': category_change,
+            'fields': expected_fields, 'salary': pay, 'facts': protected,
             'rationale': data['rationale'], 'metadata_changes': metadata_changes, 'field_corrections': field_corrections}
 
 

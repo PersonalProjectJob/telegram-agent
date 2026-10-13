@@ -51,7 +51,7 @@ class FakeBrowser:
     async def save(self,post,expected):
         self.check_action();self.calls.append('save')
         if self.save_error: raise TimeoutError()
-        self.post=Posting(post.id,'Draft',post.category,expected['content'],dict(expected['fields']))
+        self.post=Posting(post.id,'Draft',expected['category'],expected['content'],dict(expected['fields']))
         if self.save_mismatch: self.post=replace(self.post,content='changed')
         return self.post
     async def approve(self,post):

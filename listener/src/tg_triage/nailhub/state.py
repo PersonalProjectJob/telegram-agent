@@ -91,7 +91,7 @@ class State:
                 db.execute("UPDATE posts SET hash=?,state='queued',original=?,expected='{}',reason='',details='{}' WHERE id=?",
                            (fingerprint, json.dumps(original, ensure_ascii=False), post_id))
                 return True
-            if old and (old['hash'] == fingerprint or old['state'] in ('before_save', 'before_approve', 'uncertain', 'approved')):
+            if old and (old['hash'] == fingerprint or old['state'] in ('before_save', 'before_approve', 'category_before_save', 'uncertain', 'approved')):
                 return bool(old['state'] == 'queued')
             db.execute("INSERT OR REPLACE INTO posts(id,hash,state,original,expected,reason,details) VALUES(?,?,'queued',?,'{}','','{}')",
                        (post_id, fingerprint, json.dumps(original, ensure_ascii=False)))
@@ -111,6 +111,21 @@ class State:
             db.execute('UPDATE posts SET details=? WHERE id=?',
                        (json.dumps(clean(details), ensure_ascii=False, sort_keys=True), post_id))
 
+    def begin_category_repair(self, post_id, expected):
+        from .categories import APPROVED_CATEGORY_REPAIRS
+        if post_id not in APPROVED_CATEGORY_REPAIRS:
+            return False
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            control = db.execute('SELECT paused,running FROM control WHERE id=1').fetchone()
+            if not control['paused'] or control['running']:
+                return False
+            changed = db.execute("UPDATE posts SET state='category_before_save',expected=?,reason=? WHERE id=? AND state='approved'",
+                                 (json.dumps(expected, ensure_ascii=False), 'category-only Save may be in flight', post_id)).rowcount
+            if changed:
+                db.execute('UPDATE control SET running=1 WHERE id=1')
+            return changed == 1
+
     def get(self, post_id):
         with self.connection() as db:
             row = db.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
@@ -118,7 +133,7 @@ class State:
 
     def interrupted(self):
         with self.connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM posts WHERE state IN ('before_save','before_approve')")]
+            return [dict(row) for row in db.execute("SELECT * FROM posts WHERE state IN ('before_save','before_approve','category_before_save')")]
 
     def manual_posts(self):
         with self.connection() as db:
