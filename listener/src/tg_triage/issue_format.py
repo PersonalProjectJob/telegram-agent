@@ -5,7 +5,7 @@ import unicodedata
 import html
 from dataclasses import dataclass
 
-from .models import Classification, IncomingMessage, TICKET_TYPES
+from .models import Classification, IncomingMessage, TICKET_TYPES, canonical_category, immutable_details
 
 
 MAX_QUOTED_MESSAGES = 10
@@ -190,11 +190,100 @@ def _clean_line(value) -> str:
     return redact(sanitize(value, inline=True)) if isinstance(value, str) else ""
 
 
+# 12.15: all template wording and automatic questions are code-owned.
+NO_DETAIL_LINE = "(chưa có thông tin)"
+DOD_EVIDENCE_LINE = "- [ ] Đính kèm evidence kết quả (ảnh/link/log) khi đóng issue"
+BUG_HEADINGS = ("Môi trường", "Các bước tái hiện", "Mong đợi", "Thực tế", "Minh họa / Evidence")
+FEEDBACK_HEADINGS = ("Vấn đề / nhu cầu", "User story", "Đề xuất",
+                     "Phương án khác / cách đang tạm làm",
+                     "Tiêu chí chấp nhận (nháp, checklist Given/When/Then)", "Ngữ cảnh")
+TASK_HEADINGS = ("Việc cần làm", "Lý do / bối cảnh", "Phạm vi: làm gì · KHÔNG làm gì",
+                 "Minh họa / Evidence (đầu vào)", "Xong khi (Definition of Done)",
+                 "Hạn / người được nhắc tới (nếu tin có nêu)")
+SCOPE_IN_LINE = "Làm gì: "
+SCOPE_OUT_LINE = "KHÔNG làm gì: "
+BUG_QUESTIONS = (
+    "Lỗi xảy ra trên môi trường nào (app/bản build, thiết bị, trình duyệt)?",
+    "Các bước để tái hiện lỗi là gì?",
+    "Kết quả mong đợi và kết quả thực tế?",
+    "Gửi thêm ảnh/video màn hình lỗi",
+)
+FEEDBACK_QUESTIONS = ("Vấn đề / nhu cầu là gì?",
+                      "Là vai trò nào, bạn muốn hành động gì để có lợi ích gì?")
+TASK_WORK_QUESTION = "Việc cần làm là gì?"
+MAX_DETAIL_CHARS = 500
+MAX_DETAIL_ITEMS = 10
+MAX_DETAIL_ITEM_CHARS = 200
+
+
+def _type_sections(category, details, attachments):
+    """Render only this category's fields; return sections and missing-field questions."""
+    values = dict(immutable_details(details))
+
+    def text(key):
+        return _clean_line(strip_image_marker(values.get(key)))[:MAX_DETAIL_CHARS]
+
+    def items(key, numbered=False):
+        entries = values.get(key, ())
+        lines = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
+                 for entry in entries[:MAX_DETAIL_ITEMS]]
+        lines = [line for line in lines if line]
+        return "\n".join(f"{index}. {line}" if numbered else f"- [ ] {line}"
+                         for index, line in enumerate(lines, 1))
+
+    sections, questions = [], []
+
+    def section(heading, value, required=False):
+        if value or required:
+            sections.append(f"**{heading}**\n{value or NO_DETAIL_LINE}")
+
+    if category == "bug":
+        fields = (text("environment"), items("steps", numbered=True), text("expected"), text("actual"))
+        for heading, value in zip(BUG_HEADINGS, fields):
+            section(heading, value, required=True)
+        evidence = "\n\n".join(part for part in (text("error_text"), *attachments) if part)
+        section(BUG_HEADINGS[4], evidence, required=True)
+        if not fields[0]:
+            questions.append(BUG_QUESTIONS[0])
+        if not fields[1]:
+            questions.append(BUG_QUESTIONS[1])
+        if not fields[2] or not fields[3]:
+            questions.append(BUG_QUESTIONS[2])
+        if not evidence:
+            questions.append(BUG_QUESTIONS[3])
+    elif category == "feedback":
+        fields = (text("problem"), text("user_story"), text("proposal"), text("alternatives"),
+                  items("acceptance"), "\n\n".join(part for part in (text("context"), *attachments) if part))
+        for index, (heading, value) in enumerate(zip(FEEDBACK_HEADINGS, fields)):
+            section(heading, value, required=index < 2)
+        questions.extend(question for value, question in zip(fields, FEEDBACK_QUESTIONS) if not value)
+    elif category == "task":
+        work = text("work")
+        section(TASK_HEADINGS[0], work, required=True)
+        section(TASK_HEADINGS[1], text("reason_context"))
+        scope = "\n".join(label + value for label, value in
+                          ((SCOPE_IN_LINE, text("scope_in")), (SCOPE_OUT_LINE, text("scope_out"))) if value)
+        section(TASK_HEADINGS[2], scope)
+        clean_links = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
+                       for entry in values.get("links", ())[:MAX_DETAIL_ITEMS]]
+        links = "\n".join("- " + entry for entry in clean_links if entry)
+        section(TASK_HEADINGS[3], "\n\n".join(part for part in (*attachments, links) if part))
+        done = items("done")
+        section(TASK_HEADINGS[4], (done + "\n" if done else "") + DOD_EVIDENCE_LINE, required=True)
+        section(TASK_HEADINGS[5], text("due"))
+        if not work:
+            questions.append(TASK_WORK_QUESTION)
+    return "".join(section + "\n\n" for section in sections), questions
+
+
 def format_issue(message: IncomingMessage, classification: Classification | None,
                  tier: str, needs_human: bool, model: str = "qwen3.5:9b", *,
                  case_messages=None, key_message_ids=None, images=(), documents=(), notes=(),
-                 clarify=None, text=None, max_quoted=None) -> Issue:
+                 clarify=None, text=None, max_quoted=None, details=None) -> Issue:
     """Render one issue. `message` is the case's (or topic group's) first message.
+
+    `details=None` preserves the legacy body; an empty mapping enables the type template
+    for trusted tickets, including typed needs-human tickets (12.15).
 
     All `case_messages` are quoted in time order; `key_message_ids` (Assistant
     definition 12.2) only marks the messages the model called key. `images` ((alt, url) pairs) and `notes` are written by code
@@ -211,6 +300,7 @@ def format_issue(message: IncomingMessage, classification: Classification | None
     if not needs_human and (classification is None or not classification.is_valid()
                             or classification.type not in TICKET_TYPES):
         raise ValueError("An issue requires a valid non-noise classification")
+    typed = not needs_human
     fallback_messages = sorted(case_messages or [message],
                                key=lambda item: (item.received_at, item.message_id))
     fallback_messages = [message] + [item for item in fallback_messages if item is not message]
@@ -281,13 +371,36 @@ def format_issue(message: IncomingMessage, classification: Classification | None
         links = [f"- [{document_label(name, f'tài liệu {index}')}]({url})"
                  for index, (name, url) in enumerate(documents, 1)]
         extras.append("**Tài liệu đính kèm**\n" + "\n".join(links))
+    type_block = ""
+    category = canonical_category(classification.type) if typed else None
+    if details is not None and category in ("bug", "feedback", "task"):
+        # Move the existing, code-owned attachment Markdown into the category's evidence area.
+        type_block, auto_questions = _type_sections(category, details, extras)
+        extras = []
+        questions = []
+        seen = set()
+        for entry in clarify or ():
+            clean = _clean_line(strip_image_marker(entry))[:MAX_CLARIFY_CHARS]
+            if clean and clean not in seen:
+                seen.add(clean)
+                questions.append(clean)
+        for question in auto_questions:
+            key = _clean_line(question)
+            if key not in seen:
+                seen.add(key)
+                questions.append(question)
+        questions = questions[:MAX_CLARIFY]
+        clarify_block = ""
+        if questions or (needs_human and clarify is not None):
+            lines = questions or [NEEDS_CLARITY_LINE]
+            clarify_block = "**Cần làm rõ**\n" + "\n".join(f"- {entry}" for entry in lines) + "\n\n"
     if notes:
         extras.append("\n".join(" ".join(note.split()) for note in notes))
     body = (
         f"<!-- tg:{message.chat_id}:{message.message_id} -->\n"
         f"**Tóm tắt:** {summary}\n"
         + (case_line + "\n" if case_line else "\n")
-        + clarify_block
+        + type_block + clarify_block
         + "\n\n".join(blocks) + "\n\n"
         + "".join(extra + "\n\n" for extra in extras)
         + f"---\nPhân loại: {provenance} · tạo tự động bởi tg-triage"

@@ -86,6 +86,7 @@ class Plan:
     chat_hint: bool = False        # a command group the model called chat (12.11 point 7)
     fallback: bool = False         # no usable model judgment at all (model down, partition or JSON unusable)
     model_reason: str | None = None   # 12.12: the model's short why; stored for the reviewer only
+    details: object = None          # 12.15: optional model fields, only passed to the renderer
 
 
 def _order(item):
@@ -619,7 +620,7 @@ class Pipeline:
                 return Plan(key, messages, first, "rule", "needs_human" if needs else "issue", value,
                             typed=True, clarify=missing, text=(value.title, value.summary),
                             chat_hint=group.category == "chat", fallback=fallback,
-                            model_reason=group.reason)
+                            model_reason=group.reason, details=group.details)
             if group.verdict == "ticket" and wording.is_valid():
                 # An empty command still fixes the type when the rest of the group is a ticket.
                 group = replace(group, type=rules.COMMAND.match(command.text)[1].lower())
@@ -634,7 +635,7 @@ class Pipeline:
         if category == "chat" and group.verdict != "needs_human":
             # Plain talk with nothing for the team (12.11); a tag is judged later, by `_safety`.
             return Plan(key, messages, first, "model", "chat", _chat_value(wording), clarify=(),
-                        reason=REASON_MODEL_CHAT, model_reason=group.reason)
+                        reason=REASON_MODEL_CHAT, model_reason=group.reason, details=group.details)
         typed = False
         if action == "issue" and missing:
             action, typed = "needs_human", True
@@ -644,7 +645,7 @@ class Pipeline:
         return Plan(key, messages, first, "model", action, value, typed=typed, clarify=missing,
                     text=(group.title, group.summary) if action == "needs_human" else None,
                     reason=REASON_MODEL_NOISE if action == "noise" else None, fallback=fallback or unusable,
-                    model_reason=group.reason)
+                    model_reason=group.reason, details=group.details)
 
     def _plan_single(self, case_key, ordered, first, cache):
         """One group for the whole window, for classifiers that cannot split topics."""
@@ -671,7 +672,8 @@ class Pipeline:
         return Plan(case_key, ordered, first, tier, action, classification, typed=typed, clarify=clarify,
                     text=text, key_ids=self._key_ids(analysis, ordered), reason=reason, fallback=unusable,
                     chat_hint=(category == "chat" and action in ("issue", "needs_human")),
-                    model_reason=analysis.reason if analysis is not None else None)
+                    model_reason=analysis.reason if analysis is not None else None,
+                    details=analysis.details if analysis is not None else {})
 
     # ---- execution: one issue per group ------------------------------------------------
 
@@ -704,7 +706,7 @@ class Pipeline:
                 plan.action == "needs_human", self.config.ollama.model,
                 case_messages=plan.messages, key_message_ids=plan.key_ids, images=found.images,
                 documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
-                max_quoted=len(plan.messages))
+                max_quoted=len(plan.messages), details=plan.details if plan.details is not None else {})
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)

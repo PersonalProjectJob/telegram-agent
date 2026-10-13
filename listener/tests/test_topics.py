@@ -386,7 +386,12 @@ class NeedsHumanTests(TopicBase):
         self.assertEqual(self.reconciliation()["pending_review"], 2)
 
     def test_a_ticket_without_missing_info_has_no_clarify_section(self):
-        pipeline = self.pipeline(FakeTopicModel((topic([1]),)))
+        pipeline = self.pipeline(FakeTopicModel((topic([1], details={
+            "environment": "Nexora build 42 · Android 14 · Chrome",
+            "steps": ["Mở màn hình đăng nhập", "Nhấn Đăng nhập"],
+            "expected": "Vào trang chủ", "actual": "Không đăng nhập được",
+            "error_text": "Lỗi E42",
+        }),)))
         self.window(pipeline, ("app nexora bị lỗi",))
         self.close(pipeline)
         self.assertNotIn("Cần làm rõ", self.github.calls[0].body)
@@ -872,6 +877,8 @@ class ClassifierTests(unittest.TestCase):
         return json.dumps({"groups": [group]}, ensure_ascii=False)
 
     def test_request_has_the_topics_prompt_first_then_the_numbered_transcript_in_order(self):
+        from tg_triage.classifier import DETAILS_PROMPT
+
         http = FakeHTTP(self.envelope(self.answer()))
         items = [message(1, "đăng nhập lỗi", received_at=at(0)), message(2, "bấm là văng ra", received_at=at(1))]
         groups = self.split(http, items)
@@ -882,8 +889,11 @@ class ClassifierTests(unittest.TestCase):
         # 12.12: reasoning is on by default (was off).
         self.assertEqual((body["stream"], body["think"], body["options"]), (False, True, {"temperature": 0}))
         self.assertEqual(body["format"], TOPIC_SCHEMA)
+        group_schema = body["format"]["properties"]["groups"]["items"]
+        self.assertIn("details", group_schema["properties"])
+        self.assertNotIn("details", group_schema["required"])
         self.assertEqual([item["role"] for item in body["messages"]], ["system", "user"])
-        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT")
+        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT\n" + DETAILS_PROMPT)
         user = body["messages"][1]["content"]
         self.assertEqual(user, build_transcript(items))
         self.assertLess(user.index("[1] "), user.index("[2] "))

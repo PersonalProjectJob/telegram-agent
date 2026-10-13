@@ -242,7 +242,14 @@ decides everything:
   `pending_review` when nobody tagged or used a command, and a `needs-human` issue when somebody did.
 - **One issue per group, one group per message:** the issue quotes all messages of its group in time
   order (no 10-message cap) and nothing of any other group. Titles, summaries and questions go through the
-  same sanitizer as before; model text is never executed or used as a label.
+  same sanitizer as before; model text is never executed or used as a label. Trusted bug, feedback and
+  task issues (including typed needs-human issues) use category templates from optional model
+  `details`: bug reproduction/expected/actual/evidence, feedback need/user story/draft acceptance/context,
+  or task work/scope/input evidence/DoD. Images and documents appear in bug/task evidence or feedback
+  context. Missing required fields show "(chưa có thông tin)" and append fixed clarifying questions
+  after model questions (deduplicated, at most 5); these automatic questions never change labels.
+  Task DoD always ends with the requirement to attach result evidence. Untyped issues keep the generic
+  body. Detail strings are sanitized/redacted and capped at 500 characters; lists at 10 x 200.
 - **Keys:** each group is keyed `<chat_id>:<smallest message id of the group>` (UNIQUE in the new
   `groups` table), so two groups of one window can never collide and a restart cannot create one
   twice. The plan is stored before anything is posted; `messages.group_key` is set only while it is

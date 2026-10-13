@@ -2,6 +2,7 @@
 
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -53,6 +54,37 @@ def utf8_valid(value):
     except UnicodeEncodeError:
         return False
     return True
+
+
+# 12.15: only these optional fields can cross the model boundary.
+DETAIL_STRING_KEYS = (
+    "environment", "expected", "actual", "error_text", "problem", "user_story", "proposal",
+    "alternatives", "context", "work", "reason_context", "scope_in", "scope_out", "due",
+)
+DETAIL_LIST_KEYS = ("steps", "acceptance", "links", "done")
+
+
+def immutable_details(value):
+    """Ignore malformed optional details; copy into sorted immutable key/value pairs.
+
+    Text is bounded after sanitizing/redacting in the renderer, so truncation cannot expose
+    part of a contact address. Unknown keys and wrong field/item types are discarded.
+    """
+    # Internal records use tuples; JSON arrays are deliberately not accepted as details.
+    if isinstance(value, tuple):
+        value = {pair[0]: pair[1] for pair in value
+                 if isinstance(pair, tuple) and len(pair) == 2 and isinstance(pair[0], str)}
+    result = {}
+    if isinstance(value, Mapping):
+        for key in DETAIL_STRING_KEYS:
+            entry = value.get(key)
+            if utf8_valid(entry):
+                result[key] = entry
+        for key in DETAIL_LIST_KEYS:
+            entries = value.get(key)
+            if isinstance(entries, (list, tuple)):
+                result[key] = tuple(entry for entry in entries if utf8_valid(entry))[:10]
+    return tuple(sorted(result.items()))
 
 
 @dataclass(frozen=True)
@@ -127,6 +159,10 @@ class CaseAnalysis:
     actionable: bool | None = None   # 12.12: False = the model says the request is not clear enough
     reason: str | None = None        # 12.12: short why, for the reviewer (SQLite / CSV only)
     missing_info: tuple = ()         # 12.12: clarifying questions for the reader
+    details: tuple = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "details", immutable_details(self.details))
 
 
 @dataclass(frozen=True)
@@ -149,6 +185,11 @@ class TopicGroup:
     category: str | None = None   # 12.11: bug | task | feedback | chat; None when absent or unusable
     actionable: bool | None = None   # 12.12: False = not clear enough to act on; None = not said
     reason: str | None = None        # 12.12: short why, for the reviewer (SQLite / CSV only)
+
+    details: tuple = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "details", immutable_details(self.details))
 
     def classification(self) -> Classification:
         """The model's wording as a Classification; `is_valid()` tells whether to trust it."""

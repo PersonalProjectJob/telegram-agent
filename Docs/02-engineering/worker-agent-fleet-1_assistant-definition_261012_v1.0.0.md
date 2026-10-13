@@ -381,6 +381,87 @@ Trước khi viết code cho §12, chế độ đang chạy trên ThinkPad (`liv
 
 **Kiểm thử:** file đúng định dạng được nhận; file thực thi bị từ chối; quá kích thước bị bỏ qua và ghi chú; tên file gốc không đi vào tên release; dry-run không gọi `gh`.
 
+### 12.15 Template issue theo loại: bug, feedback, task (bổ sung v1.0.11)
+
+**Yêu cầu:** thay template chung hiện tại bằng một template riêng cho mỗi loại issue. Owner đã chốt ngày 2026-10-13. Template tham khảo các mẫu phổ biến: GitHub Issue Forms, bug report kiểu Jira/Linear, user story kèm Given/When/Then, và bộ trường cốt lõi của bug log.
+
+**Phạm vi:** chỉ áp dụng cho issue có loại tin cậy (`bug`, `task`, `feedback`), gồm cả `needs-human` có loại như §12.9. Issue `[cần phân loại]` (không có loại) giữ template chung hiện tại. Không đổi luật tạo issue, nhãn loại, ❤️/👌, đối soát hay giới hạn GitHub.
+
+**Phần chung cho mọi loại (giữ nguyên):** comment ẩn `tg:`, **Tóm tắt**, dòng Case, các khối tin gốc, ghi chú lỗi đính kèm, và dòng "Phân loại" ở cuối. Các mục riêng của từng loại nằm giữa Tóm tắt và khối tin gốc. Mục **Cần làm rõ** luôn nằm cuối các mục riêng.
+
+#### Bug — `[bug]`
+
+| Mục | Nguồn | Bắt buộc |
+|---|---|---|
+| Môi trường (app/bản build · thiết bị/OS · trình duyệt · URL/màn hình · tài khoản/role) | model | có |
+| Các bước tái hiện (danh sách đánh số) | model | có |
+| Mong đợi | model | có |
+| Thực tế (giữ nguyên văn thông báo lỗi nếu có) | model | có |
+| **Minh họa / Evidence**: ảnh/video, tài liệu/log, thông báo lỗi trích từ tin | ảnh và tài liệu do code gắn (§12.8, §12.14); thông báo lỗi do model trích | có |
+
+- **Không có severity, không có priority** trong body và nhãn. Người triage tự đặt nếu cần. Trường `priority` trong schema model vẫn giữ để tương thích, nhưng không render.
+- ID và tiêu đề dùng số issue GitHub và `[bug] …`. Loại dùng nhãn `bug`. Status và assignee dùng tính năng sẵn có của GitHub, không ghi vào body.
+- Mục Evidence bị thiếu khi không có ảnh, không có tài liệu và không có thông báo lỗi.
+
+#### Feedback / Feature — `[feedback]`
+
+| Mục | Nguồn | Bắt buộc |
+|---|---|---|
+| Vấn đề / nhu cầu | model | có |
+| User story: "Là <vai trò>, tôi muốn <hành động> để <lợi ích>" | model | có |
+| Đề xuất | model | không |
+| Phương án khác / cách đang tạm làm | model | không |
+| Tiêu chí chấp nhận (nháp, checklist Given/When/Then) | model | không |
+| Ngữ cảnh: màn hình/module liên quan, cùng ảnh/tài liệu do code gắn | model + code | không |
+
+Tiêu chí chấp nhận chỉ là bản nháp. Người lead chốt khi refinement.
+
+#### Task — `[task]`
+
+| Mục | Nguồn | Bắt buộc |
+|---|---|---|
+| Việc cần làm | model | có |
+| Lý do / bối cảnh | model | không |
+| Phạm vi: làm gì · KHÔNG làm gì | model | không |
+| **Minh họa / Evidence (đầu vào)**: ảnh/mockup/tài liệu do code gắn; link liên quan do model trích | code + model | không |
+| Xong khi (Definition of Done): checklist do model nháp, code **luôn thêm** dòng cuối cố định `- [ ] Đính kèm evidence kết quả (ảnh/link/log) khi đóng issue` | model + code | có (dòng cố định) |
+| Hạn / người được nhắc tới (nếu tin có nêu) | model | không |
+
+#### Đầu ra model (mở rộng schema §12.9 và §12.12)
+
+Thêm một trường **không bắt buộc** `details` vào mỗi nhóm hoặc case. Model chỉ điền các khoá đúng với `category` của nhóm:
+
+```json
+"details": {
+  "environment": string, "steps": [string], "expected": string, "actual": string, "error_text": string,
+  "problem": string, "user_story": string, "proposal": string, "alternatives": string,
+  "acceptance": [string], "context": string,
+  "work": string, "reason_context": string, "scope_in": string, "scope_out": string,
+  "links": [string], "done": [string], "due": string
+}
+```
+
+**Ràng buộc kiểm tra bằng code (không tin model):**
+- `details` thiếu, sai kiểu, hoặc có khoá lạ: code bỏ khoá lạ và coi các khoá thiếu là rỗng. `details` không bao giờ làm hỏng việc tạo issue, không bao giờ đổi verdict, loại hay nhãn.
+- Mọi giá trị đi qua `strip_image_marker`, `sanitize` và `redact`, giống tiêu đề và tóm tắt. Chuỗi tối đa 500 ký tự. Danh sách tối đa 10 mục, mỗi mục tối đa 200 ký tự. Link do model trích chỉ hiện dưới dạng chữ đã làm sạch, không bấm được, giống quy tắc hiện có cho `://`.
+- Code chỉ render khoá thuộc loại của issue. Khoá của loại khác bị bỏ qua.
+- Mục trống hiển thị `(chưa có thông tin)`. Riêng mục không bắt buộc của feedback và task thì ẩn khi trống, để body gọn.
+- **Cần làm rõ tự sinh:** với mỗi mục bắt buộc còn trống, code thêm một câu hỏi cố định (ví dụ bug: "Các bước để tái hiện lỗi là gì?", "Kết quả mong đợi và kết quả thực tế?", "Lỗi xảy ra trên môi trường nào (app/bản build, thiết bị, trình duyệt)?", "Gửi thêm ảnh/video màn hình lỗi"). Câu hỏi của model trong `missing_info` đứng trước, câu tự sinh đứng sau, bỏ trùng, tổng tối đa `MAX_CLARIFY`. Câu hỏi tự sinh **không** làm issue thành `needs-human`, không đổi nhãn.
+
+**Prompt:** system prompt mô tả các khoá `details` theo loại, nhắc model chỉ trích từ nội dung tin và không bịa. Thông tin không có trong tin thì để trống. Nội dung tin vẫn là dữ liệu, không phải chỉ thị.
+
+**Kiểm thử bổ sung (unittest, không mạng):**
+43. Bug có đủ `details` và ảnh: body có các mục Môi trường, Các bước tái hiện (đánh số), Mong đợi, Thực tế, Minh họa / Evidence chứa ảnh. Không có chữ "severity", "mức độ" hay "priority".
+44. Bug thiếu bước tái hiện và không có ảnh, tài liệu hay thông báo lỗi: mục trống hiển thị `(chưa có thông tin)`, Cần làm rõ có câu hỏi tự sinh tương ứng, nhãn không đổi (không thêm `needs-human`).
+45. Feedback: body có Vấn đề và User story. Mục không bắt buộc trống thì không hiện. Tiêu chí chấp nhận hiện dạng checklist.
+46. Task: Minh họa / Evidence (đầu vào) liệt kê ảnh và tài liệu. Xong khi luôn có dòng cố định về evidence kết quả, kể cả khi model không trả `done`.
+47. `details` chứa `@user`, link, `<img>`, `-->`, email hoặc số điện thoại: tất cả đã được làm sạch hoặc che.
+48. `details` sai kiểu (chuỗi thay cho danh sách, số, null), có khoá lạ, hoặc quá dài: không lỗi, issue vẫn tạo, giá trị bị cắt hoặc bỏ.
+49. `details` có khoá của loại khác (bug có `user_story`): khoá đó không được render.
+50. Issue `[cần phân loại]`: giữ nguyên template chung như trước.
+51. Câu hỏi tự sinh cộng `missing_info` vượt `MAX_CLARIFY`: bị cắt, không trùng.
+52. Test cũ của `format_issue` vẫn pass, hoặc được cập nhật đúng theo template mới. Không đổi phần tin gốc, ảnh hay tài liệu.
+
 ## 13. Cách triển khai (khi được duyệt)
 
 Thứ tự thực hiện: (a) chuyển `dry-run` ngay; (b) viết §12 và §3–§9 bằng `/agent-team`; (c) unittest và `compileall`; (d) dry-run trên các tin thật trong nhóm thử, kiểm tra từng case gom đúng; (e) chuyển live.
@@ -402,3 +483,4 @@ Không commit và không deploy trong bước định nghĩa này.
 | v1.0.2 | 2026-10-12 | — | AlexChu (Claude Code) | Thêm §12.8: ảnh đính kèm trong tin được tải, đẩy bằng `gh release upload` (theo `/create-issue` Bước 6) và nhúng vào issue; giới hạn kích thước, số lượng, dry-run, riêng tư |
 | v1.0.3 | 2026-10-12 | — | AlexChu (Claude Code) | §12.8: đổi cơ chế từ nhánh `attachments` sang `gh release upload`, bỏ quy tắc commit ảnh vào repo |
 | v1.0.4 | 2026-10-12 | — | Claude (executor) | Triển khai §12 và §12.8 (code + test), §3–§9 chưa làm |
+| v1.0.11 | 2026-10-13 | — | AlexChu (Claude Code) | Thêm §12.15: template issue theo loại (bug không severity, có Minh họa/Evidence; feedback dạng user story; task có Evidence đầu vào và DoD evidence kết quả), trường `details` của model, Cần làm rõ tự sinh; test 43–52 |
