@@ -13,18 +13,18 @@ approved_by: "Owner (user)"
 # Tự động duyệt tin NailHub trên THINKPAD
 
 ## Metadata
-- Version: v1.0.17
+- Version: v1.0.19
 - Created: 2026-10-12 17:09 (Asia/Saigon)
-- Updated: 2026-10-13 09:51 (Asia/Saigon)
+- Updated: 2026-10-13 17:52 (Asia/Saigon)
 - Status: Approved — Owner duyệt phương án và yêu cầu tiếp tục triển khai trong chat.
 - Implementation worktree: `C:/Users/AD/.codex/worktrees/nailhub-automation/AgentBuilder`, branch `codex/nailhub-automation`.
-- Executor đã được Owner chọn: Codex · gpt-6.1-sol · high.
+- Executor hiện được Owner chọn: Codex · gpt-6-sol · high; thay gpt-6.1-sol bị at capacity theo quyết định Owner trong chat.
 - Tracking: `.agent-tasks/T-261012-nailhub-postings-automation-on-thinkpad.md`.
-- GitHub: PersonalProjectJob/telegram-agent, nhánh codex/nailhub-automation; commit 7944fe1 đã push theo lệnh Owner. Chưa có issue / PR; bổ sung DM đang chưa commit.
+- GitHub: PersonalProjectJob/telegram-agent, nhánh codex/nailhub-automation; commit32b8460 đã push theo lệnh Owner. Chưa có issue/PR; bổ sung publication v1.0.18 và Business Doc hiện chưa commit/push.
 - Harness / data owner: AlexChu; Codex là runtime thực thi.
 
 ## 1. Mục tiêu
-THINKPAD tự mở https://nailhub.ai/admin/postings, đọc chi tiết tin Draft,
+THINKPAD tự mở https://nailhub.ai/admin/postings, đọc chi tiết tin Draft hoặc Approved chưa Xuất bản,
 trích xuất và kiểm tra dữ liệu gốc bằng model local, sửa thông tin, gọi nút Viết bằng AI,
 lưu và duyệt tin đạt điều kiện. Owner đã chọn cả quét định kỳ lẫn lệnh Telegram.
 Owner chốt: nội dung sau nút AI do flow AI khác phụ trách, ngoài scope worker này;
@@ -36,16 +36,15 @@ username chỉ để bootstrap, không dùng làm chốt phân quyền runtime.
 
 ## 2. Flow đề xuất để duyệt
 1. Nhận job từ lịch quét hoặc lệnh Telegram trong DM đã xác thực Owner.
-2. Khóa job theo posting ID; chỉ xử lý Draft trong phạm vi danh mục đã hỗ trợ.
+2. Khóa job theo posting ID; xử lý Draft hoặc Approved với isPublic=false được xác nhận, trong ba danh mục hỗ trợ; giữ khóa completed/uncertain.
 3. View detail, lưu snapshot nội dung gốc và thông tin cần sửa.
 4. Model đọc nội dung gốc, trả dữ liệu có cấu trúc và lý do ngắn cho từng thay đổi.
 5. Code kiểm tra dữ liệu/đơn vị và căn cứ, rồi mở Edit.
 6. Sửa số liên hệ trùng, bổ sung địa chỉ/ZIP có căn cứ, chọn loại lương/giá trị.
 7. Bấm Viết bằng AI, chờ hoàn thành; nhận nguyên kết quả từ flow AI có sẵn.
 8. Lưu, mở lại detail và đối chiếu giá trị thực tế với thay đổi dự kiến.
-9. Chỉ Approve khi tất cả kiểm tra đạt; kiểm tra trạng thái sau Approve.
-10. Thiếu dữ kiện gốc, thông tin liên lạc/lương thiếu căn cứ hoặc trạng thái không rõ: giữ Draft,
-    lưu lý do và chuyển Owner xem. Không tự Reject.
+9. Draft: Approve sau khi Save đúng. Approved chưa public: Save kết quả AI khi còn false, rồi bật Xuất bản và Save riêng. Xác nhận cuối Approved và isPublic=true.
+10. Dữ liệu mâu thuẫn hoặc thao tác chưa rõ: dừng, lưu chẩn đoán và chuyển Owner xem; không khẳng định còn Draft khi chưa xác nhận. Không tự Reject.
 
 ## 3. Quy tắc dữ liệu
 
@@ -77,8 +76,7 @@ nguồn mâu thuẫn hoặc không đủ căn cứ: cần Owner xem.
   Không nhập thành $6. Không coi tháng mặc định bằng 4 tuần.
 - Giữ phân biệt lương bảo đảm, thu nhập dự kiến, commission và tips.
   Không cộng tips/commission vào mức bảo đảm nếu tin không nói rõ.
-- Thương lượng chỉ khi nội dung nói rõ; không có lương thì Không hiển thị.
-  Có tiền nhưng thiếu đơn vị/kỳ hoặc mâu thuẫn thì chờ Owner.
+- Không có mức lương rõ: Thương lượng. Có mức số không đơn vị: điền nguyên, không tự suy đoán kỳ. Khoảng/mức nhiều loại lấy đầu cao theo quy tắc Owner; giá dịch vụ bị loại; mâu thuẫn thật cần xác nhận.
 - Owner cập nhật quy tắc: khi nguồn ghi khoảng lương, lấy mức CAO NHẤT
   sau khi đổi sang tuần, làm tròn xuống hàng trăm USD cho ô Lương tuần.
   Ví dụ $6K–$10K/tháng ⇒ $1,384.62–$2,307.69/tuần ⇒ nhập $2,300/tuần.
@@ -332,3 +330,64 @@ Changelog v1.0.16 | 2026-10-13 09:16 (Asia/Saigon) | AlexChu (Codex controller) 
 - Harness verify exit1 vì Python repo không có package.json (tool chỉ hỗ trợ Node); CAS same-owner expired lease vẫn từ chối takeover/heartbeat. Không giả lập gate hay sửa harness. Code/runtime/evidence ở trên là kết quả kiểm tra thực tế. Bổ sung chưa commit/push.
 
 Changelog v1.0.17 | 2026-10-13 09:51 (Asia/Saigon) | AlexChu (Codex controller) | Owner category amendment deployed; two Approved examples corrected and freshly verified.
+
+
+### v1.0.18 — Approved chưa xuất bản phải qua AI trước khi public
+Owner đã duyệt cập nhật trong chat ngày 2026-10-13. isPublic là checkbox Xuất bản, độc lập Approved. Workflow nhận Draft hoặc Approved với isPublic=false xác định rõ; không nhận Approved public hay isPublic thiếu/không rõ. Durable completed/uncertain locks vẫn giữ, không chạy lại hàng loạt tin hoàn tất.
+- Approved chưa public: kiểm dữ liệu/danh mục/lương theo nguồn gốc → Edit → Viết bằng AI → Save giữ isPublic=false → fresh read khớp → bật checkbox Xuất bản và Save → fresh read Approved/isPublic=true. Không gọi Approve cùng trạng thái để thay thế publication vì backend không bật public khi trạng thái đã Approved.
+- Draft: giữ flow AI/Save/Approve; backend tự bật public khi chuyển sang Approved, final readback phải xác nhận đúng sự chuyển đổi này cùng publishedAt hợp lệ.
+- Không bổ sung lọc nguồn crawl hay semanticcheck sau AI: Owner xác nhận site AI đã loại nguồn crawl. isPublic=false chỉ là điều kiện nhận xử lý, không chứng minh tin chưa từng chạy AI.
+- Checkpoint trước mọi write; crash recovery đối soát đúng cả publicflag, không coi Approvedfalse là hoàn tất; không blindretry Save/publish. Ngày hợp lệ đã lưu được bảo toàn, chỉ dùng biểu diễn requestnull khi audited path cho phép và backend giữ nguyên; sentinelpolicy cũ giữ nguyên.
+- Một executor hiện có Codex/gpt-6.1-sol/high; review độc lập, scripted regression và actual browser flow trước khi hoàn tất triển khai. Runtime hiện tạm pause để triển khai có kiểm soát; tình trạng triển khai và evidence sẽ được ghi tiếp khi xác nhận.
+
+Changelog v1.0.18 | 2026-10-13 11:20 (Asia/Saigon) | AlexChu (Codex controller) | Owner approved unpublished Approved workflow; implementation and verification in progress.
+
+Bổ sung contract crawler ngày 2026-10-13: ID tuần tự .NET có dạng GUID chuẩn nhưng không mang variant RFC mà worker/frontend deep link từng yêu cầu. Worker nhận GUID hex8-4-4-4-12 và với ID không mở được deep link thì điều hướng listing, ràng buộc ID với đúng row trong cùng phản hồi/trang, kiểm các ô hiển thị, bấm View rồi xác nhận detail ID/nội dung. Không thay frontend NailHub. Link DM trực tiếp của nhóm ID này vẫn bị frontend từ chối; Owner mở danh sách và tìm theo tiêu đề khi cần kiểm tra thủ công. Không khẳng định mọi tin isPublic=false chưa từng qua AI.
+
+
+#### v1.0.18 xác nhận triển khai thực tế
+- Initial publication freeze3808ECD3 full667PASS47.688s, independent121PASS13.693s; guarded6runtime modules source+installed deployB95E07D8 backup/var/backups/agentfleet/nailhub-field-20261013T043013Z.
+- Actual firstread946d bị frontend từ chối deep link, chưa gọi AI/Save (pilot0postrows/noevents). Followup browser-only verifiedlisting fallback freeze3EB54ACA full671PASS42.424s, independent60PASS10.504s; deploy9FB81D09 backup/var/backups/agentfleet/nailhub-field-20261013T044038Z. Final26 runtimehashes khớp; classifier/Telegram giữ nguyên.
+- Actual946ddda8-db99-4d73-385f-08df28db55a0 Zaza: Approved/isPublic=false → normal Service.process với model thật → siteAI1lần → UI Save false → readback → checkpoint before_publish → UIcheckbox/Save true → freshread Approved/true. Không gọi Approve, không fake model hay inject DOM. Quan sát siteAI đã bỏ footer/link BaoNail; worker không dùng nội dung sau AI làm semanticgate. Lương Thương lượng/0 giữ đúng.
+- Screenshot trước/sau đã mở xem: checkboxfalse→true. Separatebrowser freshread khớp toàn bộ bản cuối; actualcandidates348 nhận các sequentialGUID khác và bỏ tin đã hoàn tất.
+- Resume capturedpaused0/pending1/running0, countsapproved55/needs-human14. Các hold cũ giữ nguyên. last_result cũ là lỗi schema trước sửa; lượt quét kế tiếp cập nhật, không coi đó là lỗi mới của livepilot.
+- Proof: .context/nailhub-evidence/nailhub-publication-final-proof.json, nailhub-publication-before.png, nailhub-publication-final-proof.png, nailhub-publication-final-runtime-hashes.json. Controlled livepilot dùng durablestate riêng khi productionpaused, reconcile đúng một productionrow chỉ sau freshproof; không tạo Telegramclient thứ hai.
+- Giới hạn frontend: directlink có sequentialGUID vẫn bị trang quản trị từ chối; worker mở đúng tin qua View trong listing. Owner cần mở listing/tìm tiêu đề nếu link DM thuộc nhóm này không mở được. Không sửa/deploy frontend trong thay đổi này.
+- Harnessverify vẫn chỉ hỗ trợ Node/package.json, repo Python không chạy được gate đó. CAS same-owner expiredlease limitation cũ giữ nguyên; không giả lập gate hay sửa harness. Không commit/push bổ sung này.
+
+Operational v1.0.18 finalized | 2026-10-13 11:48 (Asia/Saigon) | AlexChu qua Codex | Actual AI/save/publish + independent fresh read/candidates verified; periodic resumed.
+
+
+### v1.0.19 — Model diễn giải nghiệp vụ trước khi duyệt
+Owner yêu cầu model xử lý nhiều hơn về ý định/ngữ cảnh/ngôn ngữ, dựa trên các quy tắc nghiệp vụ đã có; sửa và chạy lại đúng ba tin bị giữ sai.
+- Model đề xuất danh mục có dẫn chứng gốc, đọc tất cả khoản tiền với vai trò và đơn vị cục bộ, phân biệt proper salon name với mô tả. Code kiểm enum/căn cứ/số/đơn vị và phép quy đổi, không chỉ dựa regex từ khóa để quyết định ý nghĩa. Sale priority, thu nhập cao nhất/floor100, giá bán thấp nhất, loại giá dịch vụ và không tự đoán kỳ giữ nguyên.
+- a01e7a02-0d95-4a9d-385c-08df28db55a0: Now Hiring Nail Techs ⇒ Cần thợ nail;900–1500/week ⇒1500. Owner xác nhận tên salon Glaze Nails từ URL gốc stores=Glaze-Nails, cho phép quy ước đọc stores có nguồn và chuẩn hóa dấu nối sang khoảng trắng; không dùng BaoNail.com làm tên salon.
+- df176e7a-a9c0-4cde-bb0f-3dbd147ffbe1: tiếng Việt1500tới2700/tuần và tiếng Trung每周1300–2700 đều có đầu cao2700. Hiển thị2700/tuần. Địa chỉ hiện có đầy đủ MiddletonWI53562 làm nguồn riêng sửa stateIL→WI và xóa phone_other trùng.
+- f94c24d1-f671-4c6b-b230-97bd143639ee: giữ Allure Nail Lounge khi body chỉ nêu mô tả Tiệm Nail Sang Vung HARRISONBURG; không thay bằng mô tả32ký tự rồi gây lỗi form. Không nêu mức lương cụ thể ⇒Thương lượng.
+- Bounded feedback/retry khi model đề xuất lỗi; DM phải tách giá trị đang lưu khỏi giá trị đề xuất và phân loại đúng lỗi tự động hóa/dữ liệu. Không thêm kiểm nội dung sau nút AI.
+- Cùng một stream thực thi, review độc lập, freeze/test/deploy có preimageguard. Chỉ requeue ba needs-human có source mới đã đọc; không mở khóa Approved/uncertain hay giữ source stale. Các sửa publication/GUID trước đó giữ nguyên. Không commit/push.
+
+Changelog v1.0.19 | 2026-10-13 15:19 (Asia/Saigon) | AlexChu qua Codex | Owner approved model-assisted business interpretation and exact3 rerun; implementation in progress.
+
+#### v1.0.19 kiểm thử và triển khai
+- Owner đổi executor sau hai lần gpt-6.1-sol at capacity: Codex/gpt-6-sol/high, một executor. Frozen manifest3FC654DC; full681 tests59.571s OK, independent135 focused26.888s OK và final frozen10 tests0.172s OK. Không còn material findings; businessdoc v1.0.2 và controller runner được review độc lập.
+- Guarded deploy đúng categories/model/validation/diagnostics, manifest3B849FAC; backup/var/backups/agentfleet/nailhub-field-20261013T085455Z.26runtimehashes source+installed khớp, classifier/Telegram bảo toàn. Không tạo Telegramclient thứ hai.
+- Exact3 controlled real-model/UI campaign đang chạy khi productionpaused/idle; checkpoint trước mọi write được mirror vào productionuncertain để crash không làm tin có thể đã ghi trở lại needs-human retryable. Chỉ kết luận thành công sau freshread đúng trường/status/publicflag.
+- Harnessverify tiếp tục exit1 vì chỉ hỗ trợ Node và Pythonrepo không có package.json; không giả lập gate. Hạn chế same-ownerexpiredlease cũ giữ nguyên. Chưa commit/push.
+
+Progress v1.0.19 | 2026-10-13 15:57 (Asia/Saigon) | AlexChu qua Codex | Final suite/review/deployment passed; actual exact3 UI proof in progress.
+
+#### v1.0.19 đối chiếu lỗi runtime và sửa bổ sung
+- Lượt v1 không có writeAPI nào cho cả3. a01quote model ghép câu rời; df biểu diễn khoảng có dấu tiền không có trong source; f94 sau extractionvalid lỗi selectcity vìHARRISONBURG khácHarrisonburg. All3 separatefreshread vẫn==original. Exactf94 no-writeproof +sourcefingerprint cho phépcontrolledrequeueđúngID, cácuncertainkhácgiữkhóa.
+- Followupfreeze6C6AD626 full685/87.491PASS independent14/0.102PASS, guardeddeploy6448528A backup092741Z;26runtimehashesPASS. Chuẩn hóa biểu diễn chỉkhikhớpduynhất nguồn, không fuzzycâu/đổi số/kỳ; giữcitycanonicalkhi nguồn xác nhận cùngcity/state.
+- Actualv2 a01 đã qua realmodel (retry2), salonGlazeNails, weekly1500, siteAI1, Savefalse→Save true, Approved/publictrue; screenshotđãmởxem. dfv2retry2 vẫn bỏChineseincome clause, chưawrite; đang bổsung bounded source_repeat cùngweeklyupper và auditrõ. f94 đang xử lý; không coi testscriptPASS là livePASS.
+- Tinyknown HiringNailTechs sourceintent/negation +promptcontiguous được freeze45D7A3E5 full687/64.815PASS independent27/2.131PASS; chưa deploytrongactivecampaign, sẽ gộp exactcurrentV2preimageguard vớibản sửa income sau. Không commit/push.
+
+#### v1.0.19 kết quả cuối — 2026-10-13 17:52 (Asia/Saigon)
+- Cả ba tin đã được xử lý qua chức năng AI của trang, lưu và duyệt/xuất bản theo lifecycle hiện tại. Phiên trình duyệt riêng đọc lại xác nhận cả ba Approved và isPublic=true: a01e7a02… Glaze Nails, JobPosting, 1500/tuần; df176e7a… Happy Nails And Spa, JobPosting, 2700/tuần, WI/Middleton/53562, xóa số phụ trùng; f94c24d1… Allure Nail Lounge, Thương lượng/0, Harrisonburg/VA/22801, giữ hai số khác nhau.
+- Tin song ngữ dùng phản hồi Qwen thật đã ghi ở lượt v3, được V6 kiểm lại với nội dung gốc vừa đọc và chứng minh không đổi. Đây không phải một lần gọi model mới. Nguồn tiếng Việt và tiếng Trung có cùng đầu cao weekly2700; chỉ chuẩn hóa biểu diễn số/đuôi đơn vị có căn cứ, không bỏ kiểm số hoặc đoán đơn vị. SiteAI thực chạy một lần rồi Save/Approve; fresh read xác nhận kết quả.
+- V6 frozen827A2CF5: full692 tests/53.119s PASS; review độc lập78 tests/2.737s PASS; focused21 PASS. Manifest triển khai validation A6D7F6FE, backup /var/backups/agentfleet/nailhub-field-20261013T104123Z. Tổng34 runtime hashes source+installed khớp.
+- Phát hiện deployment wheel issue-templates-261013 ngoài luồng lúc16:40 đã bỏ package/hook NailHub. Guard triển khai chặn trước ghi; recovery overlay5AB36E39 khôi phục32 targets, giữ nguyên classifier mới1A13A271, backup /var/backups/agentfleet/nailhub-overlay-20261013T101625Z. Listener hiện tại giữ khóa Owner-bound và chạy NailHub cùng client Telegram; không có instance Telegram thứ hai. Các release listener sau phải đóng gói đủ package và hooks NailHub để tránh tái diễn.
+- Quét định kỳ đã tiếp tục: paused=0, pending=1, running=0 lúc resume; approved67, needs-human22, uncertain1. Không mở lại các hold khác; tin6bda5b22… vẫn uncertain/khóa.
+- Bằng chứng: .context/nailhub-evidence/nailhub-model-policy-verified-combined-proof.json; nailhub-model-policy-verified-independent-audit.json; nailhub-model-policy-verified-capture-provenance.json; nailhub-model-policy-verified-runtime-hashes.json; ba ảnh verified-glaze/happy/allure đã mở xem. Ảnh phần đầu form xác nhận thông tin liên hệ/địa chỉ/danh mục; salary/publication dựa trên readback và audit, không suy từ phần ảnh không hiển thị.
+- Harnessverify Node-only/package.json exit1 và CAS same-owner expired lease vẫn là giới hạn công cụ; không giả PASS hoặc sửa state bằng tay. Các gate Python, review độc lập và fresh UI read ở trên đã chạy thực tế. Các thay đổi bổ sung chưa commit/push.

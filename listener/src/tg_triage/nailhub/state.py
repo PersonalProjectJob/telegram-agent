@@ -91,7 +91,7 @@ class State:
                 db.execute("UPDATE posts SET hash=?,state='queued',original=?,expected='{}',reason='',details='{}' WHERE id=?",
                            (fingerprint, json.dumps(original, ensure_ascii=False), post_id))
                 return True
-            if old and (old['hash'] == fingerprint or old['state'] in ('before_save', 'before_approve', 'category_before_save', 'uncertain', 'approved')):
+            if old and (old['hash'] == fingerprint or old['state'] in ('before_save', 'before_approve', 'before_publish', 'category_before_save', 'uncertain', 'approved')):
                 return bool(old['state'] == 'queued')
             db.execute("INSERT OR REPLACE INTO posts(id,hash,state,original,expected,reason,details) VALUES(?,?,'queued',?,'{}','','{}')",
                        (post_id, fingerprint, json.dumps(original, ensure_ascii=False)))
@@ -133,7 +133,7 @@ class State:
 
     def interrupted(self):
         with self.connection() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM posts WHERE state IN ('before_save','before_approve','category_before_save')")]
+            return [dict(row) for row in db.execute("SELECT * FROM posts WHERE state IN ('before_save','before_approve','before_publish','category_before_save')")]
 
     def manual_posts(self):
         with self.connection() as db:

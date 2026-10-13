@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from urllib.parse import parse_qs, urlparse
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -26,8 +27,8 @@ class NeedsHuman(ValueError):
 
 class EvidenceError(NeedsHuman):
     """Only invalid extraction evidence may receive one bounded model correction."""
-    def __init__(self, message, *, path='evidence'):
-        super().__init__(message)
+    def __init__(self, message, *, path='evidence', details=None):
+        super().__init__(message, details=details)
         self.path = path
 
 
@@ -69,10 +70,12 @@ def evidence(original, span, *, maximum=500):
 
 NUMBER = r'\d+(?:[.,]\d+)*'
 AMOUNT = re.compile(rf'\s*\$?\s*({NUMBER})\s*([kK]?)\s*(?:[-–—]\s*\$?\s*({NUMBER})\s*([kK]?))?\s*')
+RANGE_LITERAL = re.compile(rf'(?<![\d.,])\$?\s*{NUMBER}\s*[kK]?\s*'
+                           rf'(?:[-–—]|tới|đến|toi|den|to)\s*\$?\s*{NUMBER}\s*[kK]?\+?', re.I)
 MONEY = re.compile(rf'\$\s*{NUMBER}(?:\s*[kK])?|(?<!\w){NUMBER}\s*[kK](?!\w)')
 PERIODS = {
-    'week': r'(?:/\s*week\b|\b(?:per|a|each)\s+week\b|\bweekly\b|/\s*tuan\b|\b(?:moi|mot)\s+tuan\b)',
-    'month': r'(?:/\s*month\b|\b(?:per|a|each)\s+month\b|\bmonthly\b|/\s*thang\b|\b(?:moi|mot)\s+thang\b)',
+    'week': r'(?:/\s*week\b|\b(?:per|a|each)\s+week\b|\bweekly\b|/\s*tuan\b|\b(?:moi|mot)\s+tuan\b|每周)',
+    'month': r'(?:/\s*month\b|\b(?:per|a|each)\s+month\b|\bmonthly\b|/\s*thang\b|\b(?:moi|mot)\s+thang\b|每月)',
     'year': r'(?:/\s*year\b|\b(?:per|a|each)\s+year\b|\bannually\b|\byearly\b|/\s*nam\b)',
     'biweek': r'(?:\bbiweekly\b|\b(?:every|per)\s+(?:two|2)\s+weeks?\b|/\s*2\s*tuan\b|\bmoi\s*2\s*tuan\b)',
     'day': r'(?:/\s*day\b|\b(?:per|a|each)\s+day\b|\bdaily\b|/\s*ngay\b)',
@@ -90,6 +93,22 @@ def numeric_pay_clauses(text):
     period = '|'.join(PERIODS.values())
     pattern = rf'(?<![\w.,]){AMOUNT.pattern}(?:USD\b|dollars?\b)?\s*(?:{period})'
     return list(re.finditer(pattern, folded(text), re.I))
+
+
+def monetary_source_tokens(original):
+    """Source money spans that require candidate accounting, including bare income."""
+    tokens = [(m.start(), m.end()) for m in MONEY.finditer(original)]
+    for line in re.finditer(r'[^\n]+', original):
+        if re.search(r'\b(?:income|salary|thu\s+nhap|luong|bao\s+luong)\b|收入', folded(line.group())):
+            tokens.extend((line.start()+m.start(), line.start()+m.end())
+                          for m in re.finditer(r'\d{3,}(?:[.,]\d{3})*', line.group()))
+    tokens.extend((m.start(), m.end()) for m in re.finditer(
+        r'(?<!\w)\d{3,}(?:[.,]\d{3})*(?=\s*(?:/|per)\s*'
+        r'(?:week|tuần|tuan|month|tháng|thang|day|ngày|ngay|hour|giờ|gio)\b)', original, re.I))
+    tokens.extend((m.start(1), m.end(1)) for m in re.finditer(
+        r'(?:\b(?:weekly|monthly|yearly|daily|hourly|mỗi\s+tuần|mỗi\s+tháng)\b|每周|每月)'
+        r'\s*\$?\s*(\d{3,}(?:[.,]\d{3})*)', original, re.I))
+    return tokens
 
 
 def without_work_schedule(text):
@@ -148,6 +167,95 @@ def amounts(text):
     if high < low:
         raise NeedsHuman('reversed salary range')
     return low, high, b is not None
+
+
+def _range_to_dash(text):
+    return re.sub(r'(?<=[0-9kK])\s*(?:[-–—]|toi|den|to)\s*(?=\$?\s*\d)', '-', folded(text), flags=re.I)
+
+
+def _literal_candidate_amount(quote, requested):
+    """Resolve a unique full source range, allowing only bounded presentation marks."""
+    if requested in quote:
+        return requested
+    normalized = _range_to_dash(requested)
+    try:
+        parsed = amounts(normalized.rstrip('+'))
+    except NeedsHuman:
+        return None
+    if not parsed[2]:
+        return None
+    income_quote = bool(re.search(r'\b(?:income|salary|thu\s+nhap|bao\s+luong|wages?)\b|收入', folded(quote)))
+    matches = []
+    for match in RANGE_LITERAL.finditer(quote):
+        literal = match.group().strip()
+        source = _range_to_dash(literal)
+        same_presentation = source == normalized
+        added_currency = (income_quote and '$' not in source and '$' in normalized
+                          and normalized.replace('$', '') == source)
+        if (same_presentation or added_currency) and amounts(source.rstrip('+')) == parsed:
+            matches.append(literal)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _candidate_amount_unit_suffix(requested, period):
+    """Separate only a terminal declared pay unit from model amount formatting.
+
+    The caller must still bind that exact unit immediately after the resolved
+    literal amount in the cited source; this function grants no unit evidence.
+    """
+    if period not in PERIODS:
+        return requested, None
+    match = re.search(rf'(?:{PERIODS[period]})\s*$', folded(requested), re.I)
+    if match is None:
+        return requested, None
+    amount = requested[:match.start()].strip()
+    suffix = requested[match.start():].strip()
+    return (amount, suffix) if amount and suffix else (requested, None)
+
+
+SOURCE_WEEKLY_CHINESE_INCOME_REPEAT = re.compile(
+    rf'(?m)^[ \t]*收入[ \t]*[:：][ \t]*每周[ \t]*'
+    rf'(?P<amount>\$\s*{NUMBER}\s*[-–—]\s*\$\s*{NUMBER})'
+    r'[ \t]*(?:（按技术水平而定）)?[ \t]*$')
+SOURCE_WEEKLY_VIETNAMESE_INCOME_REPEAT = re.compile(
+    rf'(?im)^[ \t]*income[ \t]+cao[ \t]*'
+    rf'(?P<amount>{NUMBER}[ \t]*tới[ \t]*{NUMBER})'
+    r'[ \t]*/[ \t]*tuần[ \t]*$')
+
+
+def _source_weekly_income_repeat(original, workers, covered):
+    """Audit one untranslated model omission with an independently literal weekly range.
+
+    The two anchored source forms are the known translated income pair. Only a
+    unique uncovered full range with the same weekly upper bound can be added;
+    arbitrary money and a different upper bound remain uncovered.
+    """
+    if len(workers) != 1 or not workers[0][2] or workers[0][3] != 'week':
+        return None
+    matches = [match for pattern in (SOURCE_WEEKLY_CHINESE_INCOME_REPEAT,
+                                     SOURCE_WEEKLY_VIETNAMESE_INCOME_REPEAT)
+               for match in pattern.finditer(original)
+               if not any(a <= match.start('amount') and match.end('amount') <= b
+                          for a, b in covered)]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    amount_start, amount_end = match.span('amount')
+    clause = folded(match.group())
+    if re.search(r'\b(?:rent|thue|tips?|commission|an chia|bonus|thuong|deposit|dat coc|'
+                 r'revenue|doanh thu|business income|asking price|sale price|gia ban|gia sang|'
+                 r'service|price)\b|租金|小费|佣金|押金|营业额|价格|服务', clause):
+        return None
+    literal = match.group('amount')
+    try:
+        low, high, is_range = amounts(_range_to_dash(literal))
+    except NeedsHuman:
+        return None
+    if not is_range or high != workers[0][1]:
+        return None
+    return {'quote': match.group().strip(), 'amount_text': literal, 'period': 'week',
+            'low': str(low), 'high': str(high), 'source_field': 'content',
+            'amount_span': {'start': amount_start, 'end': amount_end}}, (amount_start, amount_end)
 
 
 def extracted_amounts(text, period, source_span=None):
@@ -523,6 +631,132 @@ def salary(original, value):
             'qualification_evidence': original_clause, 'rationale': rationale}
 
 
+def candidate_salary(original, candidates):
+    """Validate every model-tagged money clause, then select worker base income.
+
+    The model supplies semantic roles; literal amounts, local periods, coverage,
+    conversion and the display range remain code-owned.
+    """
+    if not isinstance(candidates, list) or len(candidates) > 20:
+        raise EvidenceError('invalid monetary candidate list', path='salary_candidates')
+    allowed = {'worker', 'service', 'rent', 'tips', 'commission', 'revenue', 'sale', 'other'}
+    covered = []
+    workers = []
+    for index, item in enumerate(candidates):
+        path = f'salary_candidates[{index}]'
+        if (not isinstance(item, dict) or set(item) != {'kind', 'amount_text', 'period', 'evidence', 'role', 'schedule'}
+                or item['kind'] not in allowed or not isinstance(item['amount_text'], str)
+                or not isinstance(item['role'], str) or len(item['role']) > 80):
+            raise EvidenceError('invalid monetary candidate schema', path=path)
+        try:
+            quote = evidence(original, item['evidence'])
+        except EvidenceError as error:
+            raise EvidenceError(str(error), path=path+'.evidence') from None
+        start = original.index(quote) if 'quote' in item['evidence'] else item['evidence']['start']
+        requested, unit_suffix = _candidate_amount_unit_suffix(item['amount_text'].strip(), item['period'])
+        amount_text = _literal_candidate_amount(quote, requested)
+        if not amount_text:
+            raise EvidenceError('candidate amount must be an exact original substring', path=path+'.amount_text')
+        if unit_suffix is not None:
+            if (quote.count(amount_text) != 1 or
+                    not quote[quote.index(amount_text)+len(amount_text):].lstrip().startswith(unit_suffix)):
+                raise EvidenceError('candidate amount unit must immediately follow source range',
+                                    path=path+'.amount_text')
+        normalized = _range_to_dash(amount_text)
+        normalized = normalized.rstrip('+').strip()
+        try:
+            low, high, is_range = amounts(normalized)
+        except NeedsHuman as error:
+            raise EvidenceError(str(error), path=path+'.amount_text') from None
+        amount_start = start + quote.index(amount_text)
+        amount_end = amount_start + len(amount_text)
+        for match in RANGE_LITERAL.finditer(original):
+            range_start = match.start() + len(match.group()) - len(match.group().lstrip())
+            range_end = match.end() - len(match.group()) + len(match.group().rstrip())
+            if range_start < amount_end and amount_start < range_end:
+                if amount_start > range_start or amount_end < range_end:
+                    raise EvidenceError('candidate splits an original monetary range', path=path+'.amount_text')
+                source_amount = _range_to_dash(match.group().strip()).rstrip('+')
+                if amounts(source_amount) != (low, high, is_range):
+                    raise EvidenceError('candidate range differs from original', path=path+'.amount_text')
+        if item['role'] and item['role'] not in original:
+            raise EvidenceError('candidate role lacks original literal', path=path+'.role')
+        local_clause = salary_context(quote, quote.index(amount_text))
+        local_text = folded(local_clause)
+        original_clause = folded(without_work_schedule(salary_context(original, amount_start)))
+        periods = {key for key, pattern in PERIODS.items() if re.search(pattern, without_work_schedule(local_text))}
+        source_periods = {key for key, pattern in PERIODS.items() if re.search(pattern, original_clause)}
+        period = item['period']
+        if period is not None and period not in PERIODS:
+            raise EvidenceError('unknown candidate period', path=path+'.period')
+        if periods != ({period} if period else set()) or source_periods != periods:
+            raise EvidenceError('candidate period lacks a unique local source unit', path=path+'.period')
+        if item['kind'] == 'worker':
+            if not without_service_prices(original)[amount_start:amount_end].strip():
+                raise EvidenceError('worker candidate selects a recognized customer service price', path=path+'.kind')
+            alternative_commission = (re.search(r'\b(?:bao luong|guaranteed?)\b', original_clause)
+                                      and re.search(r'\b(?:hoac|or)\s+(?:an chia|commission)\b', original_clause))
+            non_base = list(re.finditer(
+                r'\b(?:rent|thue|bonus|thuong|tips?|commission|an chia|deposit|dat coc|'
+                r'revenue|doanh thu|business income|asking price|sale price|gia ban|gia sang)\b',
+                original_clause))
+            if non_base and not (alternative_commission and all(
+                    match.group() in ('commission', 'an chia') for match in non_base)):
+                raise EvidenceError('worker candidate includes non-base pay', path=path+'.kind')
+            workers.append((low, high, is_range, period, quote, item['schedule']))
+        elif (re.search(r'\b(?:salary|income|thu\s+nhap|bao\s+luong|wages?)\b|收入', original_clause)
+              and not re.search(r'\b(?:service|price|rent|tips?|commission|revenue|sale|bonus)\b', original_clause)):
+            raise EvidenceError('income clause classified as non-worker money', path=path+'.kind')
+        covered.append((amount_start, amount_end))
+    source_repeat = _source_weekly_income_repeat(original, workers, covered)
+    if source_repeat is not None:
+        repeat_audit, repeat_span = source_repeat
+        covered.append(repeat_span)
+    # Every currency-marked clause and every bare amount in an income line must
+    # have an independently classified candidate. A range must cover both ends.
+    tokens = monetary_source_tokens(original)
+    if any(not any(span_start <= a and b <= span_end for span_start, span_end in covered)
+           for a, b in tokens):
+        raise EvidenceError('monetary source clause omitted from candidates', path='salary_candidates')
+    if not workers:
+        return {'mode':'negotiated', 'low':None, 'high':None, 'range':False,
+                'rationale':'Owner: no usable numeric worker base income'}
+    if any(period is None for _, _, _, period, _, _ in workers):
+        if len(workers) != 1:
+            if all((low, high, is_range) == workers[0][:3] and period is None
+                   for low, high, is_range, period, _, _ in workers):
+                source_policy = source_salary_policy(original)
+                if (source_policy is not None and source_policy.get('copy_no_period')
+                        and Decimal(source_policy['low']) == workers[0][0]
+                        and Decimal(source_policy['high']) == workers[0][1]):
+                    return source_policy
+            raise NeedsHuman('multiple worker amounts without local units require review',
+                details={'kind':'data', 'field':'salary_amount', 'current':'',
+                         'source':'Multiple worker amounts lack independent pay periods',
+                         'action':'Confirm each source amount and its local pay period before choosing a weekly value.'})
+        return source_salary_policy(original) or salary(original, {
+            'mode':'ambiguous', 'kind':'ambiguous', 'amount_text':None, 'period':None,
+            'evidence':None, 'schedule':None, 'rationale':'No source period'})
+    values = []
+    for low, high, is_range, period, quote, schedule in workers:
+        factor = {'week':Decimal(1), 'month':Decimal(12)/52, 'year':Decimal(1)/52,
+                  'biweek':Decimal(1)/2}.get(period)
+        if factor is None:
+            factor = _schedule(original, schedule, period)
+        convert = lambda amount: (amount * 12 / 52 if period == 'month' else
+                                  amount / 52 if period == 'year' else amount * factor)
+        values.extend((convert(low), convert(high)))
+    if source_repeat is not None:
+        values.extend((Decimal(repeat_audit['low']), Decimal(repeat_audit['high'])))
+    result = {'mode':'weekly', 'low':str(min(values)), 'high':str(max(values)),
+            'range':min(values) != max(values),
+            'source_clauses':[item[4] for item in workers],
+            'rationale':'Owner: highest locally evidenced worker income; floor weekly display to 100'}
+    if source_repeat is not None:
+        result['source_repeats'] = [repeat_audit]
+    return result
+
+
 PHONE = re.compile(r'(?<!\w)(?:\+?1[\s.()-]*)?(?:\(?\d{3}\)?[\s.()-]*)\d{3}[\s.()-]*\d{4}(?:\s*(?:ext\.?|x|#)\s*\d+)?(?!\d)', re.I)
 
 
@@ -641,9 +875,61 @@ def current_address_repair(post):
             for key, value in (('city', city), ('zip', zip_code)) if not post.fields.get(key, '').strip()}
 
 
-def category_price_policy(post):
+def current_address_state_repair(post):
+    """A complete stored address can correct its own conflicting state field."""
+    address = post.fields.get('address', '').strip()
+    match = ADDRESS_PAIR.fullmatch(address)
+    if not match or not post.fields.get('city') or not post.fields.get('zip'):
+        return {}
+    if (post.fields['city'].strip() != match.group('city').strip()
+            or post.fields['zip'].replace('-', '') != match.group('zip').replace('-', '')):
+        return {}
+    state = match.group('state')
+    if post.fields.get('state', '').strip() == state:
+        return {}
+    if source_state_repair(post) is not None:
+        return {}  # Original address evidence has priority in the existing path.
+    for other in ADDRESS_PAIR.finditer(post.content):
+        if (other.group('city').strip(), other.group('state'), other.group('zip').replace('-', '')) != (
+                match.group('city').strip(), state, match.group('zip').replace('-', '')):
+            raise NeedsHuman('original address conflicts with current address state repair')
+    pair = re.compile(r'(?<!\w)' + re.escape(match.group('city').strip()) +
+                      r'\s*,?\s+([A-Z]{2})\s+(\d{5}(?:-?\d{4})?)(?!\d)')
+    if any(other.group(1) != state or other.group(2).replace('-', '') != match.group('zip').replace('-', '')
+           for other in pair.finditer(post.content)):
+        raise NeedsHuman('original city/state pair conflicts with current address state repair')
+    return {'state': {'value':state, 'source_field':'address', 'evidence':address}}
+
+
+def source_store_name_repair(post):
+    """Owner-confirmed BaoNail stores slug convention, bound to the literal URL."""
+    if post.fields.get('salon', '').strip().casefold() != 'baonail.com':
+        return {}
+    matches = list(re.finditer(r'https://[^\s<>]+', post.content))
+    names = []
+    for match in matches:
+        url = match.group().rstrip('.,;')
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or parsed.hostname not in ('baonail.com', 'www.baonail.com') or parsed.path != '/index.php':
+            continue
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        stores = query.get('stores', [])
+        if len(stores) != 1 or not re.fullmatch(r'[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){1,5}', stores[0]):
+            continue
+        name = stores[0].replace('-', ' ')
+        if len(name) > 30:
+            raise NeedsHuman('source store name exceeds salon field limit')
+        names.append((name, url))
+    if not names:
+        return {}
+    if len({name.casefold() for name, _ in names}) != 1:
+        raise NeedsHuman('source store names conflict')
+    return {'salon': {'value':names[0][0], 'source_field':'content_url', 'evidence':names[0][1]}}
+
+
+def category_price_policy(post, suggestion=None):
     from .categories import category_proposal
-    target = category_proposal(post)['target']
+    target = category_proposal(post, suggestion)['target']
     if target == 'Portfolio':
         return {'mode': 'not_applicable', 'low': None, 'high': None, 'range': False,
                 'rationale': 'Owner: seeker category has no salary/price fields in the inspected form'}
@@ -663,9 +949,23 @@ def normalize_extraction(post, data):
     if not isinstance(data, dict):
         return data  # proposal() owns strict schema validation.
     result = dict(data)
-    address_repair = current_address_repair(post)
+    address_repair = {**current_address_repair(post), **current_address_state_repair(post),
+                      **source_store_name_repair(post)}
     grounded_state = source_state_repair(post)
-    source_policy = category_price_policy(post)
+    from .categories import category_proposal
+    target_category = category_proposal(post, data.get('category'))['target']
+    model_worker_clauses = target_category == 'JobPosting' and isinstance(data.get('salary_candidates'), list)
+    noncontact_source = PHONE.sub(' ', post.content)
+    noncontact_source = ADDRESS_PAIR.sub(' ', noncontact_source)
+    if (model_worker_clauses and not monetary_source_tokens(post.content)
+            and not re.search(r'\d{3,}', noncontact_source)):
+        no_pay = source_salary_policy(post.content)
+        if no_pay is not None and no_pay['mode'] == 'negotiated':
+            # No source money exists to support a generated candidate. Preserve
+            # model location/category checks while using the established no-pay policy.
+            result.pop('salary_candidates', None)
+            model_worker_clauses = False
+    source_policy = None if model_worker_clauses else category_price_policy(post, data.get('category'))
     if source_policy is not None:
         # Evidence/schema from an unused model salary cannot block an exact source policy.
         result['salary'] = {'mode': source_policy['mode'] if source_policy['mode'] == 'negotiated' else 'hidden',
@@ -674,6 +974,19 @@ def normalize_extraction(post, data):
     location = data.get('location')
     if isinstance(location, dict):
         location = dict(location)
+        proposed_salon = location.get('salon')
+        current_salon = post.fields.get('salon', '').strip()
+        if (isinstance(proposed_salon, dict) and isinstance(proposed_salon.get('value'), str)
+                and current_salon and current_salon.casefold() != 'baonail.com'
+                and proposed_salon['value'].strip() != current_salon):
+            name = proposed_salon['value'].strip()
+            explicit_name = re.search(
+                r'\b(?:name\s+of\s+(?:the\s+)?salon|salon\s+name|business\s+name|ten\s+tiem|tiem\s+ten)\s*:\s*'
+                + re.escape(folded(name)) + r'(?!\w)', folded(post.content))
+            # A descriptor or unsupported guess cannot displace a valid stored name.
+            if (len(name) > 30 or re.search(r'\b(?:sang\s+vung|can\s+tho|hiring|for\s+sale)\b', folded(name))
+                    or not (explicit_name or re.search(r'\b(?:nails?|spa|salon|lounge)\b', folded(name)))):
+                location.pop('salon', None)
         for key in address_repair:
             location.pop(key, None)  # Independent trusted-address provenance, not a body quote.
         if grounded_state is not None:
@@ -681,6 +994,22 @@ def normalize_extraction(post, data):
             location.pop('state', None)
             if grounded_state['value'] != post.fields.get('state', '').strip():
                 location['state'] = grounded_state
+        city_item = location.get('city')
+        if isinstance(city_item, dict) and set(city_item) == {'value', 'evidence'}:
+            proposed_city = city_item['value']
+            stored_city = post.fields.get('city', '').strip()
+            stored_state = post.fields.get('state', '').strip()
+            if (isinstance(proposed_city, str) and proposed_city.strip() != stored_city
+                    and proposed_city.strip().casefold() == stored_city.casefold()
+                    and re.fullmatch(r'[A-Z]{2}', stored_state)):
+                try:
+                    city_quote = evidence(post.content, city_item['evidence'])
+                except EvidenceError:
+                    city_quote = ''
+                if (re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) + r'(?!\w)', city_quote)
+                        and re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) +
+                                      r'\s*,?\s+' + re.escape(stored_state) + r'(?![A-Za-z])', post.content)):
+                    location.pop('city')  # Same proven place; preserve the stored form-option spelling.
         result['location'] = {key:item for key,item in location.items()
             if not (key in LOCATION_FIELDS and isinstance(item, dict)
                     and set(item) == {'value', 'evidence'} and isinstance(item['value'], str)
@@ -704,7 +1033,8 @@ def normalize_extraction(post, data):
             if isinstance(item, dict) and 'evidence' in item:
                 checked(item['evidence'], f'location.{key}.evidence')
     pay = result.get('salary')
-    if source_policy is None and isinstance(pay, dict) and pay.get('mode') != 'hidden' and 'evidence' in pay:
+    if (source_policy is None and 'salary_candidates' not in result and isinstance(pay, dict)
+            and pay.get('mode') != 'hidden' and pay.get('evidence') is not None):
         checked(pay['evidence'], 'salary.evidence')
     return result
 
@@ -794,9 +1124,10 @@ def source_only_extraction(post):
 
 def proposal(post, data, config):
     from .categories import category_proposal
-    category_change = category_proposal(post)
+    category_change = category_proposal(post, data.get('category') if isinstance(data, dict) else None)
     target_category = category_change['target']
-    if not isinstance(data, dict) or set(data) != {'salary', 'location', 'facts', 'rationale'}:
+    if not isinstance(data, dict) or not {'salary', 'location', 'facts', 'rationale'} <= set(data) or set(data) - {
+            'salary', 'location', 'facts', 'rationale', 'category', 'salary_candidates'}:
         raise NeedsHuman('invalid extraction schema')
     if not isinstance(data['rationale'], str) or len(data['rationale']) > 240:
         raise NeedsHuman('invalid extraction rationale')
@@ -811,19 +1142,20 @@ def proposal(post, data, config):
     location = data['location']
     if not isinstance(location, dict) or any(key not in LOCATION_FIELDS for key in location):
         raise NeedsHuman('unsupported location field')
-    address_repair = current_address_repair(post)
+    address_repair = {**current_address_repair(post), **current_address_state_repair(post),
+                      **source_store_name_repair(post)}
     changes = {key: item['value'] for key, item in address_repair.items()}
     for key, item in location.items():
         if key in address_repair:
             continue  # This bounded repair has its own address-field provenance.
         if not isinstance(item, dict) or set(item) != {'value', 'evidence'} or not isinstance(item['value'], str):
-            raise NeedsHuman('invalid location evidence')
+            raise EvidenceError('invalid location evidence', path=f'location.{key}.evidence')
         value = item['value'].strip()
         span = evidence(post.content, item['evidence'])
         if not value or len(value) > 200 or not re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', span):
-            raise NeedsHuman('location not present in original', details={'kind': 'automation', 'field': key,
-                'current': post.fields.get(key, ''), 'source': 'Chưa được xác nhận từ nội dung gốc',
-                'action': 'Đối chiếu nội dung gốc; sửa trích xuất, không dùng giá trị model chưa có nguồn.'})
+            raise EvidenceError('location not present in original', path=f'location.{key}.value',
+                details={'kind': 'automation', 'field': key, 'current': post.fields.get(key, ''),
+                         'source': value, 'action': 'Sửa giá trị model theo nguồn gốc; chưa đổi trường đang lưu.'})
         if key in ('state', 'city'):
             city_item = location.get('city', {})
             city = city_item.get('value', post.fields.get('city', ''))
@@ -831,17 +1163,19 @@ def proposal(post, data, config):
             state = state_item.get('value', post.fields.get('state', ''))
             pair = r'(?<!\w)' + re.escape(city.strip()) + r'\s*,?\s+' + re.escape(state.strip()) + r'(?![A-Za-z])'
             if not re.fullmatch(r'[A-Z]{2}', state.strip()) or not re.search(pair, post.content):
-                raise NeedsHuman('location not present in original', details={'kind': 'automation', 'field': key,
-                    'current': post.fields.get(key, ''), 'source': value,
-                    'action': 'Xác nhận thành phố và tiểu bang nằm cùng địa chỉ nguồn; không dùng từ rời rạc trong bài.'})
+                raise EvidenceError('location not present in original address pair', path=f'location.{key}.value',
+                    details={'kind': 'automation', 'field': key, 'current': post.fields.get(key, ''),
+                             'source': value, 'action': 'Trích xuất lại cặp thành phố/tiểu bang từ địa chỉ nguồn.'})
         if key in ('phone_primary', 'phone_other'):
             if not PHONE.fullmatch(value):
-                raise NeedsHuman('phone field contains unrecognized data', details={'kind': 'data', 'field': key,
-                    'current': post.fields.get(key, ''), 'source': value, 'action': 'Xác nhận từng số liên lạc và phần mở rộng trước khi sửa.'})
+                raise EvidenceError('model phone value is invalid', path=f'location.{key}.value',
+                    details={'kind': 'automation', 'field': key, 'current': post.fields.get(key, ''),
+                             'source': value, 'action': 'Trích xuất lại số điện thoại từ nguồn gốc.'})
             digits, extension = phone_key(value)
             if extension:
-                raise NeedsHuman('phone field contains unrecognized data', details={'kind': 'data', 'field': key,
-                    'current': post.fields.get(key, ''), 'source': value, 'action': 'Form cần giữ đúng phần mở rộng điện thoại; xử lý thủ công.'})
+                raise EvidenceError('model phone extension is unsupported by form', path=f'location.{key}.value',
+                    details={'kind': 'automation', 'field': key, 'current': post.fields.get(key, ''),
+                             'source': value, 'action': 'Trích xuất lại số điện thoại không mất phần mở rộng.'})
             value = digits
         current = post.fields.get(key, '').strip()
         if current != value:
@@ -852,9 +1186,21 @@ def proposal(post, data, config):
         other = dedup_phones(contact.get('phone_primary', ''), contact['phone_other'])
         if other != contact['phone_other']:
             changes['phone_other'] = other
-    require_contact({**post.fields, **changes})
     try:
-        pay = category_price_policy(post) or salary(post.content, data['salary'])
+        require_contact({**post.fields, **changes})
+    except NeedsHuman as error:
+        key = (error.details or {}).get('field')
+        if key in location and key in changes:
+            raise EvidenceError('model proposed contact value is invalid', path=f'location.{key}.value',
+                details={'kind':'automation', 'field':key, 'current':post.fields.get(key, ''),
+                         'source':changes[key],
+                         'action':'Sửa đề xuất model; giá trị đã lưu chưa thay đổi.'}) from None
+        raise
+    try:
+        if target_category == 'JobPosting' and 'salary_candidates' in data:
+            pay = candidate_salary(post.content, data['salary_candidates'])
+        else:
+            pay = category_price_policy(post, data.get('category')) or salary(post.content, data['salary'])
     except NeedsHuman as error:
         if not error.details:
             mention = MONEY.search(post.content)
@@ -931,8 +1277,8 @@ def proposal(post, data, config):
                          'evidence': evidence(post.content, location[key]['evidence'])}
                          for key, value in changes.items() if key in location}
     field_corrections.update({key: {'current': post.fields.get(key, ''), 'source': item['value'],
-        'evidence': item['evidence'], 'source_field': 'address',
-        'policy': 'Owner: missing city/ZIP derived from fingerprint-bound current salon address; state agrees'}
+        'evidence': item['evidence'], 'source_field': item['source_field'],
+        'policy': 'Owner: bounded fingerprint-bound stored field or source URL correction'}
         for key, item in address_repair.items()})
     if target_category != post.category:
         changes['category'] = target_category

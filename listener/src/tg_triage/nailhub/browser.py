@@ -19,8 +19,10 @@ from .credentials import load_credentials
 from .validation import NeedsHuman, Posting, PHONE, SENTINEL_START_DATE, phone_key, processing_start_date
 from .categories import (SUPPORTED_CATEGORIES, CATEGORY_LABELS, category_change_valid,
                          category_repair_valid)
+from .publication import eligible, rewrite_valid, publication_valid, approval_readback, unchanged_valid_date
 
-UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.I)
+UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+DEEP_LINK_UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.I)
 LIST_PATH = '/api/v1/Admin/postings'
 AI_PATH = '/api/v1/AI/AIEnhanced'
 TYPES = {'Guaranteed': 'weekly', 'NoGuaranteed': 'hidden', 'Negotiable': 'negotiated',
@@ -60,6 +62,12 @@ class _Text(HTMLParser):
 def canonical_text(text):
     """Canonicalize visible paragraph spacing without interpreting literal text as HTML."""
     return '\n'.join(line.strip() for line in text.splitlines() if line.strip())
+
+
+def listing_title(text):
+    """PostingManagement formatTitle uses JavaScript UTF-16 length/slice(0,20)."""
+    encoded = text.encode('utf-16-le', errors='surrogatepass')
+    return encoded[:40].decode('utf-16-le', errors='surrogatepass')+'...' if len(encoded)>40 else text
 
 
 def plain(html):
@@ -107,7 +115,9 @@ def equivalent_fields(actual, expected):
 
 def matches_expected(post, expected, *, status):
     actual_fields = dict(post.fields)
-    if (status == 'Approved' and not expected.get('audit', {}).get('category_only_repair')
+    if (status == 'Approved' and (approval_readback(expected) or
+            (expected.get('status') == 'Draft' and not expected.get('audit', {}).get('publication_workflow')))
+            and not expected.get('audit', {}).get('category_only_repair')
             and '_preserved' in actual_fields and '_preserved' in expected.get('fields', {})):
         actual = json.loads(actual_fields['_preserved'])
         wanted = json.loads(expected['fields']['_preserved'])
@@ -151,8 +161,11 @@ def prepare_save_payload(data, original, expected):
     # Missing GET fields remain UNKNOWN and are never synthesized as null or sent by this normalizer.
     # The acceptance scope is preservation of the data this UI/API actually exposes.
     for key in preserved:
-        if (key == 'startDate' and expected.get('audit', {}).get('category_only_repair')
-                and category_repair_valid(original, expected) and preserved[key] is not None):
+        if (key == 'startDate' and preserved[key] is not None
+                and original_preserved.get(key) == preserved[key]
+                and ((expected.get('audit', {}).get('category_only_repair') and category_repair_valid(original, expected))
+                     or (unchanged_valid_date(original, expected)
+                         and (rewrite_valid(original, expected) or publication_valid(original, expected))))):
             if key in result and result[key] not in (None, preserved[key]):
                 raise NeedsHuman('UI changed an untouched field')
             # AdminUpdate uses request.StartDate ?? posting.StartDate. Category-only
@@ -179,6 +192,14 @@ def safe_save_payload(data, original, expected):
             or data.get('postingCategory') != expected.get('category')
             or data.get('status') != original.status or data.get('title') != expected['fields']['title']
             or plain(data.get('content', '')) != expected['content']):
+        return False
+    original_metadata = json.loads(original.fields.get('_preserved', '{}'))
+    expected_metadata = json.loads(expected['fields'].get('_preserved', '{}'))
+    if original_metadata.get('isPublic') != expected_metadata.get('isPublic'):
+        if not publication_valid(original, expected):
+            return False
+    if original.status == 'Approved' and not (category_repair_valid(original, expected)
+            or rewrite_valid(original, expected) or publication_valid(original, expected)):
         return False
     mapping = {'salon': 'businessName', 'address': 'address', 'city': 'city', 'state': 'state',
                'zip': 'zipCode', 'phone_primary': 'phone', 'phone_other': 'mobilePhone', 'email': 'email'}
@@ -347,7 +368,7 @@ class Browser:
                 if post.id in seen:
                     raise NeedsHuman('duplicate posting identity across pages')
                 seen.add(post.id)
-                if post.status == self.config.draft_status and post.category in SUPPORTED_CATEGORIES:
+                if eligible(post):
                     results.append(post)
             if not data['hasNextPage']:
                 return results
@@ -364,7 +385,10 @@ class Browser:
     async def read(self, post_id):
         if not isinstance(post_id, str) or not UUID.fullmatch(post_id):
             raise NeedsHuman('stable UUID identity required')
-        data = await self._navigate(self.config.url + '?' + urlencode({'id': post_id}), LIST_PATH + '/' + post_id)
+        if DEEP_LINK_UUID.fullmatch(post_id):
+            data = await self._navigate(self.config.url + '?' + urlencode({'id': post_id}), LIST_PATH + '/' + post_id)
+        else:
+            data = await self._read_via_listing(post_id)
         post = posting_from_data(data)
         if post.id != post_id:
             raise NeedsHuman('detail response identity mismatch')
@@ -376,11 +400,69 @@ class Browser:
         self.current = post
         return post
 
+    async def _read_via_listing(self, post_id):
+        """Actual frontend rejects sequential GUID deep links; use its verified row View UI."""
+        data = await self._navigate(self.config.url, LIST_PATH)
+        seen = set()
+        headers = ['Title','Business Name','Posted By','State','City','Zip Code','Category','Status','Created','Actions']
+        compact = lambda text: ' '.join(str(text).split())
+        for page_number in range(1, self.config.max_pages+1):
+            if (not isinstance(data, dict) or not isinstance(data.get('items'), list)
+                    or data.get('pageNumber') != page_number or type(data.get('hasNextPage')) is not bool):
+                raise NeedsHuman('unverified listing response')
+            items = data['items']
+            for raw in items:
+                identified = posting_from_data(raw)
+                if identified.id in seen:
+                    raise NeedsHuman('duplicate posting identity across pages')
+                seen.add(identified.id)
+            table = await self.one('table')
+            if await table.locator('thead th').all_inner_texts() != headers:
+                raise NeedsHuman('listing table columns differ from verified contract')
+            rows = table.locator('tbody > tr')
+            if await rows.count() != len(items):
+                raise NeedsHuman('listing table rows differ from identified response')
+            target = None
+            for index, raw in enumerate(items):
+                row = rows.nth(index)
+                cells = await row.locator('td').all_inner_texts()
+                expected = [listing_title(raw['title']), raw.get('businessName') or '-',
+                    raw.get('postedByUserName') or raw.get('postedByName') or '-',
+                    raw.get('state') or '-', raw.get('city') or '-', raw.get('zipCode') or '-',
+                    raw['postingCategory'], raw['status']]
+                if len(cells) != 10 or [compact(value) for value in cells[:8]] != [compact(value) for value in expected]:
+                    raise NeedsHuman('listing visible row differs from identified response')
+                if raw['id'] == post_id:
+                    target = row
+            if target is not None:
+                button = target.get_by_role('button', name='View', exact=True)
+                await button.wait_for(state='visible')
+                if await button.count() != 1 or await button.get_attribute('title') != 'View Posting Detail':
+                    raise NeedsHuman('listing View control is missing or ambiguous')
+                async with self.page.expect_response(lambda response: self._response(response, LIST_PATH+'/'+post_id)) as received:
+                    await button.click()
+                detail = await self._json(await received.value)
+                await self.page.wait_for_load_state('networkidle')
+                await self.authenticated()
+                return detail  # read() checks exact returned ID plus visible title/content.
+            if not data['hasNextPage']:
+                raise NeedsHuman('identified posting is missing from verified listing')
+            if page_number == self.config.max_pages:
+                raise NeedsHuman('listing exceeds configured page bound; increase after review')
+            async with self.page.expect_response(lambda response: self._response(response, LIST_PATH)) as received:
+                next_button = await self.control('next_page')
+                if not await next_button.is_enabled():
+                    raise NeedsHuman('pagination readiness mismatch')
+                await next_button.click()
+            data = await self._json(await received.value)
+            await self.page.wait_for_load_state('networkidle')
+        raise NeedsHuman('identified posting is missing from verified listing')
+
     def _live(self, post):
         if self.config.mode != 'live' or not self.config.verified or not self.config.verification_ref:
             raise NeedsHuman('live requires VERIFIED authenticated contract')
-        if not post or post.status != self.config.draft_status or post.category not in SUPPORTED_CATEGORIES:
-            raise NeedsHuman('only identified supported Draft is mutable')
+        if not eligible(post):
+            raise NeedsHuman('only identified Draft or unpublished Approved is mutable')
 
     async def _field(self, key):
         return await self.one(self.config.fields.get(key))
@@ -541,7 +623,8 @@ class Browser:
             await self.guard_save(route, post, expected)
         await self.page.route(route_pattern, guard)
         try:
-            async with self.page.expect_response(lambda r: self._response(r, LIST_PATH + '/' + post.id, 'PUT')) as received:
+            async with self.page.expect_response(lambda r: self._response(r, LIST_PATH + '/' + post.id, 'PUT'),
+                                                 timeout=self.config.timeout_seconds * 1000) as received:
                 await self.action_click('save')
             response = await received.value
             if response.status not in (200, 204):
@@ -566,6 +649,26 @@ class Browser:
             raise NeedsHuman('category-only edit changed protected title/content')
         return await self.save(post, expected, _category_repair=True)
 
+    async def publish(self, post, expected):
+        self._live(post)
+        if not publication_valid(post, expected):
+            raise NeedsHuman('publication transition is not authorized')
+        await self._open_edit(post)
+        editor = await self.control('editor')
+        if canonical_text(await editor.inner_text()) != post.content:
+            raise NeedsHuman('publication editor differs from fresh content')
+        checkbox = await self.one('[role=dialog] #isPublic')
+        if await checkbox.get_attribute('aria-checked') != 'false':
+            raise NeedsHuman('publication checkbox differs from fresh source')
+        self.check_action()
+        await checkbox.click()
+        if await checkbox.get_attribute('aria-checked') != 'true':
+            raise NeedsHuman('publication checkbox completion unverified')
+        if (await (await self._field('title')).input_value() != post.fields['title']
+                or canonical_text(await editor.inner_text()) != post.content):
+            raise NeedsHuman('publication edit changed protected title/content')
+        return await self.save(post, expected)
+
     async def guard_save(self, route, post, expected):
         request = route.request
         parsed = urlparse(request.url)
@@ -585,6 +688,8 @@ class Browser:
 
     async def approve(self, post):
         self._live(post)
+        if post.status != 'Draft':
+            raise NeedsHuman('Approve requires identified Draft')
         fresh = await self.read(post.id)
         if fresh.fingerprint != post.fingerprint:
             raise NeedsHuman('saved post changed before approval')

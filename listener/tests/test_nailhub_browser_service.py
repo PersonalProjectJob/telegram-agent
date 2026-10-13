@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from tg_triage.nailhub.browser import Browser, canonical_text, matches_expected, posting_from_data, prepare_save_payload, same_form_value
 from tg_triage.nailhub.service import Service, model_call
 from tg_triage.nailhub.validation import NeedsHuman, proposal
+from tg_triage.nailhub.publication import publication_expected
 from tests.nailhub_fixtures import FakeBrowser, POST_ID, extracted, raw_post, settings
 
 class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
@@ -74,7 +75,7 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_verified_live_wrong_status_category_identity_block(self):
         with tempfile.TemporaryDirectory() as directory:
             browser=Browser(settings(directory,mode='live',verified=True,verification_ref='offline fake'),page=Mock())
-            for post in (posting_from_data(raw_post(status='Approved')),posting_from_data(raw_post(postingCategory='CommonPosting'))):
+            for post in (posting_from_data(raw_post(status='Approved',isPublic=True)),posting_from_data(raw_post(postingCategory='CommonPosting'))):
                 with self.assertRaises(NeedsHuman):await browser.edit_and_rewrite(post,{})
             with self.assertRaises(NeedsHuman):await browser.read('title-as-id')
 
@@ -302,8 +303,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         for state,status,wanted in [('before_save','Draft','needs-human'),('before_approve','Approved','approved')]:
             with tempfile.TemporaryDirectory() as directory:
                 post=posting_from_data(raw_post());service=Service(settings(directory,mode='live'))
-                service.state.observe(post.id,post.fingerprint,post.snapshot());service.state.mark(post.id,state,expected=post.snapshot())
-                actual=posting_from_data(raw_post(status=status,publishedAt='2026-10-12T10:00:00Z' if status=='Approved' else None))
+                expected=publication_expected(post,approve=True) if state=='before_approve' else post.snapshot()
+                service.state.observe(post.id,post.fingerprint,post.snapshot());service.state.mark(post.id,state,expected=expected)
+                actual=posting_from_data(raw_post(status=status,isPublic=status=='Approved',publishedAt='2026-10-12T10:00:00Z' if status=='Approved' else None))
                 browser=FakeBrowser(actual);await service.reconcile(browser)
                 self.assertEqual(service.state.get(post.id)['state'],wanted);self.assertEqual(browser.calls,['read'])
         with tempfile.TemporaryDirectory() as directory:

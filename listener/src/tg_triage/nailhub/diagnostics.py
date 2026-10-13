@@ -6,7 +6,8 @@ LABELS = {'salon': 'Tên tiệm', 'address': 'Địa chỉ salon', 'city': 'Thà
           'state': 'Tiểu bang', 'zip': 'Mã bưu điện', 'email': 'Email',
           'phone_primary': 'Số điện thoại chính', 'phone_other': 'Số điện thoại khác',
           'salary_amount': 'Mức lương', 'salary_type': 'Loại lương',
-          'startDate': 'Ngày bắt đầu', 'endDate': 'Ngày kết thúc', 'category': 'Danh mục', 'automation': 'Tự động hóa'}
+          'startDate': 'Ngày bắt đầu', 'endDate': 'Ngày kết thúc', 'category': 'Danh mục',
+          'isPublic': 'Trạng thái công khai', 'automation': 'Tự động hóa'}
 
 
 def safe(value, limit=220):
@@ -31,7 +32,7 @@ def failure_details(error, post, intended=None):
     if not details:
         reason = str(error)
         path = getattr(error, 'path', '')
-        field = path.split('.')[1] if path.startswith('location.') else ('salary_amount' if path.startswith('salary.') or reason.startswith(('salary ', 'ambiguous salary', 'unrecognized amount', 'single potential', 'another monetary')) else 'automation')
+        field = path.split('.')[1] if path.startswith('location.') else ('salary_amount' if path.startswith(('salary.', 'salary_candidates')) or reason.startswith(('salary ', 'ambiguous salary', 'unrecognized amount', 'single potential', 'another monetary')) else 'automation')
         details = clean({'field': field, 'kind': 'automation',
             'source': 'Chưa xác định: dữ liệu trích xuất chưa được xác nhận',
             'action': 'Đối chiếu trường với nội dung gốc; thử lại trích xuất hoặc sửa thủ công, không xem lỗi model là dữ liệu tin sai.'})

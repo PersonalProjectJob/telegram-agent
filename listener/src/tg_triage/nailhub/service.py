@@ -12,6 +12,7 @@ from .notices import VERSION, manual_notice, pending_messages, scan_result_text
 from .validation import NeedsHuman, Posting, proposal
 from .categories import SUPPORTED_CATEGORIES, APPROVED_CATEGORY_REPAIRS, category_repair_expected
 from .diagnostics import failure_details
+from .publication import eligible, public_value, rewrite_audit, publication_expected, approval_readback, publication_readback
 
 LOG = logging.getLogger(__name__)
 
@@ -106,12 +107,15 @@ class Service:
             try:
                 actual = await browser.read(job['id'])
                 expected = json.loads(job['expected'])
-                if job['state'] in ('before_approve', 'category_before_save') and matches_expected(actual, expected, status=self.config.approved_status):
+                if (job['state'] == 'category_before_save' or
+                        (job['state'] == 'before_publish' and publication_readback(expected)) or
+                        (job['state'] == 'before_approve' and approval_readback(expected))) and matches_expected(actual, expected, status=self.config.approved_status):
                     observed = {**actual.snapshot(), 'audit': expected.get('audit', {})}
                     self.state.mark(job['id'], 'approved', 'approval established by fresh read after restart', expected=observed)
-                elif matches_expected(actual, expected, status=self.config.draft_status):
+                elif matches_expected(actual, expected, status=expected.get('status', self.config.draft_status)):
                     # Saved data is known, but human review still owns continuation after a crash.
-                    self.state.mark(job['id'], 'needs-human', 'recovered Draft matches proposal; manual continuation required')
+                    self.state.mark(job['id'], 'uncertain' if expected.get('status') == 'Approved' else 'needs-human',
+                                    'recovered saved proposal; manual publication continuation required')
                 else:
                     self.state.mark(job['id'], 'uncertain', 'mutation outcome cannot be established after restart')
             except Exception:
@@ -124,11 +128,18 @@ class Service:
         intended = None
         try:
             self.check_pause()
-            if post.status != self.config.draft_status or post.category not in SUPPORTED_CATEGORIES:
+            if not eligible(post):
+                if public_value(post) is None:
+                    raise NeedsHuman('publication source visibility is unknown', details={'kind':'automation',
+                        'field':'isPublic','current':'Chưa xác nhận','source':'Không có boolean isPublic đáng tin cậy',
+                        'action':'Đọc lại trạng thái công khai từ NailHub; chưa sửa hoặc công khai tin khi giá trị chưa rõ.'})
                 raise NeedsHuman('unsupported status or category')
             data = await model_call(self.model.extract, post)
             intended = proposal(post, data, self.config)
             expected = {**post.snapshot(), 'category': intended['category'], 'fields': intended['fields'], 'audit': intended}
+            unpublished = post.status == self.config.approved_status
+            if unpublished:
+                expected['audit']['publication_workflow'] = rewrite_audit(post)
             if self.config.mode == 'preview':
                 self.state.mark(post.id, 'preview', intended['rationale'], expected={**expected, 'audit': intended})
                 return
@@ -143,19 +154,26 @@ class Service:
             self.state.mark(post.id, 'before_save', 'site AI output received; Save may be in flight', expected=expected)
             self.check_pause()
             saved = await browser.save(post, expected)
-            if not matches_expected(saved, expected, status=self.config.draft_status):
+            if not matches_expected(saved, expected, status=post.status):
                 raise NeedsHuman('post-save fresh read does not match every expected field')
+            if unpublished:
+                expected['audit']['rewrite_save_verified'] = {'source_hash': post.fingerprint, 'saved_hash': saved.fingerprint}
             self.check_pause()
-            self.state.mark(post.id, 'before_approve', 'Approve may be in flight', expected=expected)
-            approved = await browser.approve(saved)
-            if not matches_expected(approved, expected, status=self.config.approved_status):
+            final_expected = publication_expected(saved, approve=not unpublished, audit=expected['audit'])
+            if unpublished:
+                self.state.mark(post.id, 'before_publish', 'publication Save may be in flight', expected=final_expected)
+                approved = await browser.publish(saved, final_expected)
+            else:
+                self.state.mark(post.id, 'before_approve', 'Approve may be in flight', expected=final_expected)
+                approved = await browser.approve(saved)
+            if not matches_expected(approved, final_expected, status=self.config.approved_status):
                 raise NeedsHuman('approval fresh read did not establish expected state')
-            observed = {**approved.snapshot(), 'audit': intended}
+            observed = {**approved.snapshot(), 'audit': final_expected['audit']}
             observed['audit']['approval_publication'] = json.loads(approved.fields.get('_preserved', '{}')).get('publishedAt')
             self.state.mark(post.id, 'approved', 'saved values and approved status verified', expected=observed)
         except Exception as error:
             current = self.state.get(post.id)
-            uncertain = current and current['state'] in ('before_save', 'before_approve')
+            uncertain = current and current['state'] in ('before_save', 'before_approve', 'before_publish')
             # Only our bounded fixed validation reasons are retained; external exception bodies never are.
             reason = str(error) if isinstance(error, NeedsHuman) else 'worker operation failed; review required'
             self.state.mark(post.id, 'uncertain' if uncertain else 'needs-human', reason,
