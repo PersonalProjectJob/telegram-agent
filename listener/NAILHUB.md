@@ -1,0 +1,194 @@
+# Optional NailHub worker
+
+## Current handoff — 2026-10-14
+
+Business source of truth: [NailHub business workflow v1.0.8](../Docs/01-product/nailhub-postings-noissue_business_261013_v1.0.0.md).
+Agents working on this package must first read the [module agent instructions](src/tg_triage/nailhub/AGENTS.md),
+including BR-01…14, BUG-01…09 and the source regression matrix. D-01…03 are now Owner-confirmed;
+D-04/05 retain actual location uncertainty only. The controlled rerun closed with reviewed standalone deployments:30completed (29Draft approvals +1existingApproved publication),16age-skipped,1genuine salon-address hold and3protected historic uncertain records.
+BR-13 skips posts older than45 calendar days using the NailHub listing date; BR-14 uses an audited nailhub.ai publisher
+label only after real source names are exhausted, and corrects its localized post-AI introduction.
+Markdown is not automatically consumed by the extraction model; deployed prompt/code and live evidence are separate.
+The current branding editor preserves other plain text but can flatten rich-text formatting; do not claim HTML preservation.
+Final all50 fresh source/readback and protected116 DB-row audit passed with no Admin/AI mutations; the periodic scan is resumed. The local Python738-test suite and independent114tests passed;46actual captured responses were replayed offline against their sources. Standalone imports/hashes and live UI evidence are separate checks. See Businessv1.0.8/Masterv1.0.25 for the separate controlled-run counts and private evidence. No issue/commit/push for these additions yet.
+
+Current production was migrated to standalone **tg-nailhub** (config `/etc/nailhub/nailhub.toml`, package `nailhub`).
+This branch retains historical `tg_triage.nailhub` paths. Deployment/client instructions below describe the prior
+optional listener integration; do not reapply them over the standalone service. Use the latest
+[Master handoff](../Docs/00-master/nailhub-postings-noissue_master_261012_v1.0.0.md) and inspect the actual release before deploying.
+No second Telegram instance sharing the listener session is authorized.
+
+## Historical optional-listener implementation
+
+Production remains NOT_READY until independent review and authenticated adapter flow evidence.
+This module is part of the existing tg_triage process; never run a second Telegram client/session.
+No NAILHUB_CONFIG means no NailHub state/browser/scheduler and unchanged group routing.
+
+## Deployment (controller/Owner, no automatic deployment)
+
+Install the optional extra in the listener venv: `python -m pip install '.[nailhub]'` from listener.
+As tglistener, install Chromium with `python -m playwright install chromium`; use a private
+PLAYWRIGHT_BROWSERS_PATH outside repo. Create `/var/lib/agentfleet/nailhub` and its profile as
+service-owned mode 0700. SQLite and optional credentials JSON require 0600. Back up state/profile
+securely with the existing listener stopped. No credentials, profile or real posts belong in Git.
+Copy `config/nailhub.example.toml` to `/etc/tg-triage/nailhub.toml` and keep mode=preview,
+contract.verified=false. Numeric Owner ID @SotaThao was resolved by controller to 1603321775;
+set owner_ids=[1603321775] only after confirming the entity with the existing Telethon client.
+The runtime independently resolves numeric IDs, denies bots/self-chat and verifies username→numeric binding during startup using the existing client, then checks incoming private
+sender==chat==allowlisted numeric ID. The username verifies the startup binding; subsequent DM authorization uses numeric IDs.
+
+Owner authorized an optional local credential file with exactly email/password string keys. Store
+outside repo with tglistener ownership and mode 0600, set worker.credential_file. No password is
+printed or logged. Login uses homepage -> exact UI login dialog -> signin success -> dialog hidden
+and navigation settle -> admin sentinel. Unexpected MFA/auth/selector failures block. Expired
+profile triggers one login attempt per scan; absent credentials retains login_required. Use a
+dedicated profile, never the personal browser profile. No remote CDP listener, no exposed debug
+port. For interactive Owner login use a local desktop/session and the same dedicated profile;
+close that browser before worker starts. Credentials do not bypass role checks or admin readback.
+
+```sh
+python -m tg_triage.nailhub login --config /etc/tg-triage/nailhub.toml
+python -m tg_triage.nailhub probe --config /etc/tg-triage/nailhub.toml
+python -m tg_triage.nailhub preview --config /etc/tg-triage/nailhub.toml
+python -m tg_triage.nailhub status --config /etc/tg-triage/nailhub.toml
+```
+
+CLI has no live write command. Run login/probe with listener stopped to avoid profile contention.
+Probe reads all bounded listing pages and prints counts, never content, IDs, tokens or credentials.
+Preview uses local model and stores proposals; it never clicks Edit, AI, Save or Approve. Its browser
+route guard additionally aborts Admin/AI mutation requests. Inspect proposals in private SQLite;
+unchanged preview/held posts are not re-extracted every scan. A source content/field hash change
+permits fresh analysis, except uncertain/approved identities remain locked against retry.
+
+## Contract and write gates
+
+Source used read-only: the-nail-hub/frontend PostingManagement, PostingDetailsDialog,
+PostContentSection, ContactInformationSection, utils/endpoints/admin.ts and post.ts; backend
+AdminUpdatePostingCommand. Actual API origin is pinned https://api.nailhub.ai. Stable UUIDs come
+from GET listing responses generated by UI navigation. Detail opens `/admin/postings?id=UUID`;
+matching GET identity plus visible title/content confirms binding. No guessed API write or direct
+HTTP request is used. Listing pagination uses verified Next UI, never first title/row. Authentication,
+selectors, eligible status/visibility and correct category, stable GUID, fresh source fingerprint and one-visible-element
+checks precede mutations. Read-only selectors may be configured before contract verified; live
+requires verification_ref evidence, nonempty numeric allowlist and verified=true.
+
+Exact salary conversion uses Decimal: month*12/52, year/52, biweekly/2. Day/hour needs cited schedule.
+Owner override 2026-10-12: numeric range UI displays weekly UPPER bound rounded down to nearest USD 100
+(e.g. 6000–10000/month -> 2300/week); original range/period MUST remain in rewritten content. Audit
+retains original endpoints, exact conversions and display decision. Single amounts retain configured
+cent precision, truncated rather than rounded up. Clear numeric salary requires original evidence; absent or unclear numeric base salary uses the Owner negotiated default.
+Explicit-period income ranges retain potential qualifiers and use the Owner display policy; single potential income with an explicit period and tips/commission requiring assumed sums require human review.
+Owner field policy: absent or unclear numeric base pay in source sets negotiated (Thương lượng), replacing the prior hidden default, despite malformed model salary/evidence. Vague Bao lương trên ăn chia without an amount is negotiated; unrelated driving time, rent, tips or pure commission are not numeric base pay. Explicit numeric salary without a period is copied unchanged (repeated base pay $7000 -> 7000); no time unit is inferred or converted. No-period ranges retain both source endpoints and apply the Owner upper-bound floor100 rule without conversion (6K–10K ->10000; 1300–2380 ->2300). Repeated same ranges are accepted. Different amounts without clear local units still hold. Additional non-base money alongside a clear base salary remains subject to source ambiguity guards.
+
+Owner amendment 2026-10-13: explicitly labelled customer service-price lists (e.g. Giá gội đầu: $70, $110, $170) are excluded from salary, preserving original evidence offsets. Service prices alone default to negotiated. Genuine worker pay takes precedence. Multiple clear worker income clauses/ranges with their own explicit week/month/year/biweek units select the highest weekly endpoint and floor the display to USD100; no unit is borrowed from an introductory heading or another amount. Actual Income $2500+/2 tuần and everything: $2900+/2 tuần ->1450 ->1400/week; $1000/1500 tuần plus $700–$900/tuần ->1500; $6000–$8000/tháng ->1800. Slash-range notation is limited to these locally explicit pay clauses. These source-established amounts bypass malformed model salary/evidence. Unknown monetary clauses, rent/bonus/tips/commission money or ambiguous unit associations retain manual review. Single scalar, no-period literal copy and day/hour schedule rules remain unchanged. Site AI output remains outside content checking.
+Source-proven contact/location corrections apply to missing AND incorrect populated fields. Unique bounded context quotes may contain repeated values. City/state must form an explicit source pair. State changes select the exact inspected option, always reselect dependent city and verify both retained values before AI.
+Address/ZIP only uses exact original spans or retained fields. No unsupported public lookup fallback.
+US phone normalization removes duplicate +1 variants while retaining distinct extensions/numbers.
+AI updates title AND content. The latest Owner override delegates content quality to the site AI
+flow: automation accepts its returned title/body without deterministic rewrite checks or a semantic
+model call. Original-source extraction/proposal checks remain required. Entire model JSON/request failure permits source-only absent/unclear-pay negotiated fallback only with valid required contact and no unresolved explicit address, city/state pair, named salon, new phone or email correction. Other failures hold as automation errors; they do not prove posting data is wrong.
+NailHub qwen3.5:9b uses think=false; reasoning is never stored. Generation is bounded by model.num_predict (default 2048),
+context 8192, input 12000 characters and a 600-second HTTP budget; truncation/invalid JSON holds.
+Empty location suggestions leave existing fields intact; nonempty unchanged suggestions are
+ignored only when exactly equal to current fields. Invalid
+literal extraction evidence gets at most one model correction with bounded field-path feedback;
+true pay ambiguity is held directly. Logs contain attempt number, duration, fixed outcome and
+field path, never source text/model reasoning. Salary amount formatting can differ only when the
+full source range parses to identical Decimal endpoints. A labeled work schedule is separate from
+the pay period. These are original-source proposal checks, not post-AI content validation.
+If amount_text includes a known pay-period suffix, it is removed before full-range Decimal validation.
+Period-plus-qualification tails additionally require the entire excerpt to be literally evidenced;
+qualification and conflicting money/period checks remain unchanged.
+Validated salon/location sentences are reduced to every exact recognized current or source-proven
+proposed entity they contain. Unrecognized entity spans receive evidence correction or hold. This
+validates original extraction entities. The completed site AI rewrite is accepted directly;
+no extra instruction prefix, cleanup or content verification is applied.
+Before any Edit/AI operation, salon, street address, city, state, ZIP and main phone must be
+complete and valid under the inspected form limits/US syntax. Missing or incorrect populated values may be corrected only
+from validated original evidence; otherwise the post needs human review. No lookup is guessed.
+
+Save has an exact pinned-origin/method/UUID UI request guard. It restores only OMITTED returned
+whitelisted metadata (including media, dates, pricePeriod and contact name) from the fresh snapshot;
+conflicting included values abort. Numeric salary explicitly sets Weekly metadata, consistent with
+the verified weekly salary form. No separate API write is issued. API-omitted fields remain UNKNOWN,
+are never fabricated as null or sent, and limit preservation claims to accessible UI/API data. A separate
+UI page rechecks source fingerprint before Save and inside its PUT guard. Backend has no proven CAS;
+a tiny concurrent-update race remains between read and transport. Approval may legitimately set
+publishedAt and isPublic=true; this bounded server-owned transition is recorded in audit.
+After Save, new navigation GET must match every expected value before the final publication action. Draft approval uses
+its confirmation dialog; unpublished Approved uses the separate checkbox Save described below. Fresh GET must establish Approved, isPublic=true and all expected fields.
+
+SQLite checkpoints precede Edit/AI/Save and each final approval/publication action. Restart reconciles by fresh reads only. Durable
+approved completion is terminal; saved but unpublished data after crash requires manual continuation; unknown outcomes are
+uncertain and never blindly resaved/reapproved. Pause persists and is checked before each next action;
+an already in-flight remote call must finish/read back. No auto Reject and no unsolicited Telegram
+group notifications. Owner-authorized manual-review notices are sent only to the verified Owner's
+private numeric peer through the existing client. Exact private-DM commands: `/nailhub scan`,
+`/nailhub status`, `/nailhub pending`, `/nailhub pause`, `/nailhub resume`. Rejected namespace never
+becomes a GitHub issue when configured.
+
+## Manual-review DM notices
+
+After startup verifies @SotaThao→1603321775 with the existing Telegram client, the worker backfills
+current needs-human/uncertain posts and sends new holds to that same numeric private peer. Each
+plain-text message contains a bounded title, clickable `https://nailhub.ai/admin/postings?id=<UUID>`
+and a fixed Vietnamese explanation/action. Unknown raw errors and original body text are omitted.
+Uncertain explicitly means the actual Save/Approve result needs checking; it does not claim Draft.
+Commands still require incoming human private sender==chat==allowlisted ID; outgoing/self/group,
+channel, forwarded and bot messages cannot trigger them. All notices/replies disable formatting
+and link previews (`parse_mode=None`, `link_preview=False`).
+
+The additive SQLite manual_notices table deduplicates successful deliveries by recipient, posting
+fingerprint, state, reason and notice-version. A reason/source/state/Owner change creates a new
+notice. Delivery is acknowledged only after awaiting the active client's send result; the returned
+message ID and verified recipient are retained for API-accepted delivery evidence without logging
+message bodies. Startup/retry uses current held rows, including when paused; resolved posts are
+rechecked immediately before delivery. No second client/session, browser action or model call is
+used to notify. Failure logs exception class only, retries no sooner than 300 seconds and never
+replays website mutations or changes scan results. Each send has a 20-second timeout, with up to
+five attempts per five-second worker batch. A lost Telegram acknowledgment or process crash
+after remote send but before local commit can cause an eventual duplicate; delivery is at least once.
+
+`/nailhub status` retains scan state/last controlled result and adds all current manual-review links
+and reasons; `/nailhub pending` also lists them. Messages split at 3500 UTF-16 units. These explicit
+status replies do not acknowledge or suppress automatic notices. Direct inspection/deletion of
+posts, review completion and actual Telegram delivery remain controller/Owner verification tasks.
+
+Enable the existing listener only after review by installing the commented systemd override template
+and setting NAILHUB_CONFIG absolute path. Keep preview first, record real flow evidence on approved
+test posts, measure CPU timeouts on ThinkPad, then change live config after independent review.
+Foreground waiting triage model requests take priority over queued NailHub calls; an active HTTP
+request is not interrupted. Remove NAILHUB_CONFIG and restart existing service to disable the feature.
+Local offline fake-adapter tests are not evidence of authenticated browser behavior.
+
+
+## Owner scope override: site AI output
+
+2026-10-12: after the built-in AI completes, accept its returned title and body directly. Do not run rewrite invariants, semantic verification, instruction prefixes or paragraph cleanup. Original-source salary/contact/address evidence and proposal checks remain active. Fresh-source checks before Save, exact UI payload and saved readback, pause/identity authorization, and approval/status readback remain required. Existing validator/model.verify helpers may remain for compatibility/offline tests but are not called for site AI output. This supersedes earlier rewrite-check requirements.
+
+
+Structured extraction scope: model extracts original salary, missing location values and a short rationale only. The required compatibility facts keys all request empty arrays (maxItems=0), avoiding unused content-claim extraction after the Owner delegated rewrite quality to site AI. Salary/location/source proposal validation remains unchanged; previously captured valid responses remain compatible. No post-AI model verification runs.
+
+
+Literal salary excerpt normalization: if amount_text includes original period/qualification text, code extracts its leading full amount/range only when the period prefix matches the claimed period and the entire excerpt is a literal substring of the already validated source evidence. The original full-range Decimal equality, qualification, extra-money and conflicting-period checks still run. Unsupported/invented tails or cherry-picked endpoints remain held. Monthly conversion ignores unused schedule values; day/hour conversion retains strict explicit schedule validation. This avoids another model request for the observed exact source excerpt and adds no post-AI content checking.
+
+
+Owner start-date policy: only the exact backend default sentinel 0001-01-01T00:00:00 becomes the current processing date at UTC midnight. Backend validates against DateTime.UtcNow.Date; offset-free ISO matches the observed DTO representation. Proposal records old/new values and Owner policy in metadata_changes.startDate; the UI request normalizer restores that authorized date for omitted/null/sentinel input only. Conflicting UI dates or missing audit are rejected. Real past/future dates and null/missing source dates remain unchanged. An endDate not strictly after the repaired start date holds for review and is never changed. Exact persisted startDate and all other saved fields must match before approval. This date repair adds no post-AI content checking.
+
+Manual-review DM diagnostics persist bounded field/current/source/evidence/action context in an additive SQLite column. Versioned delivery dedup includes that context and verified recipient; changed details can notify again. Unknown model/HTTP exception bodies remain suppressed. A technical extraction failure is identified separately from a source-data problem. Existing held rows without context explicitly say the field/source is not established.
+
+State-only source repair: before validating model location evidence, an exact current-city + uppercase state + ZIP under an explicit bounded Address:/Địa chỉ tiệm: context resolves the state directly. All matching current-city state/ZIP mentions must agree; conflicting pairs require manual review with source data details. Exact offsets support repeated pairs. Invalid model state formatting/evidence is replaced, or dropped when the source state already equals current state; other model contact/location fields remain validated. This does not add a full-model-outage fallback for explicit address corrections.
+
+Missing city/ZIP may be derived independently from the fingerprint-bound current salon address when it fully matches a bounded street + suffix + city + uppercase state + ZIP form and current state agrees. Example: 279 E Fairmount Ave Lakewood, NY 14750 -> city Lakewood, ZIP14750; NY is the state, not the city. Only blank city/ZIP are filled. Complete conflicting original body address/city-state-ZIP or inconsistent populated contact fields hold for review. No ZIP/city is inferred from state alone, and malformed/ambiguous address tails remain manual. Derived values have separate source_field=address audit provenance; original-content model evidence rules remain unchanged. Invalid model city/ZIP suggestions cannot block these independently proven missing fields; other model corrections still require original evidence. The existing exact city option and fresh fingerprint/Save/readback guards remain required. This performs no geocoder or public lookup.
+Owner sale amendment 2026-10-13: explicit positive salon/business sale or transfer asking prices take precedence over worker salary, including mixed sale+hiring posts. Select the lowest asking endpoint only, expanding K to thousands; copy literally into the category-specific numeric field, without conversion or salary rounding. Category follows the source intent policy below. Actual Bán tiệm với giá60k vs salon revenue30k–35k/month ->60000. Revenue, rent, tips, wages and service/product prices are not eligible asking prices. Generic giá/sale wording alone is insufficient; separate bare asking labels need an immediately adjacent positive business-sale heading/asking-price chain. Negated/contradictory business-sale intent, periodic amounts or customer service/product association do not authorize the sale override and remain subject to existing policy/guards. Source-established asking price overrides malformed model salary/evidence; model location corrections still need source evidence. Audit identifies the literal sale policy; no site AI content checks are added.
+
+
+Owner category amendment 2026-10-13: classify original title/content before site AI. Explicit salon sale/transfer precedes hiring; recruitment maps to JobPosting (Cần thợ nail), explicit seeker intent to Portfolio (Tìm việc), sale to SalonForSale (Sang nhượng tiệm). Unsupported categories remain outside the worker. Conflicting/unclear intent holds with field-specific diagnostics. Audit records original quotes and fingerprint. Draft candidates support only these three enums.
+
+Sale uses only associated asking prices: Fixed (Nhập giá), literal minimum asking endpoint; no asking price means Negotiable, never worker wage/revenue. Portfolio submits priceType=null and price=null without pay controls. Recruitment retains approved salary policy. Category selection waits GetTranslation callback and displayed category, restores the prior title, then continues built-in AI. AI output has no semantic checking here; exact Save/readback still applies.
+
+Separate `await service.repair_category(browser, post_id)` supports only Approved IDs 987c7202-2124-4e6d-90d0-05e55dff1f33 and 03908741-40a8-4579-b941-374a1a9c54d2 while paused and idle. Retained pre-AI original source decides intent; fresh Approved data binds mutation. Changes only category and required Guaranteed→Fixed type mapping, preserving amount/title/body/publication/status/other facts. No AI or Approve. Durable checkpoint and running lock precede Save; uncertain outcomes require fresh read/manual review, never automatic resave. Not exposed as Telegram command or scheduled Approved scan.
+
+Owner publication amendment 2026-10-13: eligible records have a known boolean isPublic and are Draft, or Approved with isPublic=false, in the three supported categories. Public Approved and unknown visibility are excluded before mutation; durable approved/uncertain locks remain. Existing full source-data rules and built-in AI apply to eligible unpublished Approved, retaining status Approved and isPublic=false for the first Save. Only exact fresh readback creates a source-bound verified rewrite receipt. A second guarded Edit checks #isPublic, switches false→true and Saves without AI, title/content/category/pay/date changes. Final completion requires isPublic=true; already Approved never uses Approve to publish.
+
+Normal Draft Approve expects the inspected backend transition isPublic=true and a parseable server publication timestamp. Approved publication Save keeps its existing publishedAt exactly. Both mutations have separate durable checkpoints; interrupted/unknown publication is manually reconciled from fresh GET, with no automatic mutation replay. Unchanged valid stored startDate may be represented by requestnull only inside the audited Approved rewrite/publication workflow, preserving it via the verified backend null-retains contract. Existing sentinel date policy remains. Canonical .NET GUIDs (8-4-4-4-12 hexadecimal, including sequential variants) are accepted consistently for response identity, read links and Owner DM links; path/query characters remain invalid.
