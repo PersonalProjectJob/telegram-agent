@@ -1,5 +1,25 @@
 # Optional NailHub worker
 
+## Current handoff — 2026-10-14
+
+Business source of truth: [NailHub business workflow v1.0.8](../Docs/01-product/nailhub-postings-noissue_business_261013_v1.0.0.md).
+Agents working on this package must first read the [module agent instructions](src/tg_triage/nailhub/AGENTS.md),
+including BR-01…14, BUG-01…09 and the source regression matrix. D-01…03 are now Owner-confirmed;
+D-04/05 retain actual location uncertainty only. The controlled rerun closed with reviewed standalone deployments:30completed (29Draft approvals +1existingApproved publication),16age-skipped,1genuine salon-address hold and3protected historic uncertain records.
+BR-13 skips posts older than45 calendar days using the NailHub listing date; BR-14 uses an audited nailhub.ai publisher
+label only after real source names are exhausted, and corrects its localized post-AI introduction.
+Markdown is not automatically consumed by the extraction model; deployed prompt/code and live evidence are separate.
+The current branding editor preserves other plain text but can flatten rich-text formatting; do not claim HTML preservation.
+Final all50 fresh source/readback and protected116 DB-row audit passed with no Admin/AI mutations; the periodic scan is resumed. The local Python738-test suite and independent114tests passed;46actual captured responses were replayed offline against their sources. Standalone imports/hashes and live UI evidence are separate checks. See Businessv1.0.8/Masterv1.0.25 for the separate controlled-run counts and private evidence. No issue/commit/push for these additions yet.
+
+Current production was migrated to standalone **tg-nailhub** (config `/etc/nailhub/nailhub.toml`, package `nailhub`).
+This branch retains historical `tg_triage.nailhub` paths. Deployment/client instructions below describe the prior
+optional listener integration; do not reapply them over the standalone service. Use the latest
+[Master handoff](../Docs/00-master/nailhub-postings-noissue_master_261012_v1.0.0.md) and inspect the actual release before deploying.
+No second Telegram instance sharing the listener session is authorized.
+
+## Historical optional-listener implementation
+
 Production remains NOT_READY until independent review and authenticated adapter flow evidence.
 This module is part of the existing tg_triage process; never run a second Telegram client/session.
 No NAILHUB_CONFIG means no NailHub state/browser/scheduler and unchanged group routing.

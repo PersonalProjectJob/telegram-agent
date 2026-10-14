@@ -52,7 +52,9 @@ category: identify recruitment, salon sale/transfer, or explicit first-person jo
 when the evidence quote comes from original_title; set field=content only when it comes from original_content.
 Copy the quote in that selected field's exact casing. Nail techs/technicians hiring is JobPosting.
 Each evidence quote must be ONE contiguous substring of that field; never join text from separated lines or sentences.
-Negations, buyer intent and product sales are not salon sales.
+Negations, buyer intent and product sales are not salon sales. A sale-sounding crawler title
+without an asking price must not override a body that clearly recruits workers. Conversely,
+a title/body-linked salon asking price outranks rental, revenue and staffing figures.
 salary_candidates: enumerate ALL monetary clauses, including every worker role and translated repeat, with exact quotes.
 kind distinguishes worker BASE income from services, rent, tips, commission, business revenue and asking price.
 Use [] only when no numeric monetary claim exists. Give FULL range; Vietnamese 'tới'/'đến' and Chinese ranges retain both endpoints.
@@ -61,9 +63,12 @@ from another role/heading. role must be exact quoted role text or empty. Code va
 Set schedule=null unless original_content explicitly gives a numeric work schedule such as days/week,
 hours/day, or hours/week; never infer schedule values.
 Preserve valid current salon name unless an explicit proper business name in original proves correction.
-Descriptions such as 'Tiệm Nail Sang Vung HARRISONBURG' are not salon names. BaoNail.com is a source publisher.
-For baonail.com/index.php only, a literal stores=Glaze-Nails source URL establishes Glaze Nails;
-code audits host, query and normalized name. Do not infer names from other URL parameters or sites.
+Descriptions such as 'Tiệm Nail Sang Vung HARRISONBURG' are not salon names. BaoNail.com is a source publisher,
+never a salon name. If the current name is empty or BaoNail.com and the source proves no actual business name,
+omit location.salon; Owner D027's code handles the nailhub.ai website-attribution fallback after evidence checks.
+Do not invent or quote nailhub.ai as a source business name.
+For baonail.com/index.php only, a literal stores=<hyphenated-name> source URL can establish
+the normalized store name; code audits host, query and name. Do not infer names from other URLs.
 Omit unsupported descriptor/name corrections. Keep current salon when source has no explicit proper name.
 Return only the requested JSON, no reasoning transcript. Rationale is a short evidence summary <=240 chars.
 Evidence uses {"quote":"exact original substring"}, <=500 characters, appearing EXACTLY ONCE in its selected
@@ -88,10 +93,19 @@ even in mixed hiring posts. Code selects the lowest asking endpoint literally, i
 never treat unrelated product sales or negated sale wording as a salon asking price.
 Keep clear numeric salary, explicit periods and ranges. Multiple worker amounts with their own clear units
 use the highest weekly endpoint, floored to USD100 by code; unknown or conflicting unit associations require review.
-Daily/hourly require explicit days/week and hours/day or hours/week in cited schedule, no defaults.
+An N-day pay duration such as /6ngày keeps its literal amount and is not a weekly work schedule.
+Hourly requires an explicit, unambiguous worker hours/week schedule or explicit days/week AND hours/day;
+neither alternative shifts nor salon opening hours establish worker hours. Daily requires explicit worker
+days/week. Never assume 40 hours/week or a 7/6 conversion.
 location values must be exact original substrings. Suggest missing OR incorrect populated
 salon/address/city/state/zip/email/phone_primary/phone_other fields when explicit original text proves the correct value.
 Ground state/city in an explicit salon address or city/state pair, never arbitrary prose tokens.
+Treat a postal state abbreviation and its full state name as the same place when the original
+city/state/address evidence agrees. Preserve a complete stored street address when the body only
+names a nearby area; keep distinct branch addresses distinct.
+Do not suggest source placeholders such as "Phone", "Cell", a person's name, or a publisher
+website as replacement contact values. Preserve a valid current contact unless original source
+evidence establishes a different valid value.
 A value present only in current_fields is NOT original_content evidence. Omit unchanged fields.
 For repeated city/state/name values, evidence may be a unique surrounding address/context quote
 containing the exact value with word boundaries, or exact Unicode offsets. Do not require a unique value-only quote.

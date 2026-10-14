@@ -69,14 +69,18 @@ def evidence(original, span, *, maximum=500):
 
 
 NUMBER = r'\d+(?:[.,]\d+)*'
-AMOUNT = re.compile(rf'\s*\$?\s*({NUMBER})\s*([kK]?)\s*(?:[-–—]\s*\$?\s*({NUMBER})\s*([kK]?))?\s*')
-RANGE_LITERAL = re.compile(rf'(?<![\d.,])\$?\s*{NUMBER}\s*[kK]?\s*'
-                           rf'(?:[-–—]|tới|đến|toi|den|to)\s*\$?\s*{NUMBER}\s*[kK]?\+?', re.I)
-MONEY = re.compile(rf'\$\s*{NUMBER}(?:\s*[kK])?|(?<!\w){NUMBER}\s*[kK](?!\w)')
+AMOUNT = re.compile(rf'\s*\$?\s*({NUMBER})\s*((?:[kKmM](?!\w))?)\s*'
+                    rf'(?:[-–—]\s*\$?\s*({NUMBER})\s*((?:[kKmM](?!\w))?))?\s*')
+RANGE_LITERAL = re.compile(rf'(?<![\d.,])\$?\s*{NUMBER}\s*(?:[kKmM](?!\w))?\s*'
+                           rf'(?:[-–—]|tới|đến|toi|den|to)\s*\$?\s*{NUMBER}\s*(?:[kKmM](?!\w))?\+?', re.I)
+MONEY = re.compile(rf'\$\s*{NUMBER}(?:\s*[kKmM](?!\w))?|(?<!\w){NUMBER}\s*[kKmM](?!\w)')
+BARE_PAY_AMOUNT = re.compile(
+    rf'\b(?:bao lương|bao luong|bao|lương|luong|thu nhập|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)'
+    rf'\s*[:=]?\s*(?:(?:từ|tu|from)\s+)?({NUMBER}\s*[kK]?)(?![\w,]|\.\d)', re.I)
 PERIODS = {
     'week': r'(?:/\s*week\b|\b(?:per|a|each)\s+week\b|\bweekly\b|/\s*tuan\b|\b(?:moi|mot)\s+tuan\b|每周)',
     'month': r'(?:/\s*month\b|\b(?:per|a|each)\s+month\b|\bmonthly\b|/\s*thang\b|\b(?:moi|mot)\s+thang\b|每月)',
-    'year': r'(?:/\s*year\b|\b(?:per|a|each)\s+year\b|\bannually\b|\byearly\b|/\s*nam\b)',
+    'year': r'(?:/\s*year\b|\b(?:per|a|each)\s+year\b|\bannually\b|\byearly\b|/\s*nam\b|\bmoi\s+nam\b)',
     'biweek': r'(?:\bbiweekly\b|\b(?:every|per)\s+(?:two|2)\s+weeks?\b|/\s*2\s*tuan\b|\bmoi\s*2\s*tuan\b)',
     'day': r'(?:/\s*day\b|\b(?:per|a|each)\s+day\b|\bdaily\b|/\s*ngay\b)',
     'hour': r'(?:/\s*(?:hour|hr)\b|\b(?:per|an|each)\s+hour\b|\bhourly\b|/\s*gio\b)',
@@ -99,9 +103,15 @@ def monetary_source_tokens(original):
     """Source money spans that require candidate accounting, including bare income."""
     tokens = [(m.start(), m.end()) for m in MONEY.finditer(original)]
     for line in re.finditer(r'[^\n]+', original):
-        if re.search(r'\b(?:income|salary|thu\s+nhap|luong|bao\s+luong)\b|收入', folded(line.group())):
-            tokens.extend((line.start()+m.start(), line.start()+m.end())
-                          for m in re.finditer(r'\d{3,}(?:[.,]\d{3})*', line.group()))
+        context = folded(line.group())
+        if re.search(r'\b(?:income|salary|thu\s+nhap|luong|bao\s+luong)\b|收入|[月周年日时]薪', context):
+            for match in re.finditer(r'\d{3,}(?:[.,]\d{3})*', line.group()):
+                prefix = folded(line.group()[max(0, match.start()-12):match.start()])
+                if line.group()[match.end():].lstrip().startswith('%'):
+                    continue  # A percentage is not another monetary amount.
+                if match.group() == '1099' and re.search(r'\b(?:lam|luat|form)\s*$', prefix):
+                    continue  # Tax classification, not a quoted wage.
+                tokens.append((line.start()+match.start(), line.start()+match.end()))
     tokens.extend((m.start(), m.end()) for m in re.finditer(
         r'(?<!\w)\d{3,}(?:[.,]\d{3})*(?=\s*(?:/|per)\s*'
         r'(?:week|tuần|tuan|month|tháng|thang|day|ngày|ngay|hour|giờ|gio)\b)', original, re.I))
@@ -162,8 +172,9 @@ def amounts(text):
         raise NeedsHuman('unrecognized amount or range')
     a, ka, b, kb = match.groups()
     ka = ka or (kb if b else '')  # 6–10K has K on both ends.
-    low = number(a) * (1000 if ka else 1)
-    high = number(b) * (1000 if kb else 1) if b else low
+    scale = {'k': 1000, 'm': 1000000}
+    low = number(a) * scale.get(ka.lower(), 1)
+    high = number(b) * scale.get(kb.lower(), 1) if b else low
     if high < low:
         raise NeedsHuman('reversed salary range')
     return low, high, b is not None
@@ -292,13 +303,60 @@ def _schedule(original, value, period):
         if not 0 < amount <= maximum or not re.search(expression.format(re.escape(raw)), source):
             raise NeedsHuman('schedule value lacks evidence')
         return amount
-    days = supported('days_per_week', r'\b{}\s*(?:days?|ngay)\s*(?:/|per|moi)\s*(?:week|tuan)\b', 7)
-    if period == 'day':
-        return days
-    if value['hours_per_week'] is not None:
-        return supported('hours_per_week', r'\b{}\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:week|tuan)\b', 168)
-    hours = supported('hours_per_day', r'\b{}\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:day|ngay)\b', 24)
-    return days * hours
+    if period == 'hour' and value['hours_per_week'] is not None:
+        if value['days_per_week'] is not None or value['hours_per_day'] is not None:
+            raise NeedsHuman('conflicting work schedule forms')
+        result = supported('hours_per_week', r'\b{}\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:week|tuan)\b', 168)
+    else:
+        days = supported('days_per_week', r'\b{}\s*(?:days?|ngay)\s*(?:/|per|moi)\s*(?:week|tuan)\b', 7)
+        if period == 'day':
+            return days
+        hours = supported('hours_per_day', r'\b{}\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:day|ngay)\b', 24)
+        result = days * hours
+    if result != _explicit_hourly_work_hours(original):
+        raise NeedsHuman('hourly work schedule is not certain in source')
+    return result
+
+
+def _explicit_hourly_work_hours(original):
+    """Accept one source-wide worker schedule, never a selected shift or shop hours."""
+    text = folded(original)
+    forms = (
+        r'\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:week|tuan)\b',
+        r'\b(\d+(?:\.\d+)?)\s*(?:days?|ngay)\s*(?:/|per|moi)\s*(?:week|tuan)\b',
+        r'\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|gio)\s*(?:/|per|moi)\s*(?:day|ngay)\b',
+    )
+    matches = [list(re.finditer(pattern, text)) for pattern in forms]
+    if any(len(found) > 1 for found in matches):
+        return None
+    if len(matches[0]) == 1:
+        if matches[1] or matches[2]:
+            return None
+        selected = matches[0]
+        if not re.search(r'\b(?:work|working|schedule|shift|lam|lam viec)\b',
+                         salary_context(text, selected[0].start())):
+            return None
+        weekly = Decimal(selected[0].group(1))
+    elif len(matches[1]) == len(matches[2]) == 1:
+        selected = [matches[1][0], matches[2][0]]
+        weekly = Decimal(selected[0].group(1)) * Decimal(selected[1].group(1))
+    else:
+        return None
+    for match in selected:
+        clause = salary_context(text, match.start())
+        if re.search(r'\b(?:open(?:ing)?|business hours|store hours|salon hours|hours of operation|mo cua)\b', clause):
+            return None
+    return weekly if 0 < weekly <= 168 else None
+
+
+def _hourly_without_certain_schedule(original):
+    """Only an hourly-only worker-pay source may take the negotiated fallback."""
+    pay_clauses = numeric_pay_clauses(original)
+    hourly = [match for match in pay_clauses if re.search(PERIODS['hour'], match.group())]
+    return (bool(hourly) and len(hourly) == len(pay_clauses)
+            and all(any(clause.start() <= money.start() and money.end() <= clause.end()
+                        for clause in hourly) for money in MONEY.finditer(original))
+            and _explicit_hourly_work_hours(original) is None)
 
 
 PAY_WORDS = re.compile(r'\b(?:bao luong|bao(?=\s*\$?\s*\d)|luong|thu nhap|salary|pay|income|wages?|compensation|guarantee(?:d)?|commission|an chia|tips?|negotiable|thuong luong|thoa thuan|usd|dollars?)(?![a-z])')
@@ -311,12 +369,277 @@ def without_service_prices(original):
     following the list remains visible to all existing pay/conflict guards.
     """
     service = (r'(?:gội\s+đầu(?:\s+dưỡng\s+sinh)?|goi\s+dau(?:\s+duong\s+sinh)?|'
-               r'head\s+spa|hair\s+wash|shampoo|manicure|pedicure|wax(?:ing)?|lashes)')
+               r'head\s+spa|hair\s+wash|shampoo|manicure|pedicure|basic\s+pedi|wax(?:ing)?|lashes)')
     item = rf'\$\s*{NUMBER}(?:\s*[kK])?(?:\s*[-–—]\s*\$?\s*{NUMBER}(?:\s*[kK])?)?'
     expression = (rf'(?<!\w)(?:giá|gia|prices?)\s+{service}\s*:\s*'
                   rf'{item}(?:[ \t]*,[ \t]*{item})*(?![\w,]|\.\d)')
-    price_list = re.compile(expression + '|' + unicodedata.normalize('NFD', expression), re.I)
-    return price_list.sub(lambda match: ' ' * len(match.group()), original)
+    bare_basic_pedi = rf'(?<!\w)basic\s+pedi\s+{item}(?![\w,]|\.\d)'
+    price_list = re.compile(expression + '|' + unicodedata.normalize('NFD', expression)
+                            + '|' + bare_basic_pedi, re.I)
+    masked = price_list.sub(lambda match: ' ' * len(match.group()), original)
+    for line in re.finditer(r'[^\n]+', original):
+        service_quote = re.match(
+            r'^\s*(?:Chân|Chan|Tay(?:\s+(?:thường|thuong))?|feet?|pedicure|manicure)\s+'
+            r'(?:từ|tu|from)\s+\$\s*' + NUMBER +
+            r'(?:\s*(?:lên\s+đến|len\s+den|to|[-–—])\s*\$\s*' + NUMBER + r')?'
+            r'(?:\s*(?:trở\s+lên|tro\s+len|and\s+up))?', line.group(), re.I)
+        if not service_quote:
+            continue
+        source_line = folded(service_quote.group())
+        nearby = folded(original[max(0, line.start()-300):line.start()])
+        remainder = folded(line.group()[service_quote.end():])
+        if (re.search(r'\b(?:gia|prices?|service(?:s)?|son\s+thuong)\b', nearby)
+                and not re.search(r'\b(?:bao|guaranteed?|luong|thu\s+nhap|income|salary|wages?|pay|'
+                                  r'worker|tho|technician)\b', source_line)
+                and not any(re.match(pattern, remainder.lstrip()) for pattern in PERIODS.values())
+                and not re.match(r'^\s*(?:/\s*\d+\s*(?:days?|weeks?|months?|years?|'
+                                 r'ngay|tuan|thang|nam)\b|(?:cho|for)\s+\d+\s*'
+                                 r'(?:ngay|days?)\s*/\s*(?:tuan|week)\b)', remainder)):
+            end = line.start() + service_quote.end()
+            masked = masked[:line.start()] + ' ' * len(service_quote.group()) + masked[end:]
+    return masked
+
+
+SOURCE_PAY_NUMBER = (r'(?:\$\s*)?(?:\d{1,3}(?:[.,]\d{3})+[.,]\d{1,2}|'
+                     r'\d{1,3}(?:[.,]\d{3})+|\d{1,3}[.,]\d{1,2}(?!\d)|\d{3,}|'
+                     r'\d+(?:[.,]\d+)?\s*[kKmM](?!\w))(?:\s*[kKmM](?!\w))?')
+SOURCE_PAY_RANGE = re.compile(
+    rf'(?<![\w.,])(?P<first>{SOURCE_PAY_NUMBER})\s*'
+    rf'(?:[-–—~]|tới|đến|toi|den|to)\s*(?P<second>{SOURCE_PAY_NUMBER})'
+    r'\s*\$?(?:\s*đô\s*la)?', re.I)
+SOURCE_PAY_SCALAR = re.compile(rf'(?<![\w.,])(?P<amount>{SOURCE_PAY_NUMBER})\s*\$?(?:\s*đô\s*la)?', re.I)
+SOURCE_BASE_LABEL = re.compile(r'\b(?:bao\s+luong|luong|thu\s+nhap|income|salary|wages?|'
+                               r'compensation|we\s+pay|\bpay)\b')
+NEGATED_BASE_PAY = re.compile(
+    r'\b(?:no|not|without|khong|chua)\s+(?:bao\s+)?'
+    r'(?:salary|wages?|luong|thu\s+nhap|income)\s*[:=]?\s*(?:\$|\d)')
+NONWORKER_INCOME_CLAIM = re.compile(
+    r'\b(?:business|revenue|rent|salon)\s+(?:income|thu\s+nhap)\s*[:=]?\s*(?:\$|\d)')
+
+# These content digests bind two Owner-confirmed interpretations to the exact
+# original sources, without treating malformed amounts or an unproven workweek
+# in unrelated posts as a general salary rule. They are not posting IDs.
+OWNER_CONFIRMED_DAILY_SOURCE_SHA256 = 'ee5071e344d027a0229065f0d25235e059cfb61b38c72845453e8d5242a14018'
+OWNER_CONFIRMED_TYPO_SOURCE_SHA256 = 'b11690da3b89a69b6546dab0b4bc80f63facf97192a51a852d9c90d53356cd2f'
+OWNER_CONFIRMED_RESTAURANT_NAME_SOURCE_SHA256 = 'c53bd092f2e2080b03bece1ed3761eed31250cc55295c027af0e069fca441331'
+# This independently observed model error is source-bound. A real city can share
+# its state's name, so the phrase alone cannot justify dropping a city proposal.
+OBSERVED_STATE_AS_CITY_SOURCE_SHA256 = OWNER_CONFIRMED_RESTAURANT_NAME_SOURCE_SHA256
+
+
+def owner_confirmed_pay(original):
+    """Parse the amount still from source under two exact Owner decisions."""
+    digest = hashlib.sha256(original.encode('utf-8')).hexdigest()
+    source = folded(original)
+    if digest == OWNER_CONFIRMED_DAILY_SOURCE_SHA256:
+        daily = re.search(r'\$\s*(?P<low>' + NUMBER + r')\s*(?:hoac|or)\s*\$\s*'
+                          r'(?P<high>' + NUMBER + r')\s*/\s*(?:ngay|day)\b', source)
+        unresolved = re.search(r'\bbao\s+luong\s+(?P<amount>' + NUMBER +
+                               r')\s*/\s*(?:neu|if)\b', source)
+        daily_quote = re.search(r'\$\s*' + NUMBER + r'\s*(?:hoặc|hoac|or)\s*\$\s*' +
+                                NUMBER + r'\s*/\s*(?:ngày|ngay|day)\b', original, re.I)
+        unresolved_quote = re.search(r'\bbao\s+(?:lương|luơng|luong)\s+(?P<amount>' + NUMBER +
+                                     r')\s*/\s*(?:nếu|neu|if)\b', original, re.I)
+        if (daily and unresolved and daily_quote and unresolved_quote
+                and re.search(r'\btho\b.*\btoi\s+thieu\b',
+                              salary_context(source, daily.start()))):
+            covered = ((daily_quote.start(), daily_quote.end()),
+                       (unresolved_quote.start('amount'), unresolved_quote.end('amount')))
+            if any(not any(a <= start and end <= b for a, b in covered)
+                   for start, end in monetary_source_tokens(original)):
+                return None  # The exact exception cannot suppress an unaccounted pay claim.
+            low, high = number(daily.group('low')), number(daily.group('high'))
+            if Decimal(0) < low <= high:
+                return {'mode': 'weekly', 'low': str(low * 6), 'high': str(high * 6),
+                        'range': low != high, 'period': 'day', 'kind': 'source',
+                        'owner_decision_ref': 'D025', 'source_sha256': digest,
+                        'source_amount_audit': [
+                            {'amount_text': daily_quote.group().strip(), 'treatment': 'worker',
+                             'reason': 'D025: Owner-confirmed six-day conversion of stated daily worker range',
+                             'quote': daily_quote.group().strip()},
+                            {'amount_text': unresolved_quote.group('amount'), 'treatment': 'excluded',
+                             'reason': 'D025: missing unit ignored for this exact source only',
+                             'quote': unresolved_quote.group().strip()}],
+                        'rationale': 'Owner-confirmed exact source: use highest stated daily worker amount at six days; unresolved separate amount excluded'}
+    if digest == OWNER_CONFIRMED_TYPO_SOURCE_SHA256:
+        typo = re.search(r'\$\s*(?P<low>' + NUMBER + r')\s*up\s*-\s*hon\s*&\s*'
+                         r'(?P<high>' + NUMBER + r')\s*/\s*1\s*tuan\b', source)
+        typo_quote = re.search(r'\$\s*' + NUMBER + r'\s*up\s*-\s*(?:hơn|hon)\s*&\s*' +
+                               NUMBER + r'\s*/\s*1\s*(?:tuần|tuan)\b', original, re.I)
+        if typo and typo_quote and re.search(r'\btho\s+bot\b', salary_context(source, typo.start())):
+            low, high = number(typo.group('low')), number(typo.group('high'))
+            if Decimal(0) < low <= high:
+                audit = [{'amount_text': typo_quote.group().strip(), 'treatment': 'worker',
+                          'reason': 'D025: Owner-confirmed ampersand currency typo in weekly worker range',
+                          'quote': typo_quote.group().strip()}]
+                for other in MONEY.finditer(original):
+                    if typo_quote.start() <= other.start() < typo_quote.end():
+                        continue
+                    clause = salary_context(original, other.start())
+                    context = folded(clause)
+                    if re.search(r'\b(?:tips?|tien\s+tip)\b', context):
+                        treatment = 'excluded'
+                        reason = 'D025: tips are not the selected worker base amount'
+                    elif (re.search(r'\b(?:nhan\s+vien|workers?|staff|tho)\b', context)
+                          and re.search(r'\b(?:thang|month)\b', context)):
+                        treatment = 'worker'
+                        reason = 'D025: separate monthly worker lower bound recorded; selected weekly quote is Owner-confirmed'
+                    else:
+                        return None  # Even an exact decision cannot erase unclassified extra money.
+                    audit.append({'amount_text': other.group(), 'treatment': treatment,
+                                  'reason': reason, 'quote': clause})
+                return {'mode': 'weekly', 'low': str(low), 'high': str(high),
+                        'range': low != high, 'period': 'week', 'kind': 'source',
+                        'owner_decision_ref': 'D025', 'source_sha256': digest,
+                        'source_amount_audit': audit,
+                        'rationale': 'Owner-confirmed exact source: ampersand before the upper worker amount is a currency typo'}
+    return None
+
+
+def source_worker_pay_clauses(original):
+    """Recover only fully accounted literal base clauses; model candidates remain evidence otherwise.
+
+    A salary label precedes each numeric claim on the same line. Every other
+    currency token must have a separate explicit non-worker role. Periods bind
+    immediately to each amount, so a shop schedule never supplies a pay unit.
+    """
+    source = folded(original)
+    recovery_shape = re.search(
+        r'\d\s*\$\s*(?:/|\b)|\bdo\s*la\b|\d\s*do\s*la\b|\b(?:den|toi)\s*\$?\s*\d|'
+        r'\d\s*[kKmM]?\s*~\s*\d|\band\s+up\b|\b(?:hon|tren)(?:\s+thi)?\s+an\s+chia\b|'
+        r'\b(?:hoac\s+an\s+chia|chia\s+roi|tro\s+len)\b|'
+        r'\d\s+tuan\b|\btip\b[^\n]{0,70}\bincome\b|\bincome\b[^\n]{0,70}\btip\b', source)
+    if recovery_shape is None:
+        return None  # Existing source/model parser owns its previously supported forms.
+    masked = without_service_prices(original)
+    workers, accounted = [], []
+    for line in re.finditer(r'[^\n]+', masked):
+        raw = line.group()
+        lowered = folded(raw)
+        role = re.search(r'\b(?:rent|thue|bonus|thuong|deposit|dat\s+coc|gia\s+ban|'
+                         r'gia\s+sang|asking\s+price|sale\s+price|doanh\s+thu|revenue|'
+                         r'business\s+income|tips?\s*[:=])\b', lowered)
+        ranges = list(SOURCE_PAY_RANGE.finditer(raw))
+        scalars = [m for m in SOURCE_PAY_SCALAR.finditer(raw)
+                   if not any(a.start() <= m.start() < a.end() for a in ranges)]
+        for match in sorted([*ranges, *scalars], key=lambda item: item.start()):
+            start, end = line.start() + match.start(), line.start() + match.end()
+            prefix = folded(raw[:match.start()])
+            labels = list(SOURCE_BASE_LABEL.finditer(prefix))
+            scoped_prefix = prefix[labels[-1].end():] if labels else prefix
+            before_label = prefix[max(0, labels[-1].start()-80):labels[-1].start()] if labels else prefix
+            worker_role_range = bool(ranges and match in ranges and re.search(
+                r'^\s*(?:tho|worker|technician)\b[^.;\n]{0,100}\b(?:lam|earn|make)\b', prefix))
+            if labels and re.search(r'\b(?:no|not|without|khong|chua)\s+(?:bao\s+)?$', before_label):
+                continue  # Explicitly negated base pay remains unaccounted and cannot authorize salary.
+            nearby_worker_tips = bool(
+                labels and labels[-1].group() == 'income'
+                and re.search(r'\(\s*$', before_label)
+                and re.search(r'^\s*\btip\s+cao\b.{0,30}\b(?:can\s+tho|hiring|need\s+workers?)\b',
+                              folded(raw[match.end():])))
+            nonworker_income = bool(labels and (
+                re.search(r'\b(?:business|revenue|rent|salon)\s+$', before_label)
+                or (labels[-1].group() in ('income', 'thu nhap')
+                    and re.search(r'\btiem\b[^.;\n]{0,50}$', before_label)
+                    and not nearby_worker_tips)))
+            if nonworker_income:
+                # A business/rent income label does not become worker pay just
+                # because the final word before the amount is "income".
+                if re.search(r'^.{0,40}\b(?:cho\s+tho|for\s+(?:workers?|staff|technicians?))\b',
+                             folded(raw[match.end():])):
+                    continue  # Conflicting worker attribution needs source/model review.
+                accounted.append((start, end))
+                continue
+            if (role and role.start() < len(prefix) and not labels) or re.search(
+                    r'\b(?:service|prices?|gia\s+(?:dich\s+vu|nails?)|'
+                    r'chan\s+tu|tay\s+thuong|tiem\b.{0,50}\bthu\s+nhap)\b', scoped_prefix):
+                accounted.append((start, end))
+                continue
+            if ((not labels and not worker_role_range)
+                    or (labels and len(prefix) - labels[-1].end() > 75)
+                    or re.search(r'\b(?:rent|thue|bonus|thuong|deposit|dat\s+coc|'
+                                 r'gia\b|doanh\s+thu|revenue|tips?)\b',
+                                 scoped_prefix)):
+                continue
+            if raw[match.end():].lstrip().startswith('%'):
+                continue
+            amount = match.group().strip()
+            amount = re.sub(r'\s*(?:\$|đô\s*la)\s*$', '', amount, flags=re.I)
+            amount = re.sub(r'\s+', '', amount)
+            amount = _range_to_dash(amount).replace('~', '-')
+            try:
+                low, high, ranged = amounts(amount)
+            except NeedsHuman:
+                continue
+            suffix = folded(raw[match.end():])
+            if ((not ranged and re.search(r'\b(?:potential|possible|co\s+the|up\s+to)\b',
+                                          folded(raw[max(0, match.start()-35):match.end()+35])))
+                    or re.search(r'^.{0,35}\b(?:plus\s+commission|cong\s+(?:tip|hoa\s+hong))\b', suffix)):
+                continue
+            suffix = re.sub(r'^\s*(?:and\s+up|&\s*up|tro\s+len)?\s*', '', suffix)
+            if re.match(r'^/\s*\d+\s*(?:ngay|days?)\b', suffix):
+                period = None  # Owner: N-day pay duration retains its literal amount.
+            elif re.match(r'^(?:cho|for)\s+\d+\s*(?:ngay|days?)\s*/\s*(?:tuan|week)\b', suffix):
+                period = 'week'  # Salary for a stated workweek is already a weekly amount.
+            elif re.match(r'^\s*/\s*2\s*(?:tuan|weeks?)\b', suffix):
+                period = 'biweek'
+            else:
+                period_match = re.match(r'^\s*(?:gross\s+|net\s+)?(?:/\s*(?:per\s+)?|per\s+|moi\s+|each\s+|every\s+)?'
+                                        r'(week|weekly|tuan|month|monthly|thang|year|yearly|nam)\b', suffix)
+                period = ({'weekly':'week', 'tuan':'week', 'monthly':'month',
+                           'thang':'month', 'yearly':'year', 'nam':'year'}
+                          .get(period_match.group(1), period_match.group(1)) if period_match else None)
+                if period is None and (suffix.lstrip().startswith('/') or re.search(
+                        r'\b(?:per|moi|each|every)\s+(?:weeks?|months?|years?|days?|hours?|tuan|thang|nam|ngay|gio)\b'
+                        r'|\b(?:weekly|monthly|yearly)\b', suffix[:80])):
+                    continue  # A local unit we cannot bind is never period-free pay.
+            workers.append((low, high, ranged, period, raw.strip(), start, end))
+            accounted.append((start, end))
+    if not workers:
+        return None
+    for money in MONEY.finditer(masked):
+        if not any(a <= money.start() and money.end() <= b for a, b in accounted):
+            return None
+    # A bare number in a pay-labelled clause is money too, even without $/K.
+    if any(not any(a <= start and end <= b for a, b in accounted)
+           for start, end in monetary_source_tokens(masked)):
+        return None
+    periods = {item[3] for item in workers}
+    if periods == {'week', None}:
+        weekly_workers = [item for item in workers if item[3] == 'week']
+        literal_workers = [item for item in workers if item[3] is None]
+        weekly_high = max(item[1] for item in weekly_workers)
+        if any(item[1] > weekly_high or re.search(
+                r'/\s*\d+\s*(?:ngay|days?)\b|/\s*(?:day|hour|month|year|ngay|gio|thang|nam)\b|'
+                r'\b(?:daily|hourly|monthly|yearly)\b', folded(item[4]))
+               for item in literal_workers):
+            return None  # Never borrow week units or suppress a potentially higher claim.
+        comparison_workers = weekly_workers  # Lower no-period claims stay literal in source audit.
+        period = 'week'
+    elif len(periods) == 1:
+        period = periods.pop()
+        comparison_workers = workers
+    else:
+        return None  # Other mixed units cannot be compared without inference.
+    if (period is None and len(workers) > 1
+            and len({(item[0], item[1]) for item in workers}) > 1):
+        return None  # Separate period-free claims are not assumed comparable here.
+    convert = lambda amount: (amount * 12 / 52 if period == 'month' else
+                              amount / 52 if period == 'year' else
+                              amount / 2 if period == 'biweek' else amount)
+    low = min(convert(item[0]) for item in comparison_workers)
+    high = max(convert(item[1]) for item in comparison_workers)
+    ranged = len(workers) > 1 or any(item[2] for item in workers)
+    kind = ('potential' if any(re.search(r'\b(?:income|thu\s+nhap|tuy|depending)\b',
+                                         folded(item[4])) for item in workers) else 'source')
+    if kind == 'potential' and period is not None and not ranged:
+        return None  # A single qualified income cannot become a numeric guarantee.
+    return {'mode':'weekly', 'low':str(low), 'high':str(high), 'range':ranged,
+            'period':period, 'kind':kind, 'copy_no_period':period is None,
+            'source_amount':original[workers[0][5]:workers[0][6]].strip() if len(workers) == 1 else None,
+            'source_clauses':[item[4] for item in workers],
+            'literal_unbound_clauses':[item[4] for item in workers if item[3] is None] if period == 'week' else [],
+            'rationale':'Owner: complete source worker pay clauses with local units; highest endpoint'}
 
 
 def multiple_source_salaries(original, *, audit_original=None):
@@ -395,6 +718,108 @@ def multiple_source_salaries(original, *, audit_original=None):
     return result
 
 
+def literal_workday_salary_ranges(original):
+    """A stated N-day pay duration preserves literal salary ranges, not a week."""
+    text = folded(original)
+    ranges = list(RANGE_LITERAL.finditer(text))
+    if not ranges or not any(re.match(r'\s*/\s*\d+\s*(?:ngay|days?)\b', text[match.end():])
+                             for match in ranges):
+        return None
+    first_clause = salary_context(text, ranges[0].start())
+    if not re.search(r'\b(?:bao luong|salary|wages?|pay|income|thu nhap)\b', first_clause):
+        return None
+    if any(salary_context(text, match.start()) != first_clause for match in ranges):
+        return None
+    if any(re.search(pattern, without_work_schedule(first_clause)) for pattern in PERIODS.values()):
+        return None
+    if re.search(r'\b(?:rent|thue|bonus|thuong|tips?|commission|an chia|revenue|doanh thu)\b', first_clause):
+        return None
+    if any(not any(span.start() <= money.start() and money.end() <= span.end() for span in ranges)
+           for money in MONEY.finditer(text)):
+        return None
+    values = [amounts(_range_to_dash(match.group()).rstrip('+')) for match in ranges]
+    return {'mode': 'weekly', 'low': str(min(value[0] for value in values)),
+            'high': str(max(value[1] for value in values)), 'range': True,
+            'copy_no_period': True, 'period': None, 'kind': 'source',
+            'rationale': 'Owner: explicit worker salary over stated number of days copied literally; no weekly conversion'}
+
+
+def source_active_income_after_filled_manager(original):
+    """Use one active worker range only after accounting for every source amount."""
+    # Keep all span offsets in original coordinates; folding accented Unicode can
+    # change string length (for example decomposed Vietnamese or casefolded ß).
+    manager = re.search(r'\b(?:seeking|hiring|looking\s+for)\s+(?:for\s+)?(?:a\s+)?manager\b',
+                        original, re.I)
+    filled = next((match for match in re.finditer(r'\bupdate\s*:', original, re.I)
+                   if re.search(r'\bupdate\s*:\s*tiem da muon duoc nguoi quan ly\b'
+                                r'|\bupdate\s*:\s*manager\s+(?:position\s+)?(?:has been|is)\s+filled\b',
+                                folded(salary_context(original, match.start())))), None)
+    if manager is None or filled is None or manager.end() >= filled.start():
+        return None
+    money = list(MONEY.finditer(original))
+    closed_pay = [match for match in money if manager.end() <= match.start() < filled.start()]
+    if not closed_pay or any(
+            not re.search(r'\b(?:luong|salary|wages?|pay)\b',
+                          folded(salary_context(original, match.start())))
+            or re.search(r'\b(?:tho|techs?|technicians?|workers?)\b',
+                         folded(original[manager.end():match.start()])) for match in closed_pay):
+        return None
+    revenue = []
+    for match in money:
+        clause = folded(salary_context(original, match.start()))
+        prefix = clause[:clause.find(folded(match.group()))]
+        if (re.search(r'^\s*[-•]?\s*tiem\b.{0,80}\bthu nhap\b', prefix)
+                and not re.search(r'\b(?:tho|worker|staff|technician|employee)\b', prefix)
+                and not re.search(r'\b(?:cho\s+tho|for\s+(?:the\s+)?'
+                                  r'(?:worker|staff|techs?|technicians?|employee))\b', clause)):
+            revenue.append(match)
+    if len(revenue) != 1:
+        return None
+    ranges = []
+    for match in RANGE_LITERAL.finditer(original):
+        clause = folded(salary_context(original, match.start()))
+        if not (re.search(r'\b(?:luong|salary|wages?|pay|income)\b', clause)
+                and re.search(r'\bcho\s+tho\b', clause) and match.start() > filled.end()):
+            continue
+        suffix = folded(original[match.end():])
+        suffix = re.sub(r'^\s*(?:&\s*up|or\s+more)?\s*', '', suffix)
+        periods = [key for key in ('week', 'month', 'year', 'biweek')
+                   if re.match(PERIODS[key], suffix)]
+        net_clause = re.sub(r'\bchua\s+tinh(?:\s+tien)?\s+tips?\b', ' ', clause)
+        if (len(periods) != 1 or re.search(
+                r'\b(?:tips?|commission|an chia|bonus|rent|thue|potential|possible|co the)\b',
+                net_clause)):
+            continue
+        if any(key != periods[0] and re.search(pattern, net_clause)
+               for key, pattern in PERIODS.items()):
+            continue
+        ranges.append((match, periods[0], salary_context(original, match.start())))
+    if len(ranges) != 1:
+        return None
+    worker, period, worker_clause = ranges[0]
+    covered = [(match.start(), match.end()) for match in (*closed_pay, *revenue)]
+    covered.append((worker.start(), worker.end()))
+    if any(not any(start <= token_start and token_end <= end for start, end in covered)
+           for token_start, token_end in monetary_source_tokens(original)):
+        return None
+    low, high, _ = amounts(_range_to_dash(worker.group()).rstrip('+'))
+    def weekly(amount):
+        return (amount * 12 / 52 if period == 'month' else amount / 52 if period == 'year'
+                else amount / 2 if period == 'biweek' else amount)
+    audit = [{'amount_text': match.group(), 'treatment': 'excluded',
+              'reason': 'manager position explicitly filled', 'quote': salary_context(original, match.start())}
+             for match in closed_pay]
+    audit.append({'amount_text': worker.group().strip(), 'treatment': 'worker',
+                  'reason': f'active worker income with local {period} period', 'quote': worker_clause})
+    audit.extend({'amount_text': match.group(), 'treatment': 'excluded',
+                  'reason': 'salon-subject business revenue', 'quote': salary_context(original, match.start())}
+                 for match in revenue)
+    return {'mode': 'weekly', 'low': str(weekly(low)), 'high': str(weekly(high)),
+            'range': True, 'period': period, 'kind': 'potential',
+            'source_clauses': [worker_clause], 'source_amount_audit': audit,
+            'rationale': 'Owner: active worker income only; filled manager pay and salon revenue excluded'}
+
+
 def source_sale_price(original):
     """Owner: explicit salon sale asking prices precede worker salary.
 
@@ -451,6 +876,62 @@ def source_sale_price(original):
             'rationale': 'Owner: lowest explicit salon sale/transfer asking endpoint, literal value; no conversion or rounding'}
 
 
+def source_title_linked_sale_price(post):
+    """Bind asking labels in the body to explicit business-sale intent in this post."""
+    title, body = folded(post.fields.get('title', '')), folded(post.content)
+    combined = title + '\n' + body
+    if not re.search(r'\b(?:ban|sang(?:\s+nhuong)?)\s+tiem\b'
+                     r'|\b(?:nail\s+)?(?:salon|business)\s+for\s+sale\b', combined):
+        return None
+    if re.search(r'\b(?:not|never|khong|chua)\b.{0,30}\b(?:for\s+sale|ban\s+tiem|sang\s+tiem)\b', body):
+        return None
+    label = re.compile(r'\b(?:asking\s+price|sale\s+price|gia\s+(?:ban|sang)|ban\s+gia|'
+                       r'gia(?=\s*\$)|neu\s+chi\s+mua\s+tiem\s+nails?)\s*[:=]?\s*'
+                       r'(?P<amount>' + AMOUNT.pattern + r')(?![\w,]|\.\d)')
+    descriptive_asking = re.compile(
+        r'\bgia\s+ban\b(?P<between>(?:\s+[a-z]+){1,10})\s*'
+        r'(?P<amount>\$\s*' + NUMBER + r'\s*(?:[kKmM](?!\w))?)(?![\w,]|\.\d)')
+    def literal_asking_amount(match):
+        suffix = body[match.end():match.end()+80].lstrip()
+        suffix = re.sub(r'^(?:usd|dollars?)\b\s*', '', suffix)
+        if (any(re.match(regex, suffix) for regex in PERIODS.values())
+                or re.match(r'(?:per\b|/|moi\b|each\b|every\b)\s*\w', suffix)
+                or re.match(r'(?:for\s+)?(?:manicure|pedicure|service|dich\s+vu|'
+                            r'goi\s+dau|wax|lashes|rent|thue)\b', suffix)):
+            return None
+        return amounts(match.group('amount'))[0]
+    prices = []
+    for match in [*label.finditer(body), *descriptive_asking.finditer(body)]:
+        if match.re is descriptive_asking and re.search(
+                r'\b(?:rent|thue|doanh\s+thu|revenue|salary|luong|service|dich\s+vu|'
+                r'tips?|commission|hoa\s+hong)\b', match.group('between')):
+            continue
+        clause = salary_context(body, match.start())
+        if re.search(r'\b(?:rent|thue|doanh\s+thu|revenue|salary|luong|service)\b',
+                     clause[:clause.find(match.group())]):
+            continue
+        amount = literal_asking_amount(match)
+        if amount is not None:
+            prices.append((match, amount))
+    if prices:
+        discount = re.compile(r'\b(?:em|toi|chu)?\s*(?:bot|giam)\s+con\s*[:=]?\s*'
+                              r'(?P<amount>' + AMOUNT.pattern + r')(?![\w,]|\.\d)')
+        base_prices = tuple(prices)
+        for match in discount.finditer(body):
+            prior = [asking for asking, _ in base_prices if asking.end() <= match.start()]
+            if not prior or body[prior[-1].end():match.start()].strip(' \t\r\n.:;,-'):
+                continue  # A discount must directly continue an accepted sale asking clause.
+            amount = literal_asking_amount(match)
+            if amount is not None:
+                prices.append((match, amount))
+    if not prices:
+        return None
+    value = str(min(amount for _, amount in prices))
+    return {'mode':'weekly', 'low':value, 'high':value, 'range':False,
+            'copy_no_period':True, 'sale_asking_price':True,
+            'rationale':'Owner: lowest explicit asking price linked to business-sale intent'}
+
+
 def source_salary_policy(original):
     """Owner's two source-only policies. None leaves the existing period parser in charge.
 
@@ -460,9 +941,25 @@ def source_salary_policy(original):
     sale_price = source_sale_price(original)
     if sale_price is not None:
         return sale_price
+    confirmed = owner_confirmed_pay(original)
+    if confirmed is not None:
+        return confirmed
+    if NEGATED_BASE_PAY.search(folded(original)):
+        return None  # A negated salary claim cannot authorize a numeric source fallback.
+    active_income = source_active_income_after_filled_manager(original)
+    if active_income is not None:
+        return active_income
+    worker_clauses = source_worker_pay_clauses(original)
+    if worker_clauses is not None:
+        return worker_clauses
+    if NONWORKER_INCOME_CLAIM.search(folded(original)):
+        return None  # A role-labelled business/rent range is never worker pay.
     audit_original = original
     original = without_service_prices(original)
     source = folded(original)
+    duration_ranges = literal_workday_salary_ranges(original)
+    if duration_ranges is not None:
+        return duration_ranges
     multiple = multiple_source_salaries(original, audit_original=audit_original)
     if multiple is not None:
         return multiple
@@ -470,11 +967,12 @@ def source_salary_policy(original):
                   'rationale': 'Owner: absent or unclear numeric base salary defaults to negotiated'}
     if not PAY_WORDS.search(source) and not MONEY.search(original) and not numeric_pay_clauses(original):
         return negotiated
+    if _hourly_without_certain_schedule(original):
+        return negotiated  # An hourly figure has no defensible weekly value.
     mentions = list(MONEY.finditer(original))
     # Explicit bare numeric pay is permitted only immediately after a salary label.
-    bare = re.compile(rf'\b(?:bao lương|bao luong|bao|lương|luong|thu nhập|thu nhap|salary|pay|income|wages?|compensation|guaranteed?)\s*[:=]?\s*(?:(?:từ|tu|from)\s+)?({NUMBER}\s*[kK]?)(?![\w,]|\.\d)', re.I)
     positions = [(m.start(), m.group()) for m in mentions]
-    positions += [(m.start(1), original[m.start(1):m.end(1)]) for m in bare.finditer(original)
+    positions += [(m.start(1), original[m.start(1):m.end(1)]) for m in BARE_PAY_AMOUNT.finditer(original)
                   if not any(a <= m.start(1) < a+len(t) for a,t in positions)]
     # Preserve numeric pay-period clauses even without a currency/label, using
     # original offsets rather than offsets into accent-normalized text.
@@ -533,9 +1031,13 @@ def source_salary_policy(original):
 
 
 def salary(original, value):
+    if NEGATED_BASE_PAY.search(folded(original)):
+        raise NeedsHuman('negated base salary requires source review')
     policy = source_salary_policy(original)
     if policy is not None:
         return policy
+    if NONWORKER_INCOME_CLAIM.search(folded(original)):
+        raise NeedsHuman('business or rent income requires source review')
     if not isinstance(value, dict) or set(value) != {'mode', 'kind', 'amount_text', 'period', 'evidence', 'schedule', 'rationale'}:
         raise NeedsHuman('invalid salary schema')
     rationale = value['rationale']
@@ -637,6 +1139,8 @@ def candidate_salary(original, candidates):
     The model supplies semantic roles; literal amounts, local periods, coverage,
     conversion and the display range remain code-owned.
     """
+    if NEGATED_BASE_PAY.search(folded(original)):
+        raise NeedsHuman('negated base salary requires source review')
     if not isinstance(candidates, list) or len(candidates) > 20:
         raise EvidenceError('invalid monetary candidate list', path='salary_candidates')
     allowed = {'worker', 'service', 'rent', 'tips', 'commission', 'revenue', 'sale', 'other'}
@@ -684,6 +1188,8 @@ def candidate_salary(original, candidates):
         local_clause = salary_context(quote, quote.index(amount_text))
         local_text = folded(local_clause)
         original_clause = folded(without_work_schedule(salary_context(original, amount_start)))
+        business_revenue = (bool(re.search(r'^\s*[-•]?\s*tiem\b.{0,80}\bthu nhap\b', original_clause))
+                            and not re.search(r'\b(?:tho|worker|staff|technician|employee)\b', original_clause))
         periods = {key for key, pattern in PERIODS.items() if re.search(pattern, without_work_schedule(local_text))}
         source_periods = {key for key, pattern in PERIODS.items() if re.search(pattern, original_clause)}
         period = item['period']
@@ -694,17 +1200,20 @@ def candidate_salary(original, candidates):
         if item['kind'] == 'worker':
             if not without_service_prices(original)[amount_start:amount_end].strip():
                 raise EvidenceError('worker candidate selects a recognized customer service price', path=path+'.kind')
+            if business_revenue:
+                raise EvidenceError('salon revenue is not worker income', path=path+'.kind')
             alternative_commission = (re.search(r'\b(?:bao luong|guaranteed?)\b', original_clause)
                                       and re.search(r'\b(?:hoac|or)\s+(?:an chia|commission)\b', original_clause))
+            base_clause = re.sub(r'\bchua\s+tinh(?:\s+tien)?\s+tips?\b', ' ', original_clause)
             non_base = list(re.finditer(
                 r'\b(?:rent|thue|bonus|thuong|tips?|commission|an chia|deposit|dat coc|'
                 r'revenue|doanh thu|business income|asking price|sale price|gia ban|gia sang)\b',
-                original_clause))
+                base_clause))
             if non_base and not (alternative_commission and all(
                     match.group() in ('commission', 'an chia') for match in non_base)):
                 raise EvidenceError('worker candidate includes non-base pay', path=path+'.kind')
             workers.append((low, high, is_range, period, quote, item['schedule']))
-        elif (re.search(r'\b(?:salary|income|thu\s+nhap|bao\s+luong|wages?)\b|收入', original_clause)
+        elif (not business_revenue and re.search(r'\b(?:salary|income|thu\s+nhap|bao\s+luong|wages?)\b|收入', original_clause)
               and not re.search(r'\b(?:service|price|rent|tips?|commission|revenue|sale|bonus)\b', original_clause)):
             raise EvidenceError('income clause classified as non-worker money', path=path+'.kind')
         covered.append((amount_start, amount_end))
@@ -789,6 +1298,21 @@ def dedup_phones(primary, other):
 
 FACT_KINDS = ('salon', 'contact', 'location', 'salary', 'schedule', 'benefits', 'requirements')
 LOCATION_FIELDS = ('salon', 'address', 'city', 'state', 'zip', 'email', 'phone_primary', 'phone_other')
+STATE_FULLNAME_EQUIVALENTS = {
+    'AL': 'alabama', 'AK': 'alaska', 'AZ': 'arizona', 'AR': 'arkansas', 'CA': 'california',
+    'CO': 'colorado', 'CT': 'connecticut', 'DE': 'delaware', 'DC': 'district of columbia',
+    'FL': 'florida', 'GA': 'georgia', 'HI': 'hawaii', 'ID': 'idaho', 'IL': 'illinois',
+    'IN': 'indiana', 'IA': 'iowa', 'KS': 'kansas', 'KY': 'kentucky', 'LA': 'louisiana',
+    'ME': 'maine', 'MD': 'maryland', 'MA': 'massachusetts', 'MI': 'michigan',
+    'MN': 'minnesota', 'MS': 'mississippi', 'MO': 'missouri', 'MT': 'montana',
+    'NE': 'nebraska', 'NV': 'nevada', 'NH': 'new hampshire', 'NJ': 'new jersey',
+    'NM': 'new mexico', 'NY': 'new york', 'NC': 'north carolina', 'ND': 'north dakota',
+    'OH': 'ohio', 'OK': 'oklahoma', 'OR': 'oregon', 'PA': 'pennsylvania',
+    'RI': 'rhode island', 'SC': 'south carolina', 'SD': 'south dakota',
+    'TN': 'tennessee', 'TX': 'texas', 'UT': 'utah', 'VT': 'vermont',
+    'VA': 'virginia', 'WA': 'washington', 'WV': 'west virginia',
+    'WI': 'wisconsin', 'WY': 'wyoming',
+}
 
 
 def source_state_repair(post):
@@ -828,9 +1352,44 @@ def source_state_repair(post):
 ADDRESS_PAIR = re.compile(
     r'(?<!\w)\d+[A-Za-z]?\s+[^\n,;]{1,180}?\b'
     r'(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Circle|Cir|Parkway|Pkwy|Place|Pl|Terrace|Ter|Highway|Hwy|Way)\.?[,]?'
-    r'(?:\s+(?:#\s*[A-Za-z0-9-]+|(?:Suite|Ste|Unit|Apt)\.?\s+[A-Za-z0-9-]+))?'
+    r'(?:\s+(?:#\s*[A-Za-z0-9-]+|(?:Suite|Ste|Unit|Apt)\.?\s+#?\s*[A-Za-z0-9-]+))?'
     r'\s+(?P<city>[A-Za-z][A-Za-z .\x27’\-]{0,90}?)\s*,?\s+'
     r'(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-?\d{4})?)(?!\d)')
+CITY_STATE_ZIP = re.compile(
+    r'(?P<city>[A-Za-z][A-Za-z .\x27’\-]{0,90}?)\s*,\s*'
+    r'(?P<state>[A-Z]{2})\s+(?P<zip>\d{5}(?:-?\d{4})?)(?!\d)')
+
+
+def content_confirmed_address_repair(post):
+    """Recover an address tail only when the body independently names its salon city."""
+    address = post.fields.get('address', '').strip()
+    # The source cue must say where this salon is, not merely mention a nearby area.
+    city_cue = re.compile(r'(?i:tiệm(?:\s+em)?\s+ở|salon\s+in|shop\s+in)\s+'
+                          r'(?P<city>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b')
+    cities = {match.group('city') for match in city_cue.finditer(post.content)}
+    if len(cities) != 1:
+        return {}
+    city = cities.pop()
+    tail = re.search(r'(?<!\w)' + re.escape(city) + r',\s*(?P<state>[A-Z]{2})\s+'
+                     r'(?P<zip>\d{5}(?:-?\d{4})?)(?!\d)$', address)
+    if not tail:
+        return {}
+    state, zip_code = tail.group('state', 'zip')
+    current_state = post.fields.get('state', '').strip()
+    if current_state != state:
+        state_name = STATE_FULLNAME_EQUIVALENTS.get(state, '')
+        if not state_name or not re.search(r'(?<!\w)' + re.escape(folded(city)) +
+                r'\s*,\s*' + re.escape(state_name) + r'\b', folded(post.content)):
+            return {}
+    for key, value in (('city', city), ('zip', zip_code)):
+        current = post.fields.get(key, '').strip()
+        if current and current.replace('-', '').casefold() != value.replace('-', '').casefold():
+            raise NeedsHuman('content-confirmed address conflicts with current contact field',
+                             details={'kind':'data','field':key,'current':current,'source':value})
+    values = {'city': city, 'state': state, 'zip': zip_code}
+    return {key: {'value': value, 'source_field': 'address+content',
+                  'evidence': {'address': address, 'city': city}}
+            for key, value in values.items() if post.fields.get(key, '').strip() != value}
 
 
 def current_address_repair(post):
@@ -838,10 +1397,27 @@ def current_address_repair(post):
     address = post.fields.get('address', '').strip()
     if not address or len(address) > 500 or (post.fields.get('city', '').strip() and post.fields.get('zip', '').strip()):
         return {}
-    match = ADDRESS_PAIR.fullmatch(address)
+    street_match = ADDRESS_PAIR.fullmatch(address)
+    match = street_match or CITY_STATE_ZIP.fullmatch(address)
     if not match:
-        return {}
+        return content_confirmed_address_repair(post)
     city, state, zip_code = (match.group(key).strip() for key in ('city', 'state', 'zip'))
+    direction = re.match(r'^(?:[NSEW]|North|South|East|West)\s+(.+)$', city, re.I)
+    if direction and street_match:
+        # A street direction after Rd/Blvd is part of the street, not the city.
+        # Recover the shorter city only when the original confirms it with state.
+        shorter = direction.group(1)
+        state_name = STATE_FULLNAME_EQUIVALENTS.get(state, '')
+        original = folded(post.content)
+        suffix = (r'\s*,?\s+(?:bang\s+|tieu\s+bang\s+|state\s+)?(?:' +
+                  re.escape(state.casefold()) + r'|' + re.escape(state_name) + r')\b')
+        if not re.search(r'(?<!\w)' + re.escape(folded(city)) + suffix, original):
+            shorter_mentions = list(re.finditer(r'(?<!\w)' + re.escape(folded(shorter)) + suffix, original))
+            shorter_mentions = [mention for mention in shorter_mentions if not re.search(
+                r'\b(?:north|south|east|west|n|s|e|w)\s+$', original[:mention.start()])]
+            if not shorter_mentions:
+                return {}
+            city = shorter
     # Reject a swallowed street/unit fragment instead of guessing a city boundary.
     city_tail = re.sub(r'^St\.?\s+', '', city)
     if re.search(r'\b(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Circle|Cir|Parkway|Pkwy|Place|Pl|Terrace|Ter|Highway|Hwy|Way)\.?\s+\w', city_tail, re.I):
@@ -878,7 +1454,7 @@ def current_address_repair(post):
 def current_address_state_repair(post):
     """A complete stored address can correct its own conflicting state field."""
     address = post.fields.get('address', '').strip()
-    match = ADDRESS_PAIR.fullmatch(address)
+    match = ADDRESS_PAIR.fullmatch(address) or CITY_STATE_ZIP.fullmatch(address)
     if not match or not post.fields.get('city') or not post.fields.get('zip'):
         return {}
     if (post.fields['city'].strip() != match.group('city').strip()
@@ -901,9 +1477,21 @@ def current_address_state_repair(post):
     return {'state': {'value':state, 'source_field':'address', 'evidence':address}}
 
 
+UNKNOWN_BUSINESS_NAMES = frozenset({
+    'unknown', 'not disclosed', 'undisclosed', 'not provided', 'n/a',
+    'chua cong bo', 'chua biet', 'khong ro', 'khong tiet lo',
+    '未知', '未公开', '未提供', '不公开', 'baonail.com', 'nailhub.ai',
+})
+
+
+def unknown_business_name(value):
+    return isinstance(value, str) and folded(value.strip().strip('.:：。 ')) in UNKNOWN_BUSINESS_NAMES
+
+
 def source_store_name_repair(post):
     """Owner-confirmed BaoNail stores slug convention, bound to the literal URL."""
-    if post.fields.get('salon', '').strip().casefold() != 'baonail.com':
+    current_salon = post.fields.get('salon', '').strip()
+    if current_salon and not unknown_business_name(current_salon):
         return {}
     matches = list(re.finditer(r'https://[^\s<>]+', post.content))
     names = []
@@ -920,11 +1508,136 @@ def source_store_name_repair(post):
         if len(name) > 30:
             raise NeedsHuman('source store name exceeds salon field limit')
         names.append((name, url))
-    if not names:
+    # A business name in a title is source evidence only when the complete
+    # proper-name phrase is followed by a posting-intent phrase. Generic
+    # "Nail Salon for sale" has no distinctive name and is excluded.
+    title = post.fields.get('title', '').strip()
+    titled = re.fullmatch(r'(?P<name>(?:[A-Z][A-Za-z\d\x27&.-]+\s+){1,4}'
+                         r'(?i:Nails|Spa|Salon|Bistro|Restaurant|Cafe|Kitchen))'
+                         r'\s+(?i:hiring|for\s+sale|tuyển\s+thợ|cần\s+thợ).*', title)
+    title_name = None
+    if titled:
+        name = titled.group('name').strip()
+        if (folded(name) not in ('nail salon', 'nails salon', 'nail spa', 'nails spa')
+                and not re.search(r'\b(?:now|hiring|urgently|need|wanted|seeking|for\s+sale|can\s+tho|tuyen\s+dung)\b', folded(name))):
+            if len(name) > 30:
+                raise NeedsHuman('source title business name exceeds salon field limit')
+            title_name = name
+    if names:
+        if len({name.casefold() for name, _ in names}) != 1:
+            raise NeedsHuman('source store names conflict')
+        if title_name and title_name.casefold() != names[0][0].casefold():
+            raise NeedsHuman('source title and store URL business names conflict')
+        return {'salon': {'value': names[0][0], 'source_field': 'content_url', 'evidence': names[0][1]}}
+    if title_name:
+        return {'salon': {'value': title_name, 'source_field': 'title_business_name', 'evidence': title_name}}
+    # D025 records one reversible form-limit representation of a named
+    # restaurant. Other names need their own source-backed review; the generic
+    # suffix shape alone cannot authorize shortening a business identity.
+    if hashlib.sha256(post.content.encode('utf-8')).hexdigest() != OWNER_CONFIRMED_RESTAURANT_NAME_SOURCE_SHA256:
         return {}
-    if len({name.casefold() for name, _ in names}) != 1:
-        raise NeedsHuman('source store names conflict')
-    return {'salon': {'value':names[0][0], 'source_field':'content_url', 'evidence':names[0][1]}}
+    sale_intent = folded(post.fields.get('title', '') + '\n' + post.content)
+    if not re.search(r'\b(?:ban|sang(?:\s+nhuong)?)\s+tiem\b|\b(?:restaurant|business)\s+for\s+sale\b', sale_intent):
+        return {}
+    named = list(re.finditer(
+        r'\b(?:[Nn]hà\s+hàng|[Rr]estaurant)\s+'
+        r'(?P<name>[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,4}\s+'
+        r'(?:Bistro|Cafe|Restaurant|Kitchen))\s+and\s+Teahouse\b', post.content))
+    if len(named) != 1 or len(named[0].group('name')) > 30:
+        return {}
+    name = named[0].group('name')
+    return {'salon': {'value': name, 'source_field': 'content_business_name', 'evidence': name}}
+
+
+def publisher_name_fallback(post):
+    """D027: use the publisher label only after source-backed names are exhausted.
+
+    This is an explicitly authorized website attribution in a required form field,
+    not evidence that nailhub.ai is the business's actual name.
+    """
+    current_salon = post.fields.get('salon', '').strip()
+    if current_salon and not unknown_business_name(current_salon):
+        return {}
+    if source_store_name_repair(post):
+        return {}
+    # A labeled source name needs extraction/review, never a publisher fallback.
+    text = post.fields.get('title', '') + '\n' + post.content
+    label_pattern = re.compile(r'(?i)(?:\b(?:business\s+name|salon\s+name|name\s+of\s+(?:the\s+)?salon|'
+                               r'tên\s+tiệm|tên\s+salon|nhà\s+hàng\s+tên)|店名|商家名称)\s*[:：-]\s*'
+                               r'(?P<name>[^\n;。；!?]{1,100}?)(?=\.(?:\s|$)|[;。；!?\n]|$)')
+    named = next((match for match in label_pattern.finditer(text)
+                  if not unknown_business_name(match.group('name'))), None)
+    if named is None:
+        possible_names = re.finditer(r'(?<!\w)(?:[A-Z][A-Za-z\d\x27&.-]+\s+){1,4}'
+            r'(?:Nails?|Spa|Salon|Bistro|Restaurant|Cafe|Kitchen|Nail Lounge)\b', text)
+        for possible in possible_names:
+            candidate = folded(possible.group())
+            if (candidate in ('nail salon', 'nails salon', 'nail spa', 'nails spa')
+                    or re.match(r'(?:now|hiring|urgently|need|wanted|seeking)\b', candidate)):
+                continue
+            named = possible
+            break
+    if named:
+        raise NeedsHuman('explicit source business name requires review before publisher fallback',
+            details={'kind': 'data', 'field': 'salon', 'current': post.fields.get('salon', ''),
+                     'source': named.group()[:160],
+                     'action': 'Xác nhận tên cơ sở thật trong nguồn trước khi dùng nhãn website.'})
+    return {'salon': {'value': 'nailhub.ai', 'source_field': 'owner_publisher_fallback',
+                      'evidence': post.fields['salon'],
+                      'policy': 'D027: Owner-authorized website attribution; actual business name remains unknown'}}
+
+
+def publisher_branding_rewrite(original, rewritten, category):
+    """D027's narrow post-AI publisher attribution for an unknown business name.
+
+    The caller must prove the salon form field was changed from an unknown name
+    to nailhub.ai by the Owner fallback. No other site-AI content is interpreted.
+    """
+    if category not in ('JobPosting', 'SalonForSale', 'Portfolio') or not isinstance(rewritten, str):
+        raise NeedsHuman('publisher branding requires a supported posting category and AI text')
+    # The local AI output surrounding the publisher decides the language in a
+    # bilingual source. A distant Chinese/Vietnamese paragraph cannot override
+    # the wording around the actual publisher mention.
+    noun = re.compile(r'(?i)(?<!\w)(?:(?:tiệm|tiem|nail\s+salon|salon|美甲店|店铺|店)\s*[:：-]?\s*)'
+                      r'(?:nailhub\.ai|baonail\.com)(?![\w./-])')
+    site = re.compile(r'(?i)(?<![\w/@.-])nailhub\.ai(?![\w./-])')
+    mention = noun.search(rewritten) or site.search(rewritten)
+    nearby = (rewritten[max(0, mention.start()-80):mention.end()+120]
+              if mention else rewritten[:200])
+    if (mention and re.match(r'(?i)(?:美甲店|店铺|店)', mention.group())
+            or re.search(r'[\u3400-\u9fff]', nearby) and not re.search(r'[À-ỹđĐ]', nearby)):
+        language = 'zh'
+    elif (mention and re.match(r'(?i)(?:tiệm|tiem)', mention.group())
+          or re.search(r'[À-ỹđĐ]', nearby)
+          or re.search(r'\b(?:tiệm|thợ|cần|bán|sang\s+nhượng)\b', nearby, re.I)):
+        language = 'vi'
+    elif re.search(r'[\u3400-\u9fff]', rewritten):
+        language = 'zh'
+    elif re.search(r'[À-ỹđĐ]', rewritten):
+        language = 'vi'
+    elif re.search(r'[À-ỹđĐ]', original):
+        language = 'vi'
+    elif re.search(r'[\u3400-\u9fff]', original):
+        language = 'zh'
+    else:
+        language = 'en'
+    phrase = {
+        'zh': {'JobPosting': '发布招聘信息', 'SalonForSale': '发布转让信息', 'Portfolio': '发布求职信息'},
+        'vi': {'JobPosting': 'đăng bài tuyển dụng', 'SalonForSale': 'đăng tin sang nhượng',
+               'Portfolio': 'đăng tin tìm việc'},
+        'en': {'JobPosting': 'posts this job listing',
+               'SalonForSale': 'posts this business sale listing',
+               'Portfolio': 'posts this job-seeker listing'},
+    }[language][category]
+    # Remove only a noun immediately misclassifying the publisher as the salon.
+    result = noun.sub('Nailhub.ai', rewritten)
+    if site.search(result):
+        already = re.compile(re.escape('Nailhub.ai') + r'\s+' + re.escape(phrase), re.I)
+        if not already.search(result):
+            result = site.sub('Nailhub.ai ' + phrase, result, count=1)
+    else:
+        result = 'Nailhub.ai ' + phrase + '\n' + result
+    return result
 
 
 def category_price_policy(post, suggestion=None):
@@ -934,7 +1647,7 @@ def category_price_policy(post, suggestion=None):
         return {'mode': 'not_applicable', 'low': None, 'high': None, 'range': False,
                 'rationale': 'Owner: seeker category has no salary/price fields in the inspected form'}
     if target == 'SalonForSale':
-        return source_sale_price(post.content) or {'mode': 'negotiated', 'low': None, 'high': None, 'range': False,
+        return source_sale_price(post.content) or source_title_linked_sale_price(post) or {'mode': 'negotiated', 'low': None, 'high': None, 'range': False,
                 'rationale': 'Owner: no explicit salon asking price; negotiated, never worker salary or revenue'}
     return source_salary_policy(post.content)
 
@@ -955,16 +1668,35 @@ def normalize_extraction(post, data):
     from .categories import category_proposal
     target_category = category_proposal(post, data.get('category'))['target']
     model_worker_clauses = target_category == 'JobPosting' and isinstance(data.get('salary_candidates'), list)
-    noncontact_source = PHONE.sub(' ', post.content)
-    noncontact_source = ADDRESS_PAIR.sub(' ', noncontact_source)
-    if (model_worker_clauses and not monetary_source_tokens(post.content)
-            and not re.search(r'\d{3,}', noncontact_source)):
+    nonservice_content = without_service_prices(post.content) if model_worker_clauses else ''
+    if (model_worker_clauses and (
+            (not monetary_source_tokens(nonservice_content)
+             and not numeric_pay_clauses(nonservice_content)
+             and not BARE_PAY_AMOUNT.search(nonservice_content))
+            or _hourly_without_certain_schedule(nonservice_content))):
         no_pay = source_salary_policy(post.content)
         if no_pay is not None and no_pay['mode'] == 'negotiated':
             # No source money exists to support a generated candidate. Preserve
             # model location/category checks while using the established no-pay policy.
             result.pop('salary_candidates', None)
             model_worker_clauses = False
+    if model_worker_clauses and re.search(r'\bbao luong\s*\$?\s*\d', folded(post.content)):
+        literal_pay = source_salary_policy(post.content)
+        if literal_pay is not None and literal_pay.get('copy_no_period'):
+            result.pop('salary_candidates', None)
+            model_worker_clauses = False
+    if model_worker_clauses and source_active_income_after_filled_manager(post.content) is not None:
+        result.pop('salary_candidates', None)  # Complete source accounting supersedes partial model candidates.
+        model_worker_clauses = False
+    if model_worker_clauses and owner_confirmed_pay(post.content) is not None:
+        result.pop('salary_candidates', None)  # Exact Owner decision supersedes malformed candidate parsing.
+        model_worker_clauses = False
+    if model_worker_clauses and source_worker_pay_clauses(post.content) is not None:
+        # This bounded parser accounts for every literal money token and binds
+        # each local period. It can correct a model's commission mislabel of an
+        # explicit base range without discarding category/contact scrutiny.
+        result.pop('salary_candidates', None)
+        model_worker_clauses = False
     source_policy = None if model_worker_clauses else category_price_policy(post, data.get('category'))
     if source_policy is not None:
         # Evidence/schema from an unused model salary cannot block an exact source policy.
@@ -976,8 +1708,22 @@ def normalize_extraction(post, data):
         location = dict(location)
         proposed_salon = location.get('salon')
         current_salon = post.fields.get('salon', '').strip()
+        if ((not current_salon or unknown_business_name(current_salon)) and isinstance(proposed_salon, dict)
+                and isinstance(proposed_salon.get('value'), str)
+                and (proposed_salon['value'].strip().casefold() in ('baonail.com', 'nailhub.ai')
+                     or unknown_business_name(proposed_salon['value']))):
+            # A model echo of either publisher cannot establish an actual salon.
+            location.pop('salon', None)
+            proposed_salon = None
         if (isinstance(proposed_salon, dict) and isinstance(proposed_salon.get('value'), str)
-                and current_salon and current_salon.casefold() != 'baonail.com'
+                and (len(proposed_salon['value'].strip()) > 30 or re.search(
+                    r'\b(?:sang\s+vung|can\s+tho|hiring|for\s+sale|tuyen\s+dung)\b',
+                    folded(proposed_salon['value'])))):
+            # A location/intent descriptor quoted by the model is not a real name.
+            location.pop('salon', None)
+            proposed_salon = None
+        if (isinstance(proposed_salon, dict) and isinstance(proposed_salon.get('value'), str)
+                and current_salon and not unknown_business_name(current_salon)
                 and proposed_salon['value'].strip() != current_salon):
             name = proposed_salon['value'].strip()
             explicit_name = re.search(
@@ -987,6 +1733,29 @@ def normalize_extraction(post, data):
             if (len(name) > 30 or re.search(r'\b(?:sang\s+vung|can\s+tho|hiring|for\s+sale)\b', folded(name))
                     or not (explicit_name or re.search(r'\b(?:nails?|spa|salon|lounge)\b', folded(name)))):
                 location.pop('salon', None)
+        source_phones = {phone_key(match.group()) for match in PHONE.finditer(post.content)}
+        stored_phones = {phone_key(match.group()) for field in ('phone_primary', 'phone_other')
+                         for match in PHONE.finditer(post.fields.get(field, ''))}
+        for phone_field in ('phone_primary', 'phone_other'):
+            proposed_phone = location.get(phone_field)
+            stored_phone = post.fields.get(phone_field, '').strip()
+            proposed_value = (proposed_phone.get('value', '').strip()
+                              if isinstance(proposed_phone, dict) and isinstance(proposed_phone.get('value'), str)
+                              else '')
+            if (proposed_value and proposed_value != stored_phone
+                    and PHONE.fullmatch(proposed_value) and PHONE.fullmatch(stored_phone)
+                    and phone_key(proposed_value) in stored_phones and source_phones <= stored_phones):
+                # A model may swap two valid stored numbers after reading only
+                # redacted source placeholders. An existing number is not new
+                # evidence of which contact field should own it.
+                location.pop(phone_field, None)
+                continue
+            if (isinstance(proposed_phone, dict) and isinstance(proposed_phone.get('value'), str)
+                    and not PHONE.fullmatch(proposed_phone['value'].strip())
+                    and PHONE.fullmatch(stored_phone) and source_phones <= stored_phones):
+                # A model copy of a source placeholder such as "Phone" cannot
+                # replace a valid, fingerprint-bound contact number.
+                location.pop(phone_field, None)
         for key in address_repair:
             location.pop(key, None)  # Independent trusted-address provenance, not a body quote.
         if grounded_state is not None:
@@ -994,21 +1763,213 @@ def normalize_extraction(post, data):
             location.pop('state', None)
             if grounded_state['value'] != post.fields.get('state', '').strip():
                 location['state'] = grounded_state
+        state_item = location.get('state')
+        stored_state = post.fields.get('state', '').strip()
+        stored_city = post.fields.get('city', '').strip()
+        stored_zip = post.fields.get('zip', '').strip()
+        stored_address = post.fields.get('address', '').strip()
+        # A model may spell a postal code with different case. Treat it as a
+        # no-op only when the current street address and an exact source quote
+        # independently identify the same city, state and ZIP. Other proposed
+        # location fields still undergo their normal source checks.
+        if (isinstance(state_item, dict) and set(state_item) == {'value', 'evidence'}
+                and isinstance(state_item['value'], str)
+                and re.fullmatch(r'[A-Za-z]{2}', state_item['value'].strip())
+                and state_item['value'].strip().upper() == stored_state
+                and stored_state and state_item['value'].strip() != stored_state):
+            proven_city = stored_city or address_repair.get('city', {}).get('value', '')
+            proven_zip = stored_zip or address_repair.get('zip', {}).get('value', '')
+            complete_address = bool(proven_city and proven_zip and re.search(
+                r'(?<!\w)' + re.escape(proven_city) + r'\s*,?\s+' + re.escape(stored_state)
+                + r'\s+' + re.escape(proven_zip) + r'\s*$', stored_address, re.I))
+            try:
+                state_quote = evidence(post.content, state_item['evidence'])
+            except EvidenceError:
+                state_quote = ''
+            quoted_pair = bool(re.search(
+                r'(?<!\w)' + re.escape(proven_city) + r'\s*,?\s+'
+                + re.escape(state_item['value'].strip()) + r'\s+' + re.escape(proven_zip) + r'(?!\d)',
+                state_quote, re.I)) if proven_city and proven_zip else False
+            body_state_pairs = [match.group(1).upper() for match in re.finditer(
+                r'(?<!\w)([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\b', post.content)]
+            if (complete_address and quoted_pair and body_state_pairs
+                    and all(code == stored_state for code in body_state_pairs)):
+                location.pop('state')
+        state_item = location.get('state')
+        full_state_mentions = [name.strip() for name in re.findall(
+            r'(?<!\w)' + re.escape(folded(stored_city)) + r'\s*,?\s+tieu bang\s+([^.,;!?\n]+)',
+            folded(post.content))] if stored_city else []
+        if (isinstance(state_item, dict) and set(state_item) == {'value', 'evidence'}
+                and folded(state_item['value'].strip()) == STATE_FULLNAME_EQUIVALENTS.get(stored_state)
+                and stored_city and stored_zip
+                and re.search(r'(?<!\w)' + re.escape(stored_city) + r'\s*,?\s+' +
+                              re.escape(stored_state) + r'\s+' + re.escape(stored_zip) + r'\s*$', stored_address)
+                and full_state_mentions
+                and all(name == STATE_FULLNAME_EQUIVALENTS.get(stored_state) for name in full_state_mentions)):
+            try:
+                state_quote = evidence(post.content, state_item['evidence'])
+            except EvidenceError:
+                state_quote = ''
+            if re.search(r'(?<!\w)' + re.escape(state_item['value'].strip()) + r'(?!\w)', state_quote):
+                location.pop('state')  # Full name and postal abbreviation denote the same proven state.
+        state_item = location.get('state')
+        state_name = STATE_FULLNAME_EQUIVALENTS.get(stored_state)
+        # A source title can spell out the same city/state as a complete
+        # stored City, ST ZIP address. The title quote only licenses dropping
+        # that no-op model spelling; it never repairs a different location.
+        if (isinstance(state_item, dict) and set(state_item) == {'value', 'evidence'}
+                and state_name and folded(state_item['value'].strip()) == state_name
+                and stored_city and stored_zip
+                and re.search(r'(?<!\w)' + re.escape(stored_city) + r'\s*,?\s+' +
+                              re.escape(stored_state) + r'\s+' + re.escape(stored_zip) +
+                              r'\s*$', stored_address)):
+            try:
+                title_quote = evidence(post.fields.get('title', ''), state_item['evidence'])
+            except EvidenceError:
+                title_quote = ''
+            other_full_names = [name for name in set(STATE_FULLNAME_EQUIVALENTS.values())
+                                if name != state_name and re.search(
+                                    r'(?<!\w)' + re.escape(name) + r'(?!\w)', folded(post.content))]
+            body_state_pairs = [match.group(1).upper() for match in re.finditer(
+                r'(?<!\w)([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\b', post.content)]
+            if (re.search(r'(?<!\w)' + re.escape(folded(stored_city)) + r'\s*,\s*' +
+                          re.escape(state_name) + r'\b', folded(title_quote))
+                    and not other_full_names
+                    and all(code == stored_state for code in body_state_pairs)
+                    and not list(ADDRESS_PAIR.finditer(post.content))
+                    and not list(CITY_STATE_ZIP.finditer(post.content))):
+                location.pop('state')
+        state_item = location.get('state')
+        # City/ZIP can be blank in the form even when its stored street address
+        # has a complete, independently repairable City, ST ZIP tail. In that
+        # case the full state name is still only a spelling of the same state;
+        # do not let a model's name variant turn it into an unsupported write.
+        if (isinstance(state_item, dict) and set(state_item) == {'value', 'evidence'}
+                and state_name and folded(state_item['value'].strip()) == state_name
+                and (not stored_city or not stored_zip)
+                and 'city' in address_repair and 'zip' in address_repair):
+            repaired_city = address_repair['city']['value']
+            repaired_zip = address_repair['zip']['value']
+            complete_address = bool(re.search(
+                r'(?<!\w)' + re.escape(repaired_city) + r'\s*,?\s+' + re.escape(stored_state)
+                + r'\s+' + re.escape(repaired_zip) + r'\s*$', stored_address, re.I))
+            try:
+                state_quote = evidence(post.content, state_item['evidence'])
+            except EvidenceError:
+                state_quote = ''
+            full_names = '|'.join(re.escape(name) for name in
+                                  sorted(STATE_FULLNAME_EQUIVALENTS.values(), key=len, reverse=True))
+            body_full_names = re.findall(r'(?<!\w)(?:' + full_names + r')(?!\w)', folded(post.content))
+            body_state_pairs = [match.group(1).upper() for match in re.finditer(
+                r'(?<!\w)([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\b', post.content)]
+            if (complete_address and re.search(r'(?<!\w)' + re.escape(state_name) + r'(?!\w)',
+                                               folded(state_quote))
+                    and body_full_names and all(name == state_name for name in body_full_names)
+                    and all(code == stored_state for code in body_state_pairs)
+                    and not list(ADDRESS_PAIR.finditer(post.content))):
+                location.pop('state')
+        state_item = location.get('state')
+        if (isinstance(state_item, dict) and set(state_item) == {'value', 'evidence'}
+                and state_name and folded(state_item['value'].strip()) == state_name
+                and stored_city and stored_zip
+                and re.search(r'(?<!\w)' + re.escape(stored_city) + r'\s*,?\s+' +
+                              re.escape(stored_state) + r'\s+' + re.escape(stored_zip) + r'\s*$', stored_address)):
+            try:
+                state_quote = evidence(post.content, state_item['evidence'])
+            except EvidenceError:
+                state_quote = ''
+            full_names = '|'.join(re.escape(name) for name in
+                                  sorted(STATE_FULLNAME_EQUIVALENTS.values(), key=len, reverse=True))
+            city_name = re.escape(folded(stored_city))
+            other_full_names = [name for name in set(STATE_FULLNAME_EQUIVALENTS.values())
+                                if name != state_name and re.search(
+                                    r'(?<!\w)' + re.escape(name) + r'(?!\w)', folded(post.content))]
+            city_full_pairs = re.findall(
+                r'(?<!\w)' + city_name + r'\b\s*(?:[-–—]\s*[a-z][a-z ]{0,30})?\s*,\s*'
+                r'(?:tieu\s+bang\s+)?(' + full_names + r')\b', folded(post.content))
+            same_pair_in_quote = bool(re.search(
+                r'(?<!\w)' + city_name + r'\b\s*(?:[-–—]\s*[a-z][a-z ]{0,30})?\s*,\s*'
+                r'(?:tieu\s+bang\s+)?' + re.escape(state_name) + r'\b', folded(state_quote)))
+            source_place = (r'\b(?:tiem(?:\s+nails?)?\s+o|salon\s+in|located\s+in)\s+' + city_name +
+                            r'\s*[-–—]\s*')
+            city_full_pairs += re.findall(source_place + r'(' + full_names + r')\b',
+                                          folded(post.content))
+            same_pair_in_quote |= bool(re.search(source_place + re.escape(state_name) + r'\b',
+                                                 folded(state_quote)))
+            city_code_pairs = re.findall(r'(?<!\w)' + re.escape(stored_city) +
+                                         r'\s*,\s*([A-Z]{2})(?![A-Za-z])', post.content)
+            body_addresses = list(ADDRESS_PAIR.finditer(post.content))
+            branch_pairs = [match for match in CITY_STATE_ZIP.finditer(post.content)
+                            if (match.group('city').strip(), match.group('state'),
+                                match.group('zip').replace('-', '')) !=
+                               (stored_city, stored_state, stored_zip.replace('-', ''))]
+            if (same_pair_in_quote and city_full_pairs and not other_full_names
+                    and all(name == state_name for name in city_full_pairs)
+                    and all(code == stored_state for code in city_code_pairs)
+                    and not body_addresses and not branch_pairs):
+                location.pop('state')  # Exact same place and full state, with no branch address ambiguity.
         city_item = location.get('city')
         if isinstance(city_item, dict) and set(city_item) == {'value', 'evidence'}:
             proposed_city = city_item['value']
             stored_city = post.fields.get('city', '').strip()
             stored_state = post.fields.get('state', '').strip()
-            if (isinstance(proposed_city, str) and proposed_city.strip() != stored_city
+            current_zip = post.fields.get('zip', '').strip()
+            address = post.fields.get('address', '').strip()
+            address_tail = (bool(current_zip) and bool(address) and bool(stored_city)
+                            and bool(re.search(r'(?<!\w)' + re.escape(stored_city) +
+                                r'\s*,?\s+' + re.escape(stored_state) + r'\s+' +
+                                re.escape(current_zip) + r'\s*$', address)))
+            try:
+                city_quote = evidence(post.content, city_item['evidence'])
+            except EvidenceError:
+                city_quote = ''
+            state_name = STATE_FULLNAME_EQUIVALENTS.get(stored_state)
+            if (hashlib.sha256(post.content.encode('utf-8')).hexdigest()
+                    == OBSERVED_STATE_AS_CITY_SOURCE_SHA256
+                    and isinstance(proposed_city, str) and proposed_city.strip() != stored_city
+                    and state_name and folded(proposed_city.strip()) == state_name
+                    and address_tail and city_quote
+                    and re.search(r'\b(?:thanh\s+pho|city\s+of)\s+' +
+                                  re.escape(state_name) + r'\b', folded(city_quote))
+                    and not list(ADDRESS_PAIR.finditer(post.content))
+                    and not list(CITY_STATE_ZIP.finditer(post.content))):
+                location.pop('city')  # Observed state-as-city error; retain proven stored city.
+            elif (isinstance(proposed_city, str) and proposed_city.strip() != stored_city
+                    and address_tail and city_quote
+                    and re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) + r'(?!\w)', city_quote)
+                    and re.search(r'\b(?:khu vuc|vung)\s+' +
+                                  re.escape(folded(proposed_city.strip())) + r'\b',
+                                  folded(post.content))
+                    and not re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) +
+                                      r'\s*,\s+[A-Z]{2}(?![A-Za-z])', post.content, re.I)
+                    and not list(ADDRESS_PAIR.finditer(post.content))
+                    and not list(CITY_STATE_ZIP.finditer(post.content))):
+                location.pop('city')  # An area mention cannot replace a complete stored street address.
+            elif (isinstance(proposed_city, str) and proposed_city.strip() != stored_city
+                    and address_tail and city_quote
+                    and re.search(r'\bcach\s+' + re.escape(folded(proposed_city.strip())) +
+                                  r'\s+\d+(?:[.,]\d+)?\s*(?:h(?:\s*\d+\s*p)?|gio|hours?|hrs?|phut|minutes?|mins?)\b',
+                                  folded(city_quote))
+                    and not re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) +
+                                      r'\s*,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b', post.content, re.I)
+                    and not re.search(r'\b(?:tiem\s+o|salon\s+in|located\s+in|address\s*:)\s*' +
+                                      re.escape(folded(proposed_city.strip())) + r'\b', folded(post.content))
+                    and not any(re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) + r'(?!\w)',
+                                          match.group(), re.I) for match in ADDRESS_PAIR.finditer(post.content))):
+                location.pop('city')  # A timed distance reference is not the salon's city.
+            elif (
+                    isinstance(proposed_city, str) and proposed_city.strip() != stored_city
                     and proposed_city.strip().casefold() == stored_city.casefold()
                     and re.fullmatch(r'[A-Z]{2}', stored_state)):
-                try:
-                    city_quote = evidence(post.content, city_item['evidence'])
-                except EvidenceError:
-                    city_quote = ''
+                body_pairs = re.findall(r'(?<!\w)' + re.escape(proposed_city.strip()) +
+                                        r'\s*,?\s+([A-Z]{2})(?![A-Za-z])', post.content)
+                full_state_agrees = (not full_state_mentions or
+                                     all(name == STATE_FULLNAME_EQUIVALENTS.get(stored_state)
+                                         for name in full_state_mentions))
                 if (re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) + r'(?!\w)', city_quote)
-                        and re.search(r'(?<!\w)' + re.escape(proposed_city.strip()) +
-                                      r'\s*,?\s+' + re.escape(stored_state) + r'(?![A-Za-z])', post.content)):
+                        and full_state_agrees
+                        and ((body_pairs and all(pair == stored_state for pair in body_pairs))
+                             or (address_tail and not body_pairs))):
                     location.pop('city')  # Same proven place; preserve the stored form-option spelling.
         result['location'] = {key:item for key,item in location.items()
             if not (key in LOCATION_FIELDS and isinstance(item, dict)
@@ -1071,6 +2032,10 @@ def require_contact(fields):
             raise NeedsHuman('required contact location incomplete or invalid; Owner review required',
                 details={'kind': 'data', 'field': key, 'current': value,
                          'action': 'Bổ sung hoặc sửa trường này từ nội dung gốc hay nguồn salon xác thực.'})
+    if fields['salon'].strip().casefold() == 'baonail.com':
+        raise NeedsHuman('salon name remains publisher placeholder; Owner review required',
+            details={'kind': 'data', 'field': 'salon', 'current': fields['salon'],
+                     'action': 'Xác nhận tên salon thật từ nguồn gốc; tên website đăng bài không phải tên salon.'})
     if (not re.fullmatch(r'[A-Za-z]{2}', fields['state'].strip())
             or not re.fullmatch(r'[0-9]{5}(?:-?[0-9]{4})?', fields['zip'].strip())):
         key = 'state' if not re.fullmatch(r'[A-Za-z]{2}', fields['state'].strip()) else 'zip'
@@ -1089,6 +2054,26 @@ def require_contact(fields):
                      'action': 'Kiểm tra mã vùng và số liên lạc chính của salon.'})
 
 
+def require_salon_location_role(post, fields, category):
+    """A house-rental location cannot silently become the unrelated salon address."""
+    if category != 'JobPosting':
+        return
+    city, state = fields.get('city', '').strip(), fields.get('state', '').strip()
+    if not city or not re.fullmatch(r'[A-Z]{2}', state):
+        return  # Required-contact validation handles incomplete location fields.
+    text, locality = folded(post.content), re.escape(folded(city)) + r'\s*,?\s+' + re.escape(state.casefold())
+    rental = re.search(r'\b(?:nha\s+(?:o|cho\s+thue)|house(?:\s+for\s+rent)?\s+(?:in|at)|'
+                       r'rental\s+(?:house|property)\s+(?:in|at))\s+' + locality + r'\b[^\n]{0,180}', text)
+    if not rental or not re.search(r'\b(?:cho\s+thue|rent|rental)\b', rental.group()):
+        return
+    salon = re.search(r'\b(?:tiem|salon|nail\s+salon)\s+(?:o|in|at)\s+' + locality + r'\b', text)
+    if not salon:
+        raise NeedsHuman('stored location describes a rental house, not the recruiting salon',
+            details={'kind': 'data', 'field': 'address', 'current': fields.get('address', ''),
+                     'source': post.content[:220],
+                     'action': 'Xác nhận địa chỉ của tiệm nail riêng với địa chỉ nhà cho thuê.'})
+
+
 def source_only_extraction(post):
     """Failover only for no-pay posts with complete fields and no unresolved source corrections.
 
@@ -1099,7 +2084,8 @@ def source_only_extraction(post):
     if policy is None or policy['mode'] != 'negotiated':
         return None
     try:
-        require_contact(post.fields)
+        fallback = publisher_name_fallback(post)
+        require_contact({**post.fields, **{key: item['value'] for key, item in fallback.items()}})
     except NeedsHuman:
         return None
     text = post.content
@@ -1180,6 +2166,11 @@ def proposal(post, data, config):
         current = post.fields.get(key, '').strip()
         if current != value:
             changes[key] = value
+    publisher_fallback = {}
+    current_salon = post.fields.get('salon', '').strip()
+    if ((not current_salon or unknown_business_name(current_salon)) and 'salon' not in changes):
+        publisher_fallback = publisher_name_fallback(post)
+        changes['salon'] = publisher_fallback['salon']['value']
     protected = entity_facts({**post.fields, **changes}, protected)
     if 'phone_other' in post.fields:
         contact = {**post.fields, **changes}
@@ -1188,6 +2179,7 @@ def proposal(post, data, config):
             changes['phone_other'] = other
     try:
         require_contact({**post.fields, **changes})
+        require_salon_location_role(post, {**post.fields, **changes}, target_category)
     except NeedsHuman as error:
         key = (error.details or {}).get('field')
         if key in location and key in changes:
@@ -1280,6 +2272,10 @@ def proposal(post, data, config):
         'evidence': item['evidence'], 'source_field': item['source_field'],
         'policy': 'Owner: bounded fingerprint-bound stored field or source URL correction'}
         for key, item in address_repair.items()})
+    field_corrections.update({key: {'current': post.fields.get(key, ''), 'source': item['value'],
+        'evidence': item['evidence'], 'source_field': item['source_field'],
+        'policy': item['policy'], 'actual_business_name_known': False}
+        for key, item in publisher_fallback.items()})
     if target_category != post.category:
         changes['category'] = target_category
         field_corrections['category'] = {'current': post.category, 'source': target_category,
@@ -1287,7 +2283,11 @@ def proposal(post, data, config):
             'policy': category_change['policy']}
     return {'changes': changes, 'category': target_category, 'category_change': category_change,
             'fields': expected_fields, 'salary': pay, 'facts': protected,
-            'rationale': data['rationale'], 'metadata_changes': metadata_changes, 'field_corrections': field_corrections}
+            'rationale': data['rationale'], 'metadata_changes': metadata_changes, 'field_corrections': field_corrections,
+            'publisher_branding': ({'policy': 'D027 Owner-authorized publisher attribution after site AI',
+                                    'source_hash': post.fingerprint, 'actual_business_name_known': False,
+                                    'category': target_category}
+                                   if publisher_fallback else None)}
 
 
 def invariant_facts(original, rewritten, facts, fields, *, subset=False):

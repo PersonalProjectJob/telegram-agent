@@ -5,7 +5,7 @@ import json
 import logging
 import time
 
-from .browser import Browser, matches_expected
+from .browser import Browser, OldPosting, matches_expected
 from .model import NailHubModel
 from .state import State
 from .notices import VERSION, manual_notice, pending_messages, scan_result_text
@@ -128,6 +128,7 @@ class Service:
         intended = None
         try:
             self.check_pause()
+            await browser.verify_listing_age(post, fresh=True)
             if not eligible(post):
                 if public_value(post) is None:
                     raise NeedsHuman('publication source visibility is unknown', details={'kind':'automation',
@@ -171,6 +172,11 @@ class Service:
             observed = {**approved.snapshot(), 'audit': final_expected['audit']}
             observed['audit']['approval_publication'] = json.loads(approved.fields.get('_preserved', '{}')).get('publishedAt')
             self.state.mark(post.id, 'approved', 'saved values and approved status verified', expected=observed)
+        except OldPosting as old:
+            if not self.state.skip_old(post.id, post.fingerprint, post.snapshot(),
+                                       old.receipt, old.age_days):
+                # A saved/in-flight checkpoint must be reconciled, never relabeled as skipped.
+                self.state.mark(post.id, 'uncertain', 'posting aged out after a mutation checkpoint')
         except Exception as error:
             current = self.state.get(post.id)
             uncertain = current and current['state'] in ('before_save', 'before_approve', 'before_publish')
@@ -220,11 +226,26 @@ class Service:
             for candidate in await browser.candidates():
                 self.check_pause()
                 known = self.state.get(candidate.id)
-                requeue_preview = bool(known and known['state'] == 'preview' and self.config.mode == 'live')
-                if known and (known['state'] in ('uncertain', 'approved')
-                              or (known['hash'] == candidate.fingerprint and known['state'] != 'queued' and not requeue_preview)):
+                if known and known['state'] in ('approved', 'uncertain', 'before_save',
+                                                'before_approve', 'before_publish', 'category_before_save'):
                     continue
+                try:
+                    await browser.verify_listing_age(candidate)
+                except OldPosting as old:
+                    self.state.skip_old(candidate.id, candidate.fingerprint, candidate.snapshot(),
+                                        old.receipt, old.age_days)
+                    continue
+                requeue_preview = bool(known and known['state'] == 'preview' and self.config.mode == 'live')
                 post = await browser.read(candidate.id)
+                try:
+                    await browser.verify_listing_age(post)
+                except OldPosting as old:
+                    self.state.skip_old(post.id, post.fingerprint, post.snapshot(),
+                                        old.receipt, old.age_days)
+                    continue
+                if known and (known['hash'] == post.fingerprint and known['state'] != 'queued'
+                              and not requeue_preview):
+                    continue
                 if self.state.observe(post.id, post.fingerprint, post.snapshot(), requeue_preview=requeue_preview):
                     await self.process(browser, post)
                     processed += 1

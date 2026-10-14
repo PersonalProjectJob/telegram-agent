@@ -30,7 +30,9 @@ def repair_pair():
 
 class CategoryPolicyTests(unittest.TestCase):
     def test_explicit_intents_and_sale_precedence(self):
-        cases = [('Cần tìm thợ nail', 'JobPosting'), ('Hiring nail technician', 'JobPosting'),
+        cases = [('Cần tìm thợ nail', 'JobPosting'), ('Cần gấp thợ nails', 'JobPosting'),
+                 ('Cần rất nhiều thợ bột có kinh nghiệm', 'JobPosting'),
+                 ('Hiring nail technician', 'JobPosting'),
                  ('Em tìm việc.', 'Portfolio'), ('Thợ nail cần tìm việc', 'Portfolio'),
                  ('Em muốn sang tiệm làm việc. Em tìm việc.', 'Portfolio'),
                  ('Tôi tìm việc. Em muốn sang tiệm khác làm nails.', 'Portfolio'),

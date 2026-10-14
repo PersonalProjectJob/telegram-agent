@@ -226,6 +226,15 @@ class FieldPolicyTests(unittest.TestCase):
             post = posting_from_data(raw)
             data = extracted(source, 'unrecognized amount', 'month')
             data['salary']['evidence'] = {'quote': 'invented'}
+            if source == actual:
+                # This old fixture has a publisher placeholder in the salon field.
+                self.assertEqual(source_salary_policy(source)['mode'], 'negotiated')
+                with tempfile.TemporaryDirectory() as directory:
+                    result = proposal(post, normalize_extraction(post, data), settings(directory))
+                self.assertEqual((result['fields']['salon'], result['fields']['salary_type']),
+                                 ('nailhub.ai', 'negotiated'))
+                self.assertFalse(result['field_corrections']['salon']['actual_business_name_known'])
+                continue
             with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
                 result = proposal(post, normalize_extraction(post, data), settings(directory))
             self.assertEqual(result['changes']['salary_type'], 'negotiated')

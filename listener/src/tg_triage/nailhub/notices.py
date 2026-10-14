@@ -31,6 +31,7 @@ def reason_text(reason):
         'evidence quote must be exact, bounded and unique in original': 'Trích dẫn nguồn chưa khớp duy nhất. Kiểm tra thông tin gốc trước khi duyệt.',
         'location conflicts with current field': 'Địa chỉ hoặc thông tin tiệm trích xuất khác dữ liệu hiện có. Đối chiếu và sửa trường bị lệch.',
         'location not present in original': 'Chưa có nguồn xác nhận thông tin địa chỉ. Kiểm tra địa chỉ và ZIP.',
+        'stored location describes a rental house, not the recruiting salon': 'Địa chỉ hiện tại thuộc nhà cho thuê; chưa xác định địa chỉ salon tuyển dụng.',
         'required contact location incomplete or invalid; Owner review required': 'Thiếu hoặc sai tên tiệm, địa chỉ, thành phố hay tiểu bang. Bổ sung từ nguồn xác thực.',
         'state or ZIP syntax invalid; Owner review required': 'Tiểu bang hoặc ZIP chưa hợp lệ. Kiểm tra và sửa trước khi duyệt.',
         'required main phone missing or invalid; Owner review required': 'Số điện thoại chính còn thiếu hoặc sai định dạng. Kiểm tra lại số liên lạc.',

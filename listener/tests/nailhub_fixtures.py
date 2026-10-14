@@ -46,6 +46,10 @@ class FakeBrowser:
     async def ready(self): self.calls.append('ready')
     async def candidates(self): return [self.post]
     async def read(self,_): self.calls.append('read'); return self.post
+    async def verify_listing_age(self, post, *, fresh=False):
+        return {'id': post.id, 'source_hash': post.fingerprint,
+                'visible_created': '10/14/2026', 'created': '2026-10-14T00:00:00',
+                'observed_at': '2026-10-14T00:00:00+07:00'}
     async def edit_and_rewrite(self,post,changes):
         self.check_action();self.calls.append('edit/AI');return post.fields['title'],self.rewrite or post.content
     async def save(self,post,expected):

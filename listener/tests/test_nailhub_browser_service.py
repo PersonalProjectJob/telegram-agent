@@ -14,6 +14,66 @@ from tg_triage.nailhub.publication import publication_expected
 from tests.nailhub_fixtures import FakeBrowser, POST_ID, extracted, raw_post, settings
 
 class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owner_publisher_branding_edits_only_fallback_ai_text_in_form(self):
+        class Response:
+            async def __aenter__(self):
+                self.value = asyncio.get_running_loop().create_future()
+                self.value.set_result(object())
+                return self
+            async def __aexit__(self, *args):
+                pass
+        class Editor:
+            def __init__(self, text):
+                self.text = text
+                self.fills = []
+            async def inner_text(self):
+                return self.text
+            async def fill(self, value):
+                self.text = value
+                self.fills.append(value)
+        with tempfile.TemporaryDirectory() as directory:
+            post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
+                businessName='BaoNail.com', priceType='Negotiable', price=0))
+            editor = Editor('Tiệm Nailhub.ai cần thợ nail. Call 4045550100.')
+            page = SimpleNamespace(expect_response=lambda *args, **kwargs: Response())
+            browser = Browser(settings(directory, mode='live', verified=True,
+                verification_ref='offline fake'), page=page)
+            browser.verify_listing_age = AsyncMock()
+            browser._open_edit = AsyncMock()
+            browser.select_category = AsyncMock()
+            browser._apply_changes = AsyncMock()
+            browser.action_click = AsyncMock()
+            browser._json = AsyncMock()
+            browser._field = AsyncMock(return_value=SimpleNamespace(
+                input_value=AsyncMock(return_value=post.fields['title'])))
+            async def control(name):
+                return editor if name == 'editor' else SimpleNamespace(
+                    wait_for=AsyncMock(), is_enabled=AsyncMock(return_value=True))
+            browser.control = control
+            title, body = await browser.edit_and_rewrite(post, {'salon': 'nailhub.ai'})
+            self.assertEqual(title, post.fields['title'])
+            self.assertEqual(body,
+                'Nailhub.ai đăng bài tuyển dụng cần thợ nail. Call 4045550100.')
+            self.assertEqual(editor.fills, [body])
+            for current in ('Unknown', 'N/A', 'nailhub.ai'):
+                with self.subTest(current=current):
+                    placeholder_post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
+                        businessName=current, priceType='Negotiable', price=0))
+                    editor.text = 'Tiệm Nailhub.ai cần thợ nail. Call 4045550100.'
+                    editor.fills.clear()
+                    _, branded = await browser.edit_and_rewrite(placeholder_post,
+                        {'salon': 'nailhub.ai'})
+                    self.assertEqual(branded,
+                        'Nailhub.ai đăng bài tuyển dụng cần thợ nail. Call 4045550100.')
+                    self.assertEqual(editor.fills, [branded])
+            editor.text = 'Real Nails tuyển dụng. Call 4045550100.'
+            editor.fills.clear()
+            real_post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
+                businessName='Real Nails', priceType='Negotiable', price=0))
+            _, unchanged = await browser.edit_and_rewrite(real_post, {})
+            self.assertEqual(unchanged, editor.text)
+            self.assertEqual(editor.fills, [])
+
     def test_form_phone_formatting_preserves_number_extension_and_multiplicity(self):
         for key in ('phone_primary', 'phone_other'):
             for value, source in [('951-237 3355', '9512373355'),
@@ -45,6 +105,7 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(phone=phone):
                     page=SimpleNamespace(expect_response=lambda *args,**kwargs:Response())
                     browser=Browser(settings(directory,mode='live',verified=True,verification_ref='offline fake'),page=page)
+                    browser.verify_listing_age=AsyncMock()
                     browser.read=AsyncMock(return_value=post);browser.action_click=AsyncMock();browser._json=AsyncMock()
                     async def field(key):
                         value=phone if key=='phone_primary' else post.fields.get(key,'')
@@ -138,6 +199,7 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             browser=Browser(settings(directory,mode='live',verified=True,verification_ref='fake'),page=Mock())
             browser.authenticated=AsyncMock();browser.assert_fresh=AsyncMock(side_effect=NeedsHuman('changed'));browser.control=AsyncMock()
+            browser.verify_listing_age=AsyncMock()
             post=posting_from_data(raw_post())
             with self.assertRaises(NeedsHuman):await browser.save(post,post.snapshot())
             browser.control.assert_not_awaited();browser.page.route.assert_not_called()
