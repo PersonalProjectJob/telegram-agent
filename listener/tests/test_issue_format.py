@@ -41,7 +41,8 @@ class IssueFormatTests(unittest.TestCase):
         self.assertEqual(telegram_link(message(chat_username="Team_Group")), "https://t.me/Team_Group/1")
         self.assertEqual(telegram_link(message()), "https://t.me/c/1234567890/1")
         value = format_issue(message(chat_id=-123), classification(), "rule", False)
-        self.assertIn("không có link", value.body)
+        self.assertNotIn("không có link", value.body)
+        self.assertNotIn("mở trên Telegram", value.body)
         self.assertIsNone(telegram_link(message(chat_id=-123, chat_username="bad](url)")))
 
     def test_fixed_label_mapping(self):
@@ -51,7 +52,7 @@ class IssueFormatTests(unittest.TestCase):
         value = format_issue(message(), None, "model", True)
         self.assertEqual(value.labels, ("needs-human", "source:telegram"))
         self.assertTrue(value.title.startswith("[cần phân loại] "))
-        self.assertIn("**Tóm tắt:** (agent không chắc chắn, cần người đọc)", value.body)
+        self.assertIn("### 📝 Tóm tắt\n(agent không chắc chắn, cần người đọc)", value.body)
 
     def test_noise_and_invalid_types_cannot_format_confident_issue(self):
         for value in (None, classification(type="noise"), classification(type="admin")):
@@ -61,9 +62,11 @@ class IssueFormatTests(unittest.TestCase):
     def test_marker_timestamp_and_vietnamese_template(self):
         msg = message()
         model = format_issue(msg, classification(), "model", False)
-        self.assertTrue(model.body.startswith("<!-- tg:-1001234567890:1 -->\n**Tóm tắt:**"))
-        self.assertIn(msg.received_at.astimezone().isoformat(), model.body)
-        self.assertIn("Phân loại: tầng 2 qwen3.5:9b, confidence 0.83 · tạo tự động bởi tg-triage", model.body)
+        self.assertTrue(model.body.startswith("<!-- tg:-1001234567890:1 -->\n### 📝 Tóm tắt\n"))
+        self.assertIn(msg.received_at.astimezone().strftime("%d/%m %H:%M"), model.body)
+        self.assertNotIn(msg.received_at.astimezone().isoformat(), model.body)
+        self.assertIn("<sub>Phân loại: tầng 2 qwen3.5:9b, confidence 0.83 · tạo tự động bởi tg-triage</sub>",
+                      model.body)
         rule = format_issue(msg, classification(), "rule", False)
         self.assertIn("Phân loại: tầng 1 lệnh", rule.body)
 
@@ -89,11 +92,12 @@ class WholeCaseTests(unittest.TestCase):
     def test_all_messages_rendered_and_only_key_marked(self):  # (a)
         body = render(case(3), keys=[2])
         for number in (1, 2, 3):
-            self.assertIn(f"**Tin {number}**", body)
             self.assertIn(f"nội dung số {number}", body)
+        self.assertEqual(body.count("**Người thử nghiệm · "), 3)
         marks = [line for line in body.split("\n") if "tin chính" in line]
         self.assertEqual(len(marks), 1)
-        self.assertTrue(marks[0].startswith("**Tin 2**"))
+        self.assertTrue(marks[0].startswith("**Người thử nghiệm · "))
+        self.assertIn("\n> nội dung số 2", body.split(marks[0])[1][:40])   # the marked one is message 2
 
     def test_no_valid_key_means_no_marker(self):  # (b)
         for keys in (None, [], (), [999], [True]):
@@ -104,19 +108,19 @@ class WholeCaseTests(unittest.TestCase):
 
     def test_single_message_case_keeps_original_label_and_has_no_case_line(self):  # (c)
         body = render(case(1), keys=[1])
-        self.assertIn("**Tin gốc**", body)
+        self.assertIn("💬 Tin gốc (1 tin) — Người thử nghiệm, ", body)
         self.assertNotIn("Case:", body)
         self.assertNotIn("**Tin 1**", body)
         self.assertNotIn("case 1 tin", body)
-        self.assertIn("Phân loại: tầng 2 qwen3.5:9b, confidence 0.83 · tạo tự động bởi tg-triage", body)
+        self.assertIn("<sub>Phân loại: tầng 2 qwen3.5:9b, confidence 0.83 · tạo tự động bởi tg-triage</sub>",
+                      body)
 
     def test_multi_message_case_line_and_provenance(self):
         messages = case(3)
         body = render(messages)
-        first, last = (messages[0].received_at.astimezone().isoformat(),
-                       messages[-1].received_at.astimezone().isoformat())
-        self.assertIn(f"**Tóm tắt:** Đăng nhập thất bại.\nCase: 3 tin trong khoảng {first} – {last}\n\n**Tin 1**", body)
-        self.assertTrue(body.endswith("confidence 0.83 · case 3 tin · tạo tự động bởi tg-triage"))
+        self.assertIn("### 📝 Tóm tắt\nĐăng nhập thất bại.\n\n<details><summary>💬 Tin gốc (3 tin)", body)
+        self.assertNotIn("Case:", body)
+        self.assertTrue(body.endswith("confidence 0.83 · case 3 tin · tạo tự động bởi tg-triage</sub>"))
         self.assertTrue(body.startswith("<!-- tg:-1001234567890:1 -->\n"))
 
     def test_messages_are_ordered_by_received_time_then_id(self):  # (d)
@@ -128,8 +132,9 @@ class WholeCaseTests(unittest.TestCase):
         positions = [body.index(text) for text in
                      ("sớm nhất", "cùng giờ id thấp", "cùng giờ id cao", "muộn nhất")]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("**Tin 4** —", body)
-        self.assertTrue([line for line in body.split("\n") if "tin chính" in line][0].startswith("**Tin 4**"))
+        marked = [line for line in body.split("\n") if "tin chính" in line]
+        self.assertEqual(len(marked), 1)
+        self.assertIn("\n> muộn nhất", body.split(marked[0])[1][:40])   # message 1 is the last in time order
 
     def test_every_message_is_sanitized(self):  # (e)
         hostile = "a --> @user https://evil.invalid <img src=x> #12 [x](y)"
@@ -141,15 +146,16 @@ class WholeCaseTests(unittest.TestCase):
         self.assertNotIn("@user", body)
         self.assertNotIn("@boss", body)
         self.assertNotIn("://evil", body)
-        self.assertEqual(body.count("--&gt;"), 6)  # text + sender, three messages
+        self.assertEqual(body.count("--&gt;"), 7)  # text + sender, three messages, + sender in <summary>
         self.assertEqual(body.count("&lt;img"), 3)
 
     def test_overflow_is_announced_not_silent(self):  # (f)
         total = MAX_QUOTED_MESSAGES + 3
         body = render(case(total), keys=[total])
         self.assertIn("(còn 3 tin khác trong case, xem nhóm Telegram)", body)
-        self.assertIn(f"**Tin {MAX_QUOTED_MESSAGES}**", body)
-        self.assertNotIn(f"**Tin {MAX_QUOTED_MESSAGES + 1}**", body)
+        self.assertIn(f"💬 Tin gốc ({total} tin)", body)   # the title counts every message of the case
+        self.assertIn(f"nội dung số {MAX_QUOTED_MESSAGES}", body)
+        self.assertNotIn(f"nội dung số {MAX_QUOTED_MESSAGES + 1}", body)
         self.assertIn(f"case {total} tin", body)
         self.assertNotIn("còn", render(case(MAX_QUOTED_MESSAGES)))
 
@@ -184,7 +190,8 @@ class PipelinePassesWholeCaseTests(unittest.TestCase):
         for number in (1, 2, 3):
             self.assertIn(f"bước {number}", body)
         self.assertEqual(body.count("tin chính"), 1)
-        self.assertIn("Case: 3 tin", body)
+        self.assertIn("Tin gốc (3 tin)", body)
+        self.assertNotIn("Case:", body)
 
     def test_pipeline_passes_every_message_and_only_model_keys(self):
         pipeline = self.make(ticket([2, 77]))
@@ -251,15 +258,15 @@ class ImageMarkerTests(unittest.TestCase):
     def test_summary_is_cleaned_too(self):  # (c)
         value = format_issue(message(), classification(summary="Người dùng báo lỗi có kèm ảnh [kèm ảnh]"),
                              "model", False)
-        self.assertIn("**Tóm tắt:** Người dùng báo lỗi\n", value.body)
+        self.assertIn("### 📝 Tóm tắt\nNgười dùng báo lỗi\n", value.body)
         value = format_issue(message(), classification(summary="có kèm ảnh"), "model", False)
-        self.assertIn("**Tóm tắt:** (không có tóm tắt)\n", value.body)
+        self.assertIn("### 📝 Tóm tắt\n(không có tóm tắt)\n", value.body)
 
     def test_needs_human_branch_cleans_title_summary_and_fallback(self):  # (4)
         value = format_issue(message(text="Chưa rõ [kèm ảnh]"), None, "model", True,
                              text=("Cần xem lại (có kèm ảnh)", "Chỉ có ảnh, kèm ảnh"))
         self.assertEqual(value.title, "[cần phân loại] Cần xem lại")
-        self.assertIn("**Tóm tắt:** Chỉ có ảnh\n", value.body)
+        self.assertIn("### 📝 Tóm tắt\nChỉ có ảnh\n", value.body)
         value = format_issue(message(text="Chưa rõ [kèm ảnh]"), None, "model", True, text=("[kèm ảnh]", ""))
         self.assertEqual(value.title, "[cần phân loại] Chưa rõ")
         typed = format_issue(message(), classification(), "rule", True, clarify=["?"],
@@ -270,7 +277,7 @@ class ImageMarkerTests(unittest.TestCase):
         value = format_issue(message(), classification(title="Lỗi in [kèm ảnh]", summary="kèm ảnh Lỗi in"),
                              "rule", False)
         self.assertEqual(value.title, "[bug] Lỗi in")
-        self.assertIn("**Tóm tắt:** Lỗi in\n", value.body)
+        self.assertIn("### 📝 Tóm tắt\nLỗi in\n", value.body)
 
     def test_quoted_original_message_keeps_the_marker_verbatim(self):  # (d)
         value = format_issue(message(text="Lỗi này [kèm ảnh] xem giúp"),

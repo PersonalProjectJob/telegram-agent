@@ -56,7 +56,8 @@ class ImageInIssueTests(AttachmentBase):
         self.assertEqual(result.decision, "issue")
         url = f"{ASSET_BASE}/{TAG}/1-1.jpg"
         self.assertIn(f"![Ảnh 1]({url})", self.issue_body())
-        self.assertIn("**Ảnh đính kèm**", self.issue_body())
+        self.assertIn("### 🖼 Minh họa / Evidence", self.issue_body())
+        self.assertNotIn("Ảnh đính kèm", self.issue_body())   # no sub-label any more (12.16)
         self.assertEqual(self.uploader.releases, [TAG])
         self.assertEqual([(item["tag"], item["asset"]) for item in self.uploader.uploads], [(TAG, "1-1.jpg")])
         self.assertEqual(result.images, 1)
@@ -107,13 +108,13 @@ class ImageInIssueTests(AttachmentBase):
         pipeline = self.build()
         pipeline.process(message(1, "app nexora đăng nhập lỗi rồi", sender_id=1))
         self.assertEqual((self.downloader.calls, self.uploader.releases), ([], []))
-        self.assertNotIn("Ảnh đính kèm", self.issue_body())
+        self.assertNotIn("![", self.issue_body())
 
     def test_image_limit_zero_turns_the_feature_off_silently(self):
         pipeline = self.build(limits=AttachmentsConfig(max_per_case=0))
         pipeline.process(photo(1))
         self.assertEqual((self.downloader.calls, self.uploader.releases), ([], []))
-        self.assertNotIn("Ảnh đính kèm", self.issue_body())
+        self.assertNotIn("![", self.issue_body())
         self.assertNotIn("Ảnh bị bỏ qua", self.issue_body())
         self.assertEqual(len(self.github.calls), 1)
 

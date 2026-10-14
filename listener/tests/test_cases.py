@@ -255,7 +255,7 @@ class AnalysisTests(CaseBase):
         self.assertIn("KEY\\_MESSAGE", body)
         self.assertIn("NOISE\\_BEFORE", body)
         self.assertNotIn("SECRET\\_OTHER\\_CASE", body)
-        self.assertEqual(body.count("**Tin gốc**"), 0)
+        self.assertEqual(body.count("Tin gốc (2 tin)"), 1)   # one collapsed block for the whole case
         self.assertEqual(body.count("tin chính"), 1)
 
     def test_filtering_all_ids_still_quotes_the_whole_case_without_marker(self):
@@ -287,7 +287,8 @@ class AnalysisTests(CaseBase):
         body = self.github.calls[0].body
         self.assertTrue(body.startswith(f"<!-- tg:{CHAT}:1 -->"))
         self.assertIn("case 3 tin", body)
-        self.assertEqual(body.count("**Tin "), 3)
+        self.assertIn("Tin gốc (3 tin)", body)
+        self.assertEqual(body.count(" · tin chính"), 3)   # one header per message, all three marked
 
     def test_window_not_yet_expired_means_nothing_is_closed(self):
         pipeline = self.pipeline()

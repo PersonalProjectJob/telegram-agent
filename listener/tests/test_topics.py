@@ -177,7 +177,7 @@ class PartitionTests(TopicBase):
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))
         for word in ("ALPHAONE", "BETATWO", "GAMMATHREE"):
             self.assertIn(word, issue.body)
-        self.assertIn("**Cần làm rõ**", issue.body)
+        self.assertIn("### ❓ Cần làm rõ", issue.body)
         self.assertIn("không tách được chủ đề", issue.body)
         self.assertEqual(self.decisions(1, 2, 3), ["needs_human"] * 3)
         self.assertEqual(self.numbers(1, 2, 3), [101, 101, 101])
@@ -254,10 +254,10 @@ class ChunkTests(TopicBase):
         self.assertEqual([call[0] for call in self.model.calls], [1, 41, 81])
         self.assertEqual(sorted(i for call in self.model.calls for i in call), list(range(1, 101)))
         self.assertEqual(len(self.github.calls), 3)
-        self.assertIn("Case: 40 tin", self.github.calls[0].body)
-        self.assertIn("**Tin 40**", self.github.calls[0].body)       # every message is rendered
+        self.assertIn("Tin gốc (40 tin)", self.github.calls[0].body)
+        self.assertIn("login app nexora lần 40", self.github.calls[0].body)   # every message is rendered
         self.assertNotIn("còn", self.github.calls[0].body)
-        self.assertIn("Case: 20 tin", self.github.calls[2].body)
+        self.assertIn("Tin gốc (20 tin)", self.github.calls[2].body)
         tally = self.reconciliation()
         self.assertEqual((tally["received"], tally["issue"], tally["balanced"], tally["status"]),
                          (100, 100, 1, "done"))
@@ -340,7 +340,7 @@ class NeedsHumanTests(TopicBase):
         issue = self.github.calls[0]
         self.assertIn("needs-human", issue.labels)
         self.assertEqual(issue.labels, ("bug", "triage", "needs-human", "source:telegram"))
-        self.assertIn("**Cần làm rõ**", issue.body)
+        self.assertIn("### ❓ Cần làm rõ", issue.body)
         self.assertIn(f"- Thiết bị nào? @{ZWSP}all", issue.body)
         self.assertNotIn("<img", issue.body)
         self.assertNotIn("://evil", issue.body)
@@ -357,7 +357,7 @@ class NeedsHumanTests(TopicBase):
         self.close(pipeline)
         issue = self.github.calls[0]
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))    # the type is not guessed
-        self.assertIn("**Cần làm rõ**\n- Chưa đủ thông tin để phân loại", issue.body)
+        self.assertIn("### ❓ Cần làm rõ\n- Chưa đủ thông tin để phân loại", issue.body)
         self.assertTrue(issue.title.startswith("[cần phân loại] cái này sao vậy"))
         self.assertIn("Thiếu ngữ cảnh.", issue.body)
         self.assertIsNone(self.row(1)["type"])
@@ -1005,9 +1005,9 @@ class FormatTests(unittest.TestCase):
     def test_clarify_section_lists_cleaned_questions_after_the_summary(self):
         issue = self.render_untrusted(clarify=("Một câu hỏi?", "@all <b>hai</b>", "", 5),
                                       text=("Tiêu đề", "Tóm tắt model"))
-        self.assertIn("**Cần làm rõ**\n- Một câu hỏi?\n- @" + ZWSP + "all &lt;b&gt;hai&lt;/b&gt;\n\n", issue.body)
+        self.assertIn("### ❓ Cần làm rõ\n- Một câu hỏi?\n- @" + ZWSP + "all &lt;b&gt;hai&lt;/b&gt;\n\n", issue.body)
         self.assertLess(issue.body.index("Tóm tắt"), issue.body.index("Cần làm rõ"))
-        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("**Tin gốc**"))
+        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("<details>"))
         self.assertEqual(issue.title, "[cần phân loại] Tiêu đề")
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))
 
@@ -1022,7 +1022,7 @@ class FormatTests(unittest.TestCase):
         full = format_issue(items[0], classification(), "model", False, case_messages=items, max_quoted=30)
         self.assertIn("(còn 20 tin khác", capped.body)
         self.assertNotIn("còn", full.body)
-        self.assertIn("**Tin 30**", full.body)
+        self.assertIn("tin số 30", full.body)
 
 
 if __name__ == "__main__":

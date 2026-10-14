@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from tg_triage.issue_format import EMAIL_PLACEHOLDER, PHONE_PLACEHOLDER, format_issue, redact, sanitize
-from tests.helpers import FakeCaseModel, FakeTopicModel, classification, message, ticket, topic
+from tests.helpers import NOW, FakeCaseModel, FakeTopicModel, classification, message, ticket, topic
 from tests.test_cases import CHAT, CaseBase, msg
 from tests.test_topics import TopicBase
 
@@ -41,11 +41,11 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("linh_nc", everything)
         self.assertNotIn("a_b@", everything)
         self.assertIn(EMAIL_PLACEHOLDER, issue.title)
-        self.assertEqual(issue.body.count(EMAIL_PLACEHOLDER), 4)   # summary x2, quote, sender
+        self.assertEqual(issue.body.count(EMAIL_PLACEHOLDER), 5)   # summary x2, quote, sender x2 (<summary> line + message header)
         needs = format_issue(item, None, "model", True, clarify=(f"Hỏi lại {EMAIL}?",),
                              text=(EMAIL, EMAIL))
         self.assertNotIn("vlinkgroup", needs.title + needs.body)
-        self.assertIn("**Cần làm rõ**\n- Hỏi lại " + EMAIL_PLACEHOLDER, needs.body)
+        self.assertIn("### ❓ Cần làm rõ\n- Hỏi lại " + EMAIL_PLACEHOLDER, needs.body)
 
     def test_b_phone_numbers_are_hidden(self):
         for number in ("0901234567", "+84 901 234 567", "090-123-4567", "090.123.4567"):
@@ -62,7 +62,7 @@ class RedactionTests(unittest.TestCase):
 
     def test_the_code_written_timestamp_and_link_are_not_redacted(self):
         body = issue_for("lỗi in hoá đơn").body
-        self.assertIn("2026-10-09T", body)
+        self.assertIn(NOW.astimezone().strftime("%d/%m %H:%M"), body)
         self.assertIn("](https://t.me/c/1234567890/1)", body)   # 10-digit chat id in a link
 
     def test_a_long_message_cut_for_the_quote_never_leaves_half_an_address(self):

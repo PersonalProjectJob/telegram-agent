@@ -64,13 +64,15 @@ def rendered_examples():
 class IssueTemplateTests(unittest.TestCase):
     def test_43_bug_complete_details_and_image(self):
         issue = render(details=BUG_DETAILS, images=(IMAGE,))
-        for heading in ("Môi trường", "Các bước tái hiện", "Mong đợi", "Thực tế", "Minh họa / Evidence"):
-            self.assertIn(f"**{heading}**", issue.body)
+        self.assertIn("### 🐞 Lỗi", issue.body)
+        self.assertIn("### 🖼 Minh họa / Evidence", issue.body)
+        for label in ("Môi trường", "Các bước tái hiện", "Mong đợi", "Thực tế"):
+            self.assertIn(f"**{label}:**", issue.body)
         self.assertIn("1. Mở màn hình đăng nhập\n2. Nhấn Đăng nhập", issue.body)
         self.assertIn("Lỗi E42", issue.body)
         self.assertIn(f"![{IMAGE[0]}]({IMAGE[1]})", issue.body)
         self.assertLess(issue.body.index("Minh họa / Evidence"), issue.body.index(IMAGE[1]))
-        self.assertLess(issue.body.index(IMAGE[1]), issue.body.index("**Tin gốc**"))
+        self.assertLess(issue.body.index(IMAGE[1]), issue.body.index("<details>"))
         self.assertNotIn("Cần làm rõ", issue.body)
         for word in ("severity", "mức độ", "priority"):
             self.assertNotIn(word, issue.body.lower())
@@ -79,30 +81,33 @@ class IssueTemplateTests(unittest.TestCase):
     def test_44_empty_bug_fields_auto_questions_and_same_labels(self):
         details = dict(BUG_DETAILS, steps=[], error_text="")
         issue = render(details=details)
-        self.assertIn("**Các bước tái hiện**\n" + NO_DETAIL_LINE, issue.body)
-        self.assertIn("**Minh họa / Evidence**\n" + NO_DETAIL_LINE, issue.body)
+        self.assertIn("**Các bước tái hiện:** " + NO_DETAIL_LINE, issue.body)
+        self.assertIn("### 🖼 Minh họa / Evidence\n" + NO_DETAIL_LINE, issue.body)
         self.assertIn(BUG_QUESTIONS[1], issue.body)
         self.assertIn(BUG_QUESTIONS[3], issue.body)
         self.assertEqual(issue.labels, ("bug", "triage", "source:telegram"))
         self.assertLess(issue.body.index("Minh họa / Evidence"), issue.body.index("Cần làm rõ"))
-        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("**Tin gốc**"))
+        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("<details>"))
 
     def test_45_feedback_required_optional_and_draft_checklist(self):
         body = render("feedback", FEEDBACK_DETAILS).body
-        self.assertIn("**Vấn đề / nhu cầu**", body)
-        self.assertIn("**User story**", body)
+        self.assertIn("### 💡 Vấn đề / nhu cầu", body)
+        self.assertIn("**User story:**", body)
         self.assertIn("- [ ] Given danh sách giao dịch", body)
-        self.assertIn("Tiêu chí chấp nhận (nháp, checklist Given/When/Then)", body)
-        for heading in ("Đề xuất", "Phương án khác / cách đang tạm làm", "Ngữ cảnh"):
-            self.assertNotIn(f"**{heading}**", body)
+        self.assertIn("### ✅ Tiêu chí chấp nhận (nháp)", body)
+        for label in ("Đề xuất", "Phương án khác"):
+            self.assertNotIn(f"**{label}:**", body)
+        self.assertNotIn("### 🧭 Ngữ cảnh", body)
         empty = render("feedback", {}).body
-        self.assertEqual(empty.count(NO_DETAIL_LINE), 2)
-        self.assertIn("Cần làm rõ", empty)
+        self.assertEqual(empty.count(NO_DETAIL_LINE), 1)   # empty labels (user story...) are hidden
+        self.assertNotIn("**User story:**", empty)
+        self.assertNotIn("### ✅", empty)
+        self.assertIn("### ❓ Cần làm rõ", empty)
 
     def test_45_feedback_attachments_stay_in_context(self):
         body = render("feedback", FEEDBACK_DETAILS, images=(IMAGE,), documents=(DOCUMENT,)).body
-        self.assertLess(body.index("**Ngữ cảnh**"), body.index(IMAGE[1]))
-        self.assertLess(body.index(DOCUMENT[1]), body.index("**Tin gốc**"))
+        self.assertLess(body.index("### 🧭 Ngữ cảnh"), body.index(IMAGE[1]))
+        self.assertLess(body.index(DOCUMENT[1]), body.index("<details>"))
         self.assertEqual(body.count(IMAGE[1]), 1)
         self.assertEqual(body.count(DOCUMENT[1]), 1)
 
@@ -111,23 +116,25 @@ class IssueTemplateTests(unittest.TestCase):
             with self.subTest(details=details):
                 issue = render("task", details, images=(IMAGE,), documents=(DOCUMENT,))
                 body = issue.body
-                self.assertIn("**Minh họa / Evidence (đầu vào)**", body)
+                self.assertIn("### 🖼 Minh họa / Evidence (đầu vào)", body)
                 self.assertLess(body.index("Evidence (đầu vào)"), body.index(IMAGE[1]))
-                self.assertLess(body.index(DOCUMENT[1]), body.index("Xong khi (Definition of Done)"))
+                self.assertLess(body.index(DOCUMENT[1]), body.index("### 🏁 Xong khi"))
                 self.assertIn(DOD_EVIDENCE_LINE, body)
                 self.assertEqual(body.count(DOD_EVIDENCE_LINE), 1)
-                self.assertLess(body.index(DOD_EVIDENCE_LINE), body.index("**Tin gốc**"))
+                self.assertLess(body.index(DOD_EVIDENCE_LINE), body.index("<details>"))
                 self.assertEqual(issue.labels, ("task", "triage", "source:telegram"))
 
     def test_46_task_optional_fields_and_final_dod_line(self):
         body = render("task", dict(TASK_DETAILS, reason_context="Đối soát cuối tháng", scope_in="Bộ lọc",
                                   scope_out="Xuất file", links=["https://example.invalid/mockup"], due="Ngày 20/10")).body
-        for text in ("Lý do / bối cảnh", "Làm gì: Bộ lọc", "KHÔNG làm gì: Xuất file", "Ngày 20/10"):
+        for text in ("**Lý do:** Đối soát cuối tháng",
+                     "**Phạm vi:** Làm — Bộ lọc · Không làm — Xuất file",
+                     "**Hạn / người được nhắc:** Ngày 20/10"):
             self.assertIn(text, body)
         self.assertIn("- https:\u200b//example.invalid/mockup", body)
         self.assertIn("- [ ] Bộ lọc áp dụng đúng khoảng ngày\n" + DOD_EVIDENCE_LINE, body)
         empty = render("task", {}).body
-        for heading in ("Lý do / bối cảnh", "Phạm vi:", "Evidence (đầu vào)", "Hạn / người"):
+        for heading in ("**Lý do:**", "**Phạm vi:**", "Evidence (đầu vào)", "**Hạn / người"):
             self.assertNotIn(heading, empty)
 
     def test_47_all_detail_values_are_cleaned_and_redacted(self):
@@ -195,19 +202,20 @@ class IssueTemplateTests(unittest.TestCase):
         new = format_issue(message(), None, "model", True, details=BUG_DETAILS, **kwargs)
         self.assertEqual(old, new)
         self.assertTrue(new.title.startswith("[cần phân loại]"))
-        self.assertLess(new.body.index("**Tin gốc**"), new.body.index("**Ảnh đính kèm**"))
+        self.assertNotIn("Ảnh đính kèm", new.body)
+        self.assertLess(new.body.index("### 🖼 Minh họa / Evidence"), new.body.index("<details>"))
 
     def test_51_model_questions_first_deduplicated_and_bounded(self):
         model = ["Thông tin nào?", "Thông tin nào?", BUG_QUESTIONS[1]]
         body = render(details={}, clarify=model).body
-        block = body.split("**Cần làm rõ**\n")[1].split("\n\n")[0]
+        block = body.split("### ❓ Cần làm rõ\n")[1].split("\n\n")[0]
         lines = block.splitlines()
         self.assertEqual(len(lines), MAX_CLARIFY)
         self.assertEqual(len(set(lines)), MAX_CLARIFY)
         self.assertEqual(lines[:2], ["- Thông tin nào?", "- " + BUG_QUESTIONS[1]])
         self.assertEqual(body.count(BUG_QUESTIONS[1]), 1)
         many = render(details={}, clarify=[f"Câu hỏi {i}" for i in range(20)]).body
-        self.assertEqual(many.split("**Cần làm rõ**\n")[1].split("\n\n")[0].count("- "), MAX_CLARIFY)
+        self.assertEqual(many.split("### ❓ Cần làm rõ\n")[1].split("\n\n")[0].count("- "), MAX_CLARIFY)
         self.assertNotIn(BUG_QUESTIONS[0], many)
 
     def test_52_legacy_call_and_quotes_attachments_notes_preserved(self):
@@ -217,21 +225,23 @@ class IssueTemplateTests(unittest.TestCase):
         explicit_none = format_issue(message(), analysis.classification, "model", False, details=None, **kwargs)
         new = format_issue(message(), analysis.classification, "model", False, details={}, **kwargs)
         self.assertEqual(old, explicit_none)
-        def quote(body):
-            return body.split("**Tin gốc**")[1].split("\n\n")[0]
+        def quote(body):   # the collapsed original-message block, up to and including the footer
+            return body[body.index("<details>"):]
         self.assertEqual(quote(old.body), quote(new.body))
-        for attachment in (f"![{IMAGE[0]}]({IMAGE[1]})", f"- [{DOCUMENT[0]}]({DOCUMENT[1]})"):
+        for attachment in (f"![{IMAGE[0]}]({IMAGE[1]})", f"- 📎 [{DOCUMENT[0]}]({DOCUMENT[1]})"):
             self.assertIn(attachment, old.body)
             self.assertIn(attachment, new.body)
-        self.assertTrue(new.body.endswith(old.body.split("Lỗi tải tệp")[1]))
-        self.assertGreater(new.body.index("Lỗi tải tệp"), new.body.index("**Tin gốc**"))
+        # Layout 12.16: the note sits right under the image and document, above the original messages.
+        for body in (old.body, new.body):
+            self.assertGreater(body.index("Lỗi tải tệp"), body.index(DOCUMENT[1]))
+            self.assertLess(body.index("Lỗi tải tệp"), body.index("<details>"))
         self.assertEqual(old.labels, new.labels)
 
     def test_typed_needs_human_has_template_and_original_labels(self):
         analysis = parse_case_analysis(json.dumps(case_payload(details=BUG_DETAILS)))
         issue = format_issue(message(), analysis.classification, "rule", True, details=analysis.details,
                              clarify=["Xác nhận giúp"], text=("Lỗi", "Tóm tắt"))
-        self.assertIn("**Môi trường**", issue.body)
+        self.assertIn("**Môi trường:**", issue.body)
         self.assertEqual(issue.labels, ("bug", "triage", "needs-human", "source:telegram"))
         self.assertLess(issue.body.index("Minh họa / Evidence"), issue.body.index("Cần làm rõ"))
 

@@ -462,6 +462,55 @@ Thêm một trường **không bắt buộc** `details` vào mỗi nhóm hoặc 
 51. Câu hỏi tự sinh cộng `missing_info` vượt `MAX_CLARIFY`: bị cắt, không trùng.
 52. Test cũ của `format_issue` vẫn pass, hoặc được cập nhật đúng theo template mới. Không đổi phần tin gốc, ảnh hay tài liệu.
 
+### 12.16 Bố cục issue dễ đọc (bổ sung v1.0.12)
+
+**Yêu cầu:** Owner chốt ngày 2026-10-14, sau khi xem issue #32. Áp dụng cho **mọi** issue, kể cả `[cần phân loại]`. Thay cho phần khuôn trình bày của §12.15. Các mục, nguồn dữ liệu, mục bắt buộc, cách làm sạch và mục Cần làm rõ tự sinh của §12.15 giữ nguyên.
+
+**Bố cục** (Markdown của GitHub, theo thứ tự):
+
+1. Dòng ẩn `<!-- tg:<chat_id>:<message_id> -->`, giữ nguyên để chống tạo trùng.
+2. `### 📝 Tóm tắt` cùng nội dung tóm tắt. **Bỏ dòng "Case: N tin trong khoảng …".**
+3. Các mục theo loại issue. Mỗi mục lớn là một heading `###` có emoji. Nhãn ngắn được in đậm, nằm cùng dòng với nội dung (`**Nhãn:** nội dung`):
+   - **Bug:**
+     - `### 🐞 Lỗi`, gồm `**Môi trường:**`, `**Các bước tái hiện:**` (danh sách đánh số ngay bên dưới), `**Mong đợi:**`, `**Thực tế:**`.
+     - `### 🖼 Minh họa / Evidence`.
+   - **Feedback:**
+     - `### 💡 Vấn đề / nhu cầu`, gồm `**User story:**`, `**Đề xuất:**`, `**Phương án khác:**`. Nhãn nào trống thì ẩn.
+     - `### ✅ Tiêu chí chấp nhận (nháp)` dạng checklist. Trống thì ẩn cả mục.
+     - `### 🧭 Ngữ cảnh`, chứa nội dung ngữ cảnh cùng ảnh và tài liệu. Trống thì ẩn.
+   - **Task:**
+     - `### 🛠 Việc cần làm`, gồm `**Lý do:**`, `**Phạm vi:** Làm — … · Không làm — …` và `**Hạn / người được nhắc:**`. Nhãn nào trống thì ẩn.
+     - `### 🖼 Minh họa / Evidence (đầu vào)`. Trống thì ẩn.
+     - `### 🏁 Xong khi`, luôn có dòng cố định về evidence kết quả.
+   - **`[cần phân loại]`:** không có mục theo loại.
+4. `### ❓ Cần làm rõ` dạng danh sách. Chỉ hiện khi có câu hỏi.
+5. **Ảnh và tài liệu** hiện thẳng trong mục Evidence hoặc Ngữ cảnh, không còn nhãn phụ "Ảnh đính kèm" hay "Tài liệu đính kèm". Tài liệu hiện thành danh sách `📎 [tên](url)`. Issue `[cần phân loại]` có ảnh hoặc tài liệu thì đặt chúng dưới `### 🖼 Minh họa / Evidence`. Các ghi chú lỗi đính kèm (`notes`) đặt ngay dưới ảnh và tài liệu.
+6. **Tin gốc:** gom vào khối thu gọn.
+   - Dòng tiêu đề: `<details><summary>💬 Tin gốc (N tin) — <người gửi>, <dd/MM HH:mm></summary>`. Từ 3 người gửi trở lên thì ghi 2 tên đầu và "+K".
+   - Sau `<summary>` có một dòng trống. Mỗi tin có dòng `**<người gửi> · <dd/MM HH:mm>**`, theo sau là ` · [mở trên Telegram](link)` nếu có link, và ` · tin chính` nếu là tin chính. Dưới đó là nội dung trích dẫn `>`.
+   - Tin không có chữ thì ghi `> (chỉ có ảnh)` hoặc `> (chỉ có tài liệu)`.
+   - Bỏ chữ "không có link".
+   - Dòng "(còn K tin khác…)" giữ nguyên.
+7. `---` rồi `<sub>Phân loại: … · tạo tự động bởi tg-triage</sub>`.
+
+**Giờ hiển thị:** định dạng `dd/MM HH:mm` theo múi giờ của máy (`astimezone()`).
+
+**An toàn:**
+- Mọi nội dung từ người dùng hoặc model vẫn đi qua `sanitize` và `redact` như cũ, nên không thể đóng `<details>` hay chèn HTML.
+- Thẻ `<details>`, `<summary>`, `<sub>` và emoji đều là hằng số trong code.
+- Tiêu đề và nhãn của issue không đổi.
+
+**Kiểm thử bổ sung:**
+
+53. Không còn dòng "Case:".
+54. Đúng thứ tự heading cho từng loại issue.
+55. Tin gốc nằm trong `<details>`, có dòng trống sau `<summary>`, đúng số tin, đúng giờ `dd/MM HH:mm`.
+56. Tin chỉ có ảnh thì hiện `(chỉ có ảnh)`.
+57. Không còn chữ "không có link".
+58. Nội dung chứa `</details>`, `<summary>` hoặc `-->` bị escape.
+59. Từ 3 người gửi trở lên thì tiêu đề ghi dạng "A, B +K".
+60. Nhãn và tiêu đề issue giữ nguyên.
+
 ## 13. Cách triển khai (khi được duyệt)
 
 Thứ tự thực hiện: (a) chuyển `dry-run` ngay; (b) viết §12 và §3–§9 bằng `/agent-team`; (c) unittest và `compileall`; (d) dry-run trên các tin thật trong nhóm thử, kiểm tra từng case gom đúng; (e) chuyển live.
@@ -484,3 +533,4 @@ Không commit và không deploy trong bước định nghĩa này.
 | v1.0.3 | 2026-10-12 | — | AlexChu (Claude Code) | §12.8: đổi cơ chế từ nhánh `attachments` sang `gh release upload`, bỏ quy tắc commit ảnh vào repo |
 | v1.0.4 | 2026-10-12 | — | Claude (executor) | Triển khai §12 và §12.8 (code + test), §3–§9 chưa làm |
 | v1.0.11 | 2026-10-13 | — | AlexChu (Claude Code) | Thêm §12.15: template issue theo loại (bug không severity, có Minh họa/Evidence; feedback dạng user story; task có Evidence đầu vào và DoD evidence kết quả), trường `details` của model, Cần làm rõ tự sinh; test 43–52 |
+| v1.0.12 | 2026-10-14 | — | AlexChu (Claude Code) | Thêm §12.16: bố cục issue dễ đọc (heading `###` + emoji, bỏ dòng Case, tin gốc thu gọn trong `<details>`, giờ `dd/MM HH:mm`, phân loại `<sub>`); test 53–60 |

@@ -340,7 +340,7 @@ Temporary files are always deleted. Issues are still created through the REST AP
 
 Besides images, a file the sender attached (`event.message.document`) is downloaded into the same 0700
 temporary directory, uploaded with the same `gh release upload` to release `attachments-<group key>`,
-and listed in the issue under **Tài liệu đính kèm** as plain links (`- [name](asset URL)`), never embedded
+and listed in the issue's evidence/context section (12.16: `### 🖼 Minh họa / Evidence`, or `### 🧭 Ngữ cảnh` for feedback; no separate "Tài liệu đính kèm" label) as plain links (`- 📎 [name](asset URL)`), never embedded
 with `![]`. The decision uses the declared file name, the declared MIME and the size only: a file is never
 opened, unpacked, scanned or executed, and its content decides nothing.
 

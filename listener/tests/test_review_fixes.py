@@ -96,7 +96,8 @@ class ReviewFixTests(unittest.TestCase):
                              classification(title=attack, summary=attack + "\nsummary\tend"), "model", False)
         self.assertNotIn("<img", value.body)
         self.assertEqual(value.body.count("<!--"), 1)
-        summary = value.body.splitlines()[1]
+        lines = value.body.splitlines()
+        summary = lines[lines.index("### 📝 Tóm tắt") + 1]
         self.assertIn("\\[x\\]\\(https:\u200b//evil.invalid\\)", summary)
         self.assertIn("summary end", summary)
         self.assertIn("&amp;#\u200b64;user", value.body)
