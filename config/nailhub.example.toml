@@ -1,12 +1,15 @@
-# Optional: absent NAILHUB_CONFIG keeps the legacy listener unchanged.
-# Copy outside repo and supply an absolute path via the existing listener service.
+# Copy to /etc/nailhub/nailhub.toml; NAILHUB_CONFIG overrides the default.
+[telegram]
+session = "/var/lib/agentfleet/nailhub/nailhub.session"
+# TG_API_ID and TG_API_HASH are supplied only through the service environment.
+
 [worker]
 mode = "preview"                     # Live requires independent review and contract evidence.
 db_path = "/var/lib/agentfleet/nailhub/jobs.sqlite3"
 profile_path = "/var/lib/agentfleet/nailhub/profile"
 credential_file = ""                  # Optional Owner-authorized local {email,password} JSON, mode0600.
 owner_username = "SotaThao"            # Bootstrap verifies username↔numeric binding; DM auth uses ID only.
-owner_ids = []                        # Empty denies ALL commands. Verify @SotaThao numeric ID with existing client.
+owner_ids = []                        # Empty denies ALL commands. Verify @SotaThao numeric ID with this service client.
 interval_seconds = 600
 max_batch = 1
 max_pages = 50

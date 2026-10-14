@@ -1,0 +1,30 @@
+[Unit]
+Description=NailHub Owner Automation
+After=network-online.target ollama.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+StartLimitBurst=5
+
+[Service]
+User=tgnailhub
+Group=agentfleet
+WorkingDirectory=/opt/agentfleet/nailhub
+Environment=NAILHUB_CONFIG=/etc/nailhub/nailhub.toml
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailhub/browsers
+EnvironmentFile=/etc/agentfleet/tg-nailhub.env
+ExecStart=/opt/agentfleet/nailhub/.venv/bin/python -m nailhub run
+Restart=always
+RestartSec=30
+RestartPreventExitStatus=2
+UMask=0077
+TimeoutStopSec=150
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentfleet/nailhub /run/agentfleet
+# Keep Chromium's namespaces, executable mappings and AF_UNIX/INET sockets available.
+
+[Install]
+WantedBy=multi-user.target

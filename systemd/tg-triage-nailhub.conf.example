@@ -1,7 +1,0 @@
-# Disabled by default: install as tg-triage.service.d/nailhub.conf only after review.
-# Do NOT run a second Telegram process/session.
-[Service]
-# Environment=NAILHUB_CONFIG=/etc/tg-triage/nailhub.toml
-# Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailhub/browsers
-# ReadWritePaths=/var/lib/agentfleet/nailhub
-# Chromium needs its subprocesses. Verify the existing service sandbox with probe as tglistener.

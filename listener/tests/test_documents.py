@@ -85,8 +85,8 @@ class AcceptedDocumentTests(DocumentBase):
                 self.assertEqual([(u["tag"], u["asset"]) for u in self.uploader.uploads],
                                  [(f"attachments--1001234567890_{index}", asset)])
                 url = f"{ASSET_BASE}/attachments--1001234567890_{index}/{asset}"
-                self.assertIn("**Tài liệu đính kèm**", self.body)
-                self.assertRegex(self.body, rf"- \[[^\]]+\]\({url}\)")
+                self.assertNotIn("Tài liệu đính kèm", self.body)   # no sub-label any more (12.16)
+                self.assertRegex(self.body, rf"- 📎 \[[^\]]+\]\({url}\)")
                 self.assertEqual(result.documents, 1)
 
     def test_telegram_web_markdown_mime_downloads_uploads_and_links(self):
@@ -97,15 +97,15 @@ class AcceptedDocumentTests(DocumentBase):
         self.assertEqual(result.documents, 1)
         self.assertEqual(self.downloader.calls, [(CHAT, 1)])
         self.assertEqual([upload["asset"] for upload in self.uploader.uploads], ["1-1.md"])
-        self.assertIn(f"- [production-note.md]({ASSET_BASE}/{TAG}/1-1.md)", self.body)
+        self.assertIn(f"- 📎 [production-note.md]({ASSET_BASE}/{TAG}/1-1.md)", self.body)
         self.assertNotIn("Tài liệu bị bỏ qua", self.body)
 
     def test_documents_are_links_never_embedded(self):
         pipeline = self.build(files={1: (PDF_BYTES, "a.pdf")})
         pipeline.process(doc(1, "bao_cao.pdf"))
         self.assertNotIn("![", self.body)
-        self.assertNotIn("**Ảnh đính kèm**", self.body)
-        self.assertIn(f"- [bao cao.pdf]({ASSET_BASE}/{TAG}/1-1.pdf)", self.body)
+        self.assertNotIn("Ảnh đính kèm", self.body)
+        self.assertIn(f"- 📎 [bao cao.pdf]({ASSET_BASE}/{TAG}/1-1.pdf)", self.body)
 
     def test_release_asset_name_is_message_id_ordinal_and_allowlisted_extension(self):
         pipeline = self.build(files={1: (PDF_BYTES, "x"), 2: (PDF_BYTES, "y")}, ids=(1, 2), window=15)
@@ -130,7 +130,8 @@ class AcceptedDocumentTests(DocumentBase):
         self.assertEqual(self.uploader.releases, [TAG])
         self.assertEqual([u["asset"] for u in self.uploader.uploads], ["1-1.jpg", "2-1.pdf"])
         self.assertIn("![Ảnh 1](", self.body)
-        self.assertIn("**Tài liệu đính kèm**", self.body)
+        self.assertIn("- 📎 [", self.body)
+        self.assertNotIn("Tài liệu đính kèm", self.body)
         self.assertEqual(len([line for line in self.body.splitlines() if line.startswith("![")]), 1)
 
     def test_document_alone_makes_the_message_content_and_waits_like_a_photo(self):
@@ -148,7 +149,7 @@ class RejectedDocumentTests(DocumentBase):
         self.assertEqual((self.uploader.releases, self.uploader.uploads), ([], []))
         self.assertEqual(result.decision, "issue")   # the issue itself is never lost
         self.assertIn("Tài liệu bị bỏ qua (1 tài liệu): định dạng không được nhận", self.body)
-        self.assertNotIn("**Tài liệu đính kèm**", self.body)
+        self.assertNotIn("📎", self.body)
         return result
 
     def test_executable_and_script_extensions_are_refused_without_downloading(self):
@@ -263,13 +264,13 @@ class DocumentNameTests(DocumentBase):
         hostile = "bob@example.com [click](evil.example) ![img](evil.example) *b*.pdf"
         pipeline = self.build(files={1: (PDF_BYTES, "a.pdf")})
         pipeline.process(doc(1, hostile))
-        link = next(line for line in self.body.splitlines() if line.startswith("- ["))
+        link = next(line for line in self.body.splitlines() if line.startswith("- 📎 ["))
         for raw in ("bob@example.com", "[click](", "![", "](evil", "*b*"):
             self.assertNotIn(raw, link)
         self.assertIn("\\[email đã ẩn\\]", link)
         self.assertTrue(link.endswith(f"]({ASSET_BASE}/{TAG}/1-1.pdf)"))
         self.assertEqual(link.count("]("), 1)   # exactly one Markdown link: the code-built one
-        self.assertNotIn("bob@example.com", self.body.split("**Tài liệu đính kèm**")[1].split("---")[0])
+        self.assertNotIn("bob@example.com", self.body.split("📎")[1].split("---")[0])
 
     def test_a_name_made_of_urls_with_slashes_is_cut_to_its_last_segment_and_stays_inert(self):
         label = document_label("[x](http://evil.example/a) ![y](http://evil.example/p.png) bob@example.com.pdf")
@@ -297,7 +298,7 @@ class DocumentNameTests(DocumentBase):
     def test_name_goes_in_the_link_text_only_not_in_the_release_url(self):
         pipeline = self.build(files={1: (PDF_BYTES, "a.pdf")})
         pipeline.process(doc(1, "Bao cao Q3 secret.pdf"))
-        link = next(line for line in self.body.splitlines() if line.startswith("- ["))
+        link = next(line for line in self.body.splitlines() if line.startswith("- 📎 ["))
         self.assertIn("Bao cao Q3 secret.pdf", link.split("](")[0])
         self.assertNotIn("secret", link.split("](")[1])
 
@@ -313,7 +314,7 @@ class DocumentFailureTests(DocumentBase):
         self.assertEqual(len(self.github.calls), 1)
         self.assertEqual(len(self.uploader.uploads), 1)
         self.assertIn("Tài liệu không tải được: RuntimeError", self.body)
-        self.assertNotIn("**Tài liệu đính kèm**", self.body)
+        self.assertNotIn("📎", self.body)
         output = "\n".join(logs.output)
         for secret in (FAKE_TOKEN, "uploads.example", "secret", "ten rieng"):
             self.assertNotIn(secret, output)

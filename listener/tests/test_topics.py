@@ -177,7 +177,7 @@ class PartitionTests(TopicBase):
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))
         for word in ("ALPHAONE", "BETATWO", "GAMMATHREE"):
             self.assertIn(word, issue.body)
-        self.assertIn("**Cần làm rõ**", issue.body)
+        self.assertIn("### ❓ Cần làm rõ", issue.body)
         self.assertIn("không tách được chủ đề", issue.body)
         self.assertEqual(self.decisions(1, 2, 3), ["needs_human"] * 3)
         self.assertEqual(self.numbers(1, 2, 3), [101, 101, 101])
@@ -254,10 +254,10 @@ class ChunkTests(TopicBase):
         self.assertEqual([call[0] for call in self.model.calls], [1, 41, 81])
         self.assertEqual(sorted(i for call in self.model.calls for i in call), list(range(1, 101)))
         self.assertEqual(len(self.github.calls), 3)
-        self.assertIn("Case: 40 tin", self.github.calls[0].body)
-        self.assertIn("**Tin 40**", self.github.calls[0].body)       # every message is rendered
+        self.assertIn("Tin gốc (40 tin)", self.github.calls[0].body)
+        self.assertIn("login app nexora lần 40", self.github.calls[0].body)   # every message is rendered
         self.assertNotIn("còn", self.github.calls[0].body)
-        self.assertIn("Case: 20 tin", self.github.calls[2].body)
+        self.assertIn("Tin gốc (20 tin)", self.github.calls[2].body)
         tally = self.reconciliation()
         self.assertEqual((tally["received"], tally["issue"], tally["balanced"], tally["status"]),
                          (100, 100, 1, "done"))
@@ -340,7 +340,7 @@ class NeedsHumanTests(TopicBase):
         issue = self.github.calls[0]
         self.assertIn("needs-human", issue.labels)
         self.assertEqual(issue.labels, ("bug", "triage", "needs-human", "source:telegram"))
-        self.assertIn("**Cần làm rõ**", issue.body)
+        self.assertIn("### ❓ Cần làm rõ", issue.body)
         self.assertIn(f"- Thiết bị nào? @{ZWSP}all", issue.body)
         self.assertNotIn("<img", issue.body)
         self.assertNotIn("://evil", issue.body)
@@ -357,7 +357,7 @@ class NeedsHumanTests(TopicBase):
         self.close(pipeline)
         issue = self.github.calls[0]
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))    # the type is not guessed
-        self.assertIn("**Cần làm rõ**\n- Chưa đủ thông tin để phân loại", issue.body)
+        self.assertIn("### ❓ Cần làm rõ\n- Chưa đủ thông tin để phân loại", issue.body)
         self.assertTrue(issue.title.startswith("[cần phân loại] cái này sao vậy"))
         self.assertIn("Thiếu ngữ cảnh.", issue.body)
         self.assertIsNone(self.row(1)["type"])
@@ -386,7 +386,12 @@ class NeedsHumanTests(TopicBase):
         self.assertEqual(self.reconciliation()["pending_review"], 2)
 
     def test_a_ticket_without_missing_info_has_no_clarify_section(self):
-        pipeline = self.pipeline(FakeTopicModel((topic([1]),)))
+        pipeline = self.pipeline(FakeTopicModel((topic([1], details={
+            "environment": "Nexora build 42 · Android 14 · Chrome",
+            "steps": ["Mở màn hình đăng nhập", "Nhấn Đăng nhập"],
+            "expected": "Vào trang chủ", "actual": "Không đăng nhập được",
+            "error_text": "Lỗi E42",
+        }),)))
         self.window(pipeline, ("app nexora bị lỗi",))
         self.close(pipeline)
         self.assertNotIn("Cần làm rõ", self.github.calls[0].body)
@@ -872,6 +877,8 @@ class ClassifierTests(unittest.TestCase):
         return json.dumps({"groups": [group]}, ensure_ascii=False)
 
     def test_request_has_the_topics_prompt_first_then_the_numbered_transcript_in_order(self):
+        from tg_triage.classifier import DETAILS_PROMPT
+
         http = FakeHTTP(self.envelope(self.answer()))
         items = [message(1, "đăng nhập lỗi", received_at=at(0)), message(2, "bấm là văng ra", received_at=at(1))]
         groups = self.split(http, items)
@@ -882,8 +889,11 @@ class ClassifierTests(unittest.TestCase):
         # 12.12: reasoning is on by default (was off).
         self.assertEqual((body["stream"], body["think"], body["options"]), (False, True, {"temperature": 0}))
         self.assertEqual(body["format"], TOPIC_SCHEMA)
+        group_schema = body["format"]["properties"]["groups"]["items"]
+        self.assertIn("details", group_schema["properties"])
+        self.assertNotIn("details", group_schema["required"])
         self.assertEqual([item["role"] for item in body["messages"]], ["system", "user"])
-        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT")
+        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT\n" + DETAILS_PROMPT)
         user = body["messages"][1]["content"]
         self.assertEqual(user, build_transcript(items))
         self.assertLess(user.index("[1] "), user.index("[2] "))
@@ -995,9 +1005,9 @@ class FormatTests(unittest.TestCase):
     def test_clarify_section_lists_cleaned_questions_after_the_summary(self):
         issue = self.render_untrusted(clarify=("Một câu hỏi?", "@all <b>hai</b>", "", 5),
                                       text=("Tiêu đề", "Tóm tắt model"))
-        self.assertIn("**Cần làm rõ**\n- Một câu hỏi?\n- @" + ZWSP + "all &lt;b&gt;hai&lt;/b&gt;\n\n", issue.body)
+        self.assertIn("### ❓ Cần làm rõ\n- Một câu hỏi?\n- @" + ZWSP + "all &lt;b&gt;hai&lt;/b&gt;\n\n", issue.body)
         self.assertLess(issue.body.index("Tóm tắt"), issue.body.index("Cần làm rõ"))
-        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("**Tin gốc**"))
+        self.assertLess(issue.body.index("Cần làm rõ"), issue.body.index("<details>"))
         self.assertEqual(issue.title, "[cần phân loại] Tiêu đề")
         self.assertEqual(issue.labels, ("needs-human", "source:telegram"))
 
@@ -1012,7 +1022,7 @@ class FormatTests(unittest.TestCase):
         full = format_issue(items[0], classification(), "model", False, case_messages=items, max_quoted=30)
         self.assertIn("(còn 20 tin khác", capped.body)
         self.assertNotIn("còn", full.body)
-        self.assertIn("**Tin 30**", full.body)
+        self.assertIn("tin số 30", full.body)
 
 
 if __name__ == "__main__":

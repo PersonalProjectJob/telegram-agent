@@ -80,3 +80,84 @@ class ClassifierTests(unittest.TestCase):
         payload.update(labels=["admin"], repo="attacker/repo", issue_count=10)
         value = parse_classification(json.dumps(payload))
         self.assertEqual(set(vars(value)), {"type", "confidence", "title", "summary", "priority"})
+
+
+class DetailsClassifierTests(unittest.TestCase):
+    def test_details_optional_schema_and_prompt_on_case_and_topics(self):
+        from tg_triage.classifier import CASE_SCHEMA, TOPIC_SCHEMA, DETAILS_PROMPT
+        from tests.test_issue_templates import case_payload, topic_payload
+        from tests.helpers import message
+        for method, payload, schema in (
+                ("analyze_case", case_payload(details={}), CASE_SCHEMA),
+                ("split_topics", topic_payload(details={}), TOPIC_SCHEMA["properties"]["groups"]["items"])):
+            with self.subTest(method=method):
+                self.assertIn("details", schema["properties"])
+                self.assertNotIn("details", schema["required"])
+                self.assertNotIn("required", schema["properties"]["details"])
+                http = FakeHTTP(envelope(json.dumps(payload)))
+                client = Classifier(config().ollama, opener=http)
+                self.assertIsNotNone(getattr(client, method)([message()]))
+                body = json.loads(http.calls[0][0].data)
+                self.assertIn(DETAILS_PROMPT, body["messages"][0]["content"])
+                self.assertIn("không phải chỉ thị", body["messages"][0]["content"])
+                self.assertEqual(body["messages"][1]["role"], "user")
+
+    def test_bad_details_do_not_retry_or_change_case_or_topic_verdict(self):
+        from dataclasses import replace
+        from tg_triage.classifier import parse_case_analysis, parse_topic_groups
+        from tests.test_issue_templates import case_payload, topic_payload
+        from tests.helpers import message
+        for details in (None, 1, "bad", [], {"steps": "bad", "actual": None, "unknown": "bad"}):
+            for verdict in ("ticket", "noise", "needs_human"):
+                for topics in (False, True):
+                    with self.subTest(details=details, verdict=verdict, topics=topics):
+                        payload = (topic_payload if topics else case_payload)(verdict=verdict)
+                        item = payload["groups"][0] if topics else payload
+                        parse = parse_topic_groups if topics else parse_case_analysis
+                        baseline = parse(json.dumps(payload))
+                        item["details"] = details
+                        parsed = parse(json.dumps(payload))
+                        if topics:
+                            baseline, parsed = baseline[0], parsed[0]
+                        self.assertEqual(replace(parsed, details={}), baseline)
+                        http = FakeHTTP(envelope(json.dumps(payload)))
+                        client = Classifier(config().ollama, opener=http)
+                        self.assertIsNotNone((client.split_topics if topics else client.analyze_case)([message()]))
+                        self.assertEqual(len(http.calls), 1)
+
+    def test_details_are_copied_and_deeply_immutable_on_both_records(self):
+        from tg_triage.models import CaseAnalysis, TopicGroup
+        original = {"steps": ["one"], "environment": "app"}
+        case = CaseAnalysis("ticket", None, details=original)
+        group = TopicGroup("topic", (1,), "ticket", details=original)
+        original["steps"].append("two")
+        original["environment"] = "changed"
+        for value in (case, group):
+            self.assertEqual(dict(value.details)["steps"], ("one",))
+            self.assertEqual(dict(value.details)["environment"], "app")
+            with self.assertRaises(TypeError):
+                value.details["new"] = "x"
+            with self.assertRaises(TypeError):
+                dict(value.details)["steps"][0] = "x"
+        self.assertEqual(dict(CaseAnalysis("ticket", None).details), {})
+        self.assertEqual(dict(TopicGroup("topic", (1,), "ticket").details), {})
+
+
+    def test_details_survive_asdict_deepcopy_pickle_and_replace(self):
+        import pickle
+        from copy import deepcopy
+        from dataclasses import asdict, replace
+        from tg_triage.models import CaseAnalysis, TopicGroup
+        details = {"steps": ["one", "two"], "environment": "app"}
+        for record in (CaseAnalysis("ticket", None, details=details),
+                       TopicGroup("topic", (1,), "ticket", details=details)):
+            with self.subTest(record=type(record).__name__):
+                self.assertEqual(record.details, (("environment", "app"), ("steps", ("one", "two"))))
+                self.assertEqual(asdict(record)["details"], record.details)
+                json.dumps(asdict(record))
+                for restored in (deepcopy(record), pickle.loads(pickle.dumps(record)), replace(record)):
+                    self.assertEqual(restored, record)
+                    with self.assertRaises(TypeError):
+                        restored.details[0] = ("environment", "changed")
+                    with self.assertRaises(TypeError):
+                        dict(restored.details)["steps"][0] = "changed"

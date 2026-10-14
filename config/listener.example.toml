@@ -1,6 +1,7 @@
 mode = "dry-run"
 
 [telegram]
+ignored_command_prefixes = ["/nailhub"] # Other service commands are ignored before storage/triage.
 session_path = "/var/lib/agentfleet/tg/gateway.session"
 chat_ids = [-1001234567890]
 # true = listen to every group/supergroup (not private chats/channels); chat_ids must then be empty or omitted
@@ -36,7 +37,7 @@ timeout_seconds = 600
 max_issues_per_hour = 20
 
 # Case aggregation (Assistant definition 12.1): one case = one GitHub issue.
-# A reply joins the case of the replied message; otherwise the same sender (any sender for a
+# A reply joins the case of the replied message; otherwise the same sender (including a
 # forward) within window_minutes of the case's last message. Commands (/bug ...) never wait.
 # window_minutes = 0 disables waiting: every message becomes its own case.
 # Topic split (Assistant definition 12.9): when a window closes, the model splits it into topics and
@@ -45,7 +46,7 @@ max_issues_per_hour = 20
 # is sent to the model and verified on its own (every message id exactly once, otherwise one retry and
 # then ONE needs-human ticket for the chunk). Only effective when max_messages_per_case is larger.
 [aggregation]
-window_minutes = 15
+window_minutes = 2
 max_messages_per_case = 20
 max_messages_per_window = 40
 

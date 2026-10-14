@@ -160,7 +160,7 @@ columns with safe `ALTER`, so older databases still open).
 
 ```toml
 [aggregation]
-window_minutes = 15        # 0 = no waiting: every message is its own case
+window_minutes = 2        # 0 = no waiting: every message is its own case
 max_messages_per_case = 20
 max_messages_per_window = 40  # 12.9: longest chunk of a closed window sent to the model at once
 
@@ -176,7 +176,7 @@ Missing sections use these defaults; a value of the wrong type or a negative val
 
 - A reply joins the case of the replied message (even after the window). Otherwise a message
   joins the latest case of the chat whose last message is within `window_minutes` and that
-  has the same sender (any sender for a forwarded message). A full case accepts nothing more.
+  has the same sender (including a forwarded message). A full case accepts nothing more.
 - A command (`/bug`, `/feature`, `/question`, `/task`, `/feedback`) never waits: its case is analyzed when
   it arrives, together with the earlier messages already gathered. Other cases are analyzed by
   the worker (every 15 s) once `last message + window_minutes` has passed.
@@ -190,6 +190,24 @@ Missing sections use these defaults; a value of the wrong type or a negative val
   new case. Posting a follow-up comment on the issue is not implemented yet.
 - After a restart, a case that was `analyzing` and already called GitHub becomes `error`
   and is never sent again; one that had not called GitHub is analyzed again (at most twice).
+
+Images and a request sent before or after them share the same two-minute inactivity window,
+including forwarded images from the same sender. Explicit replies take precedence. The Ollama
+provider receives validated JPG/PNG/WEBP bytes on individual user messages carrying their exact
+Telegram message IDs; both topic splitting and legacy case analysis support images. The same
+private files are reused for issue uploads and deleted after processing, including failures.
+Documents remain attachments only and are never sent to the model. Existing attachment size/count
+limits also bound vision. No OCR library or extra model request is required.
+
+A photo with no request stays `pending_review` without creating an issue. Missing/invalid media,
+vision failure or an ambiguous image/request partition produces one `needs_human` issue and an
+owner clarification in the group. An image-bearing case exceeding the model chunk limit also
+asks for clarification rather than separating an image from its request. Text-only commands still
+run immediately; a command cannot wait for an image that has not arrived yet. Model latency is
+additional to the two-minute wait and depends on the host; benchmark the actual Ollama model.
+When vision returns one valid whole-case `needs_human` group, its sanitized wording and specific
+questions are preserved in the issue and owner notice. Failed/incomplete partitions use a fixed
+clarification instead; the code never forces an uncertain visual judgment into a confident ticket.
 
 ### Topic split (Assistant definition 12.9)
 
@@ -224,7 +242,14 @@ decides everything:
   `pending_review` when nobody tagged or used a command, and a `needs-human` issue when somebody did.
 - **One issue per group, one group per message:** the issue quotes all messages of its group in time
   order (no 10-message cap) and nothing of any other group. Titles, summaries and questions go through the
-  same sanitizer as before; model text is never executed or used as a label.
+  same sanitizer as before; model text is never executed or used as a label. Trusted bug, feedback and
+  task issues (including typed needs-human issues) use category templates from optional model
+  `details`: bug reproduction/expected/actual/evidence, feedback need/user story/draft acceptance/context,
+  or task work/scope/input evidence/DoD. Images and documents appear in bug/task evidence or feedback
+  context. Missing required fields show "(chưa có thông tin)" and append fixed clarifying questions
+  after model questions (deduplicated, at most 5); these automatic questions never change labels.
+  Task DoD always ends with the requirement to attach result evidence. Untyped issues keep the generic
+  body. Detail strings are sanitized/redacted and capped at 500 characters; lists at 10 x 200.
 - **Keys:** each group is keyed `<chat_id>:<smallest message id of the group>` (UNIQUE in the new
   `groups` table), so two groups of one window can never collide and a restart cannot create one
   twice. The plan is stored before anything is posted; `messages.group_key` is set only while it is
@@ -315,7 +340,7 @@ Temporary files are always deleted. Issues are still created through the REST AP
 
 Besides images, a file the sender attached (`event.message.document`) is downloaded into the same 0700
 temporary directory, uploaded with the same `gh release upload` to release `attachments-<group key>`,
-and listed in the issue under **Tài liệu đính kèm** as plain links (`- [name](asset URL)`), never embedded
+and listed in the issue's evidence/context section (12.16: `### 🖼 Minh họa / Evidence`, or `### 🧭 Ngữ cảnh` for feedback; no separate "Tài liệu đính kèm" label) as plain links (`- 📎 [name](asset URL)`), never embedded
 with `![]`. The decision uses the declared file name, the declared MIME and the size only: a file is never
 opened, unpacked, scanned or executed, and its content decides nothing.
 
@@ -432,3 +457,5 @@ Replies backed by a sent clarification always remain followups of their original
 when the case is full or ended in an error/rate limit. Other replies retain existing case rules. Owner answers
 are stored for review; they do not approve an issue, retry GitHub, change `needs_human`, or post
 a GitHub comment automatically. Outgoing messages remain excluded from listener ingress.
+
+For isolated THINKPAD deployment and rollback, see [deploy/README.md](../deploy/README.md).

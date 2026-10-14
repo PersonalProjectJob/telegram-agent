@@ -588,8 +588,8 @@ Bằng chứng riêng tư nằm tại `.context/nailhub-rerun-20261014/` và `/v
 
 - [Master và lịch sử quyết định Owner](../00-master/nailhub-postings-noissue_master_261012_v1.0.0.md)
 - [Product Doc ban đầu](nailhub-postings-noissue_product_261012_v1.0.0.md)
-- [Hướng dẫn runtime và các cập nhật chính sách](../../listener/NAILHUB.md)
-- [Entry hướng dẫn agent NailHub](../../listener/src/tg_triage/nailhub/AGENTS.md)
+- [Hướng dẫn runtime và các cập nhật chính sách](../../nailhub/README.md)
+- [Entry hướng dẫn agent NailHub](../../nailhub/src/nailhub/AGENTS.md)
 - [Engineering Doc](../02-engineering/nailhub-postings-noissue_engineering_261012_v1.0.0.md)
 - [QA Doc](../03-qa/nailhub-postings-noissue_qa_261012_v1.0.0.md)
 - [Bản triển khai đối chiếu](https://github.com/PersonalProjectJob/telegram-agent/commit/32b84602af22f6dcbbb24a82b67e8a4a45e90b95)
@@ -607,6 +607,7 @@ Chưa có GitHub Issue hoặc PR riêng cho workflow này. Product Doc ban đầ
 | v1.0.2 | 2026-10-13 15:51 | AlexChu qua Codex | Bổ sung model diễn giải nguồn đa ngôn ngữ, kiểm ngữ cảnh tiền, tên salon từ nguồn được Owner xác nhận và DM phân biệt giá trị đang lưu/đề xuất |
 
 ### Lưu ý vận hành sau cập nhật listener
+> ⚠️ **Đã thay thế (2026-10-14, D-024):** NailHub giờ là service riêng `tg-nailhub`, code ở `nailhub/src/nailhub/`, test chạy từ `nailhub/`. Listener (`tg_triage`) không còn chứa NailHub. Xem `Docs/02-engineering/worker-agent-fleet-1_service-split_261013_v1.0.0.md`. Phần dưới đây là lịch sử, KHÔNG làm theo.
 Mỗi bản phát hành listener phải giữ đủ package NailHub và các hook tích hợp trong cùng client Telegram. Sau triển khai, kiểm tra lại lệnh DM đã xác thực và worker/quét định kỳ; tránh wheel của tính năng khác làm mất tích hợp NailHub. Đợt kiểm tra ngày 2026-10-13 đã xác nhận cả ba tin mục tiêu Approved và đã xuất bản bằng lượt đọc lại riêng.
 
 ### Bổ sung xử lý danh sách bị giữ — 2026-10-13

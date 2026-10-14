@@ -56,7 +56,8 @@ class ImageInIssueTests(AttachmentBase):
         self.assertEqual(result.decision, "issue")
         url = f"{ASSET_BASE}/{TAG}/1-1.jpg"
         self.assertIn(f"![Ảnh 1]({url})", self.issue_body())
-        self.assertIn("**Ảnh đính kèm**", self.issue_body())
+        self.assertIn("### 🖼 Minh họa / Evidence", self.issue_body())
+        self.assertNotIn("Ảnh đính kèm", self.issue_body())   # no sub-label any more (12.16)
         self.assertEqual(self.uploader.releases, [TAG])
         self.assertEqual([(item["tag"], item["asset"]) for item in self.uploader.uploads], [(TAG, "1-1.jpg")])
         self.assertEqual(result.images, 1)
@@ -107,13 +108,13 @@ class ImageInIssueTests(AttachmentBase):
         pipeline = self.build()
         pipeline.process(message(1, "app nexora đăng nhập lỗi rồi", sender_id=1))
         self.assertEqual((self.downloader.calls, self.uploader.releases), ([], []))
-        self.assertNotIn("Ảnh đính kèm", self.issue_body())
+        self.assertNotIn("![", self.issue_body())
 
     def test_image_limit_zero_turns_the_feature_off_silently(self):
         pipeline = self.build(limits=AttachmentsConfig(max_per_case=0))
         pipeline.process(photo(1))
         self.assertEqual((self.downloader.calls, self.uploader.releases), ([], []))
-        self.assertNotIn("Ảnh đính kèm", self.issue_body())
+        self.assertNotIn("![", self.issue_body())
         self.assertNotIn("Ảnh bị bỏ qua", self.issue_body())
         self.assertEqual(len(self.github.calls), 1)
 
@@ -387,13 +388,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_example_sets_the_documented_values(self):
         value = load_config(EXAMPLE, self.ENV)
-        self.assertEqual((value.aggregation.window_minutes, value.aggregation.max_messages_per_case), (15, 20))
+        self.assertEqual((value.aggregation.window_minutes, value.aggregation.max_messages_per_case), (2, 20))
         self.assertEqual((value.attachments.max_bytes, value.attachments.max_per_case,
                           value.attachments.max_per_hour), (10485760, 5, 60))
 
     def test_missing_sections_use_defaults(self):
         value = self.load(self.without_sections())
-        self.assertEqual((value.aggregation.window_minutes, value.aggregation.max_messages_per_case), (15, 20))
+        self.assertEqual((value.aggregation.window_minutes, value.aggregation.max_messages_per_case), (2, 20))
         self.assertEqual((value.attachments.max_bytes, value.attachments.max_per_case,
                           value.attachments.max_per_hour), (10485760, 5, 60))
 
@@ -442,7 +443,7 @@ class ConfigTests(unittest.TestCase):
         redacted = load_config(EXAMPLE, self.ENV).redacted()
         # 12.9 added `max_messages_per_window` (chunk size sent to the model) to this section.
         self.assertEqual(redacted["aggregation"], {
-            "window_minutes": 15, "max_messages_per_case": 20, "max_messages_per_window": 40})
+            "window_minutes": 2, "max_messages_per_case": 20, "max_messages_per_window": 40})
         self.assertEqual(redacted["attachments"]["max_per_hour"], 60)
 
 

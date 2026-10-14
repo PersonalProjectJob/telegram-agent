@@ -31,6 +31,7 @@ stdlib unittest offline fakes exercise policy and negative browser behavior; the
 ## Acceptance Criteria
 All offline P0 authorization, preview isolation, evidence validation and crash safety tests pass. Full listener suite passes. Independent reviewer required. Live sign-off additionally requires actual authenticated View -> Edit -> AI -> Save -> re-read -> Approve -> status evidence on Owner-approved test post. No fakes can satisfy that gate.
 ## Environment and Test Data
+> ⚠️ **Đã thay thế (2026-10-14, D-024):** NailHub giờ là service riêng `tg-nailhub`, code ở `nailhub/src/nailhub/`, test chạy từ `nailhub/`. Listener (`tg_triage`) không còn chứa NailHub. Xem `Docs/02-engineering/worker-agent-fleet-1_service-split_261013_v1.0.0.md`. Phần dưới đây là lịch sử, KHÔNG làm theo.
 From listener: `PYTHONPATH=src python -m unittest discover -s tests -t . -v`; `python -m compileall -q src tests`. Synthetic data embedded in tests; no credentials or real user fixtures. Optional Playwright extra and dedicated logged-in profile needed for live. No responsive/a11y product changes. CPU latency/timeout measured on ThinkPad after provisioning.
 ## Security Tests
 Numeric peer authorization, prompt-injection/malformed evidence, unsupported selectors and stale original hash all fail closed. Audit stores only structured rationale, never chain of thought.

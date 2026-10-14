@@ -167,7 +167,7 @@ browser thật sau đăng nhập, không dùng đọc code thay cho kiểm chứ
 - Hạ tầng: [Setup Plan](worker-agent-fleet-1_setup-plan_261008_v1.0.6.md).
 - Listener: [README](../../listener/README.md).
 - [Business — quy tắc hiện hành, báo cáo49tin và bản nháp issue](../01-product/nailhub-postings-noissue_business_261013_v1.0.0.md).
-- [Hướng dẫn agent NailHub](../../listener/src/tg_triage/nailhub/AGENTS.md).
+- [Hướng dẫn agent NailHub](../../nailhub/src/nailhub/AGENTS.md).
 - [Product](../01-product/nailhub-postings-noissue_product_261012_v1.0.0.md).
 - [Engineering](../02-engineering/nailhub-postings-noissue_engineering_261012_v1.0.0.md).
 - [QA](../03-qa/nailhub-postings-noissue_qa_261012_v1.0.0.md).
@@ -419,7 +419,7 @@ Các tin đã rời State.manual_posts/pending. Resume proof paused0/pending1/ru
 
 Evidence bundle .context/nailhub-evidence/nailhub-held-final.zip SHA2568761b477824777e5fd2aecde1bcb88e4e97d4aadf86531bf08da2ffa49f72706;17filemanifest kiểm hash PASS, dữ liệu chi tiết ở held-final/. Independent-audit/resume-proof và first-five/last-one-live-proof xác nhận outcome, source/proposal/audit và thứ tự request. Ảnh salary không hiển thị checkbox ở cùng viewport; checkbox được assert trực tiếp trong phiên UI riêng.
 
-Handoff: runtime đã tách package nailhub, còn branch này giữ đường dẫn listener/src/tg_triage/nailhub. Khi tích hợp bản sửa vào release service-split, đồng bộ đúng categories.py/validation.py sang package độc lập; không chép đè model_lock hoặc Telegram của dịch vụ mới. /srv source+installed hiện đã có bản sửa. Quan sát frontend bổ sung Schedule/ApplyBy và form job fields trong lúc campaign;6ID RFC đi direct detail nên đều PASS. Contract header10cột của fallback non-RFC listing chưa được kiểm lại với giao diện mới; cần audit riêng trước khi sửa nhóm sequentialGUID. Không có tuyên bố đã kiểm các trường job mới ngoài scope.
+Handoff: runtime đã tách package nailhub, còn branch này giữ đường dẫn listener/src/tg_triage/nailhub. **(Đã lỗi thời từ 2026-10-14: sau khi hòa giải main vào nhánh service-split, code NailHub chỉ còn ở `nailhub/src/nailhub/`.)** Khi tích hợp bản sửa vào release service-split, đồng bộ đúng categories.py/validation.py sang package độc lập; không chép đè model_lock hoặc Telegram của dịch vụ mới. /srv source+installed hiện đã có bản sửa. Quan sát frontend bổ sung Schedule/ApplyBy và form job fields trong lúc campaign;6ID RFC đi direct detail nên đều PASS. Contract header10cột của fallback non-RFC listing chưa được kiểm lại với giao diện mới; cần audit riêng trước khi sửa nhóm sequentialGUID. Không có tuyên bố đã kiểm các trường job mới ngoài scope.
 
 Harness Node-only/CAS expired same-owner limitations vẫn được ghi nhận, không giả PASS/handoff. Token billed/cache metrics của collaboration executor không được tool cung cấp. Chưa commit/push các thay đổi v1.0.20.
 

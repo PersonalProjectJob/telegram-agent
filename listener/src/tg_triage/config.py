@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import rules
+
 
 class ConfigError(ValueError):
     """A configuration error with a safe, field-specific message."""
@@ -27,6 +29,7 @@ class TelegramConfig:
     min_text_length: int
     proxy: ProxyConfig
     listen_all_groups: bool = False
+    ignored_command_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,7 @@ class ModelConfig:
 class AggregationConfig:
     """Case grouping (Assistant definition 12.1). window_minutes = 0 disables waiting."""
 
-    window_minutes: int = 15
+    window_minutes: int = 2
     max_messages_per_case: int = 20
     # 12.9: a closed window longer than this is split into consecutive chunks by time and each
     # chunk is sent to the model and verified on its own.
@@ -193,6 +196,17 @@ def load_config(path, environ=None) -> Config:
             r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", gh_repo):
         raise ConfigError("GH_REPO: expected owner/repo")
     tg = _table(data, "telegram")
+    ignored_prefixes = tg.get("ignored_command_prefixes", [])
+    # COMMAND's first capturing group is the canonical alternation of owned names.
+    command_names = rules.COMMAND.pattern.split("(", 1)[1].split(")", 1)[0].split("|")
+    if (not isinstance(ignored_prefixes, list) or any(
+            not isinstance(prefix, str) or re.fullmatch(r"/[A-Za-z0-9_]+", prefix) is None
+            for prefix in ignored_prefixes)):
+        raise ConfigError("telegram.ignored_command_prefixes: expected command names")
+    names = [prefix[1:].casefold() for prefix in ignored_prefixes]
+    if (len(set(names)) != len(names) or any(
+            command.casefold().startswith(name) for name in names for command in command_names)):
+        raise ConfigError("telegram.ignored_command_prefixes: duplicate or overlapping listener command")
     listen_all = tg.get("listen_all_groups", False)
     if type(listen_all) is not bool:
         raise ConfigError("telegram.listen_all_groups: expected true or false")
@@ -263,7 +277,7 @@ def load_config(path, environ=None) -> Config:
         telegram=TelegramConfig(
             _string(tg, "session_path", "telegram.session_path"), tuple(chats),
             _integer(tg.get("min_text_length"), "telegram.min_text_length", 0),
-            ProxyConfig(host, port, secret), listen_all),
+            ProxyConfig(host, port, secret), listen_all, tuple(ignored_prefixes)),
         ollama=OllamaConfig(
             url.rstrip("/"), model_name, timeout,
             _number(ollama.get("confidence_threshold"), "ollama.confidence_threshold", 0, 1)),

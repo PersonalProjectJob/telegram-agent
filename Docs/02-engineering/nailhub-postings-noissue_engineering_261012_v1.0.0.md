@@ -11,6 +11,7 @@ status: current
 Version: v1.0.9. Approved Master and implementation direction delegated by Owner through controller; no additional scope.
 
 ## Solution vs codebase
+> ⚠️ **Đã thay thế (2026-10-14, D-024):** NailHub giờ là service riêng `tg-nailhub`, code ở `nailhub/src/nailhub/`, test chạy từ `nailhub/`. Listener (`tg_triage`) không còn chứa NailHub. Xem `Docs/02-engineering/worker-agent-fleet-1_service-split_261013_v1.0.0.md`. Phần dưới đây là lịch sử, KHÔNG làm theo.
 `listener/src/tg_triage/telegram_io.py` keeps one Telethon client, routes configured NailHub namespace before group filters, and supervises optional service. `classifier.py` gains only a foreground model gate wrapper. New `tg_triage/nailhub/` separates config, commands, state, validation, model, browser, service. Existing attachment changes are preserved as baseline.
 ## Frontend Section
 N/A: no UI code. Playwright uses explicit inspected selectors and exact one-element checks.

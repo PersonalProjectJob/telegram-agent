@@ -42,6 +42,7 @@ CASE_STATUS = {"noise": "noise", "chat": "chat", "pending_review": "pending_revi
                "rate_limited": "error", "error": "error", "case_open": "open", "followup": "done"}
 # Written by code (never by the model) into the "Cần làm rõ" section of a fallback ticket.
 FALLBACK_NOTE = "Agent không tách được chủ đề cho các tin này, cần người đọc và tách thủ công"
+VISION_NOTE = "Agent chưa đọc hoặc chưa xác định được ảnh thuộc yêu cầu nào. Owner vui lòng xác nhận ảnh liên quan và nội dung cần xử lý."
 # When one window yields several outcomes, the most urgent one is reported as the window's.
 _RANK = {"error": 0, "rate_limited": 1, "issue": 2, "dry_run_issue": 2,
          "needs_human": 3, "dry_run_needs_human": 3, "pending_review": 4, "chat": 5, "noise": 6}
@@ -85,6 +86,7 @@ class Plan:
     chat_hint: bool = False        # a command group the model called chat (12.11 point 7)
     fallback: bool = False         # no usable model judgment at all (model down, partition or JSON unusable)
     model_reason: str | None = None   # 12.12: the model's short why; stored for the reviewer only
+    details: object = None          # 12.15: optional model fields, only passed to the renderer
 
 
 def _order(item):
@@ -216,6 +218,7 @@ class Pipeline:
         self.github = github
         self.timer = timer
         self._lock = threading.Lock()
+        self._prepared_images = None
         self.attachments = AttachmentProcessor(
             config.attachments, store, repo=config.gh_repo,
             downloader=downloader, uploader=uploader)
@@ -323,7 +326,8 @@ class Pipeline:
         try:
             analyze = getattr(self.classifier, "analyze_case", None)
             if analyze is not None:
-                value = analyze(messages, forced_type=forced_type)
+                options = self._vision_options(messages)
+                value = analyze(messages, forced_type=forced_type, **options)
             else:
                 value = _legacy_analysis(
                     self.classifier.classify("\n".join(item.text for item in messages)), messages)
@@ -339,7 +343,7 @@ class Pipeline:
         command = next((item for item in messages if rules.is_command(item.text)), None)
         if command is not None:
             rule = self._rule(command, cache)
-            if len(messages) == 1:
+            if len(messages) == 1 and not command.has_image:
                 action = "noise" if rule.type == "noise" else "issue"
                 return "rule", action, rule, None
             forced = rules.COMMAND.match(command.text)[1].lower()
@@ -363,7 +367,8 @@ class Pipeline:
         for item in messages:
             rule = self._rule(item, cache)
             rule_of_each.append(rule)
-            if rule is None or rule.type != "noise":
+            if (rule is None or rule.type != "noise" or
+                    (item.has_image and getattr(self.classifier, "supports_vision", False))):
                 break
         else:
             return "rule", "noise", rule_of_each[0], None
@@ -383,7 +388,8 @@ class Pipeline:
 
     def _images(self, case_key, messages, *, live):
         try:
-            return self.attachments.process(case_key, messages, live=live)
+            return self.attachments.process(case_key, messages, live=live,
+                                            prepared=self._prepared_images)
         except Exception as error:
             LOG.warning("Attachments failed exception=%s", type(error).__name__)
             return AttachmentResult(notes=[f"Ảnh đính kèm không tải được: {type(error).__name__}"])
@@ -402,7 +408,7 @@ class Pipeline:
         ask = self._topics_call()
         for attempt in (1, 2):
             try:
-                answer = ask(chunk)
+                answer = ask(chunk, **self._vision_options(chunk))
             except Exception as error:
                 # An injected client must not be able to leak content via errors.
                 LOG.warning("Topic split failed exception=%s", type(error).__name__)
@@ -412,6 +418,34 @@ class Pipeline:
                 return groups
             LOG.warning("Topic split rejected chunk_messages=%s attempt=%s", len(chunk), attempt)
         return None
+
+    def _vision_options(self, messages):
+        if getattr(self.classifier, "supports_vision", False) and self._prepared_images is not None:
+            return {"images": self._prepared_images.for_messages(messages)}
+        return {}
+
+    def _vision_unavailable(self, messages):
+        # Legacy/injected models retain their established offline behavior. Real providers
+        # explicitly opt in and must never judge images they did not receive.
+        if not getattr(self.classifier, "supports_vision", False):
+            return False
+        expected = {m.message_id for m in messages if m.has_image}
+        available = (set(self._prepared_images.for_messages(messages))
+                     if self._prepared_images is not None else set())
+        return bool(expected - available)
+
+    def _vision_fallback(self, messages, group=None):
+        first = min(messages, key=lambda m: m.message_id)
+        # A lone photo is not an explicit request and must not manufacture an issue.
+        has_request = any(m.text.strip() for m in messages)
+        question = any(rules.COMMAND.match(m.text) and
+                       rules.COMMAND.match(m.text)[1].lower() == "question" for m in messages)
+        return Plan(f"{first.chat_id}:{first.message_id}", messages, first, "model",
+                    "chat" if question else "needs_human" if has_request else "pending_review",
+                    clarify=(group.missing_info or (VISION_NOTE,)) if group is not None else (VISION_NOTE,),
+                    text=(group.title, group.summary) if group is not None else None,
+                    reason="vision_needs_human" if group is not None else "vision_context_missing",
+                    fallback=group is None, model_reason=group.reason if group is not None else None)
 
     def _noise_plan(self, item, value, reason, tier="rule"):
         return Plan(f"{item.chat_id}:{item.message_id}", [item], item, tier, "noise", value,
@@ -482,8 +516,16 @@ class Pipeline:
 
     def _plan(self, case_key, messages, first, cache):
         ordered = sorted(messages, key=_order)
+        if self._vision_unavailable(ordered):
+            return [self._vision_fallback(ordered)]
         if self._topics_call() is None:
-            return [self._safety(self._plan_single(case_key, ordered, first, cache))]
+            plan = self._plan_single(case_key, ordered, first, cache)
+            if any(m.has_image for m in ordered) and getattr(self.classifier, "supports_vision", False):
+                if plan.fallback:
+                    return [self._vision_fallback(ordered)]
+                if not any(m.text.strip() for m in ordered):
+                    return [replace(plan, action="pending_review", reason="image_without_request")]
+            return [self._safety(plan)]
         plans, rest = [], []
         for item in ordered:
             rule = self._rule(item, cache)
@@ -496,12 +538,20 @@ class Pipeline:
             else:
                 rest.append(item)
         size = max(1, self.config.aggregation.max_messages_per_window)
+        if (len(rest) > size and any(m.has_image for m in rest)
+                and getattr(self.classifier, "supports_vision", False)):
+            # Do not sever an image/request pair at an arbitrary model chunk boundary.
+            return plans + [self._vision_fallback(rest)]
         for start in range(0, len(rest), size):
             plans.extend(self._plan_chunk(rest[start:start + size], cache))
         plans.sort(key=lambda plan: plan.first.message_id)
         return plans
 
     def _plan_chunk(self, chunk, cache):
+        has_images = any(m.has_image for m in chunk)
+        vision = has_images and getattr(self.classifier, "supports_vision", False)
+        if vision and not any(m.text.strip() for m in chunk):
+            return [self._vision_fallback(chunk)]
         if len(chunk) == 1:
             item = chunk[0]
             rule = self._rule(item, cache)
@@ -514,6 +564,31 @@ class Pipeline:
                                               "issue", rule, typed=True, clarify=()))]
         by_id = {item.message_id: item for item in chunk}
         groups = self._split(chunk)
+        if vision and groups is not None and len(groups) == 1 and groups[0].verdict == "needs_human":
+            # A valid whole-case visual judgment is uncertainty, not a transport/partition
+            # failure. Preserve its questions and wording, with normal output sanitization.
+            return [self._vision_fallback(chunk, groups[0])]
+        # Explicit reply edges involving an image are stronger than a model partition.
+        # Also do not silently drop a captioned image as chat/noise beside a ticket:
+        # the caption does not establish that the image is unrelated to the request.
+        split_image_reply = False
+        dropped_image_beside_ticket = False
+        if vision and groups is not None:
+            ownership = {mid: n for n, group in enumerate(groups) for mid in group.message_ids}
+            split_image_reply = any(
+                m.reply_to_id in by_id and ownership[m.message_id] != ownership[m.reply_to_id]
+                and (m.has_image or by_id[m.reply_to_id].has_image)
+                and any(groups[ownership[mid]].verdict in ("ticket", "needs_human")
+                        for mid in (m.message_id, m.reply_to_id)) for m in chunk)
+            dropped_image_beside_ticket = any(
+                (g.verdict == "noise" or g.category == "chat")
+                and any(by_id[i].has_image for i in g.message_ids)
+                for g in groups) and any(g.verdict in ("ticket", "needs_human") for g in groups)
+        if vision and (groups is None or any(
+                any(by_id[i].has_image for i in g.message_ids)
+                and (g.verdict == "needs_human" or not any(by_id[i].text.strip() for i in g.message_ids))
+                for g in groups) or split_image_reply or dropped_image_beside_ticket):
+            return [self._vision_fallback(chunk)]
         fallback_group = groups is None
         if groups is None:
             # Never lose a message: the whole chunk becomes one ticket for a human.
@@ -545,7 +620,7 @@ class Pipeline:
                 return Plan(key, messages, first, "rule", "needs_human" if needs else "issue", value,
                             typed=True, clarify=missing, text=(value.title, value.summary),
                             chat_hint=group.category == "chat", fallback=fallback,
-                            model_reason=group.reason)
+                            model_reason=group.reason, details=group.details)
             if group.verdict == "ticket" and wording.is_valid():
                 # An empty command still fixes the type when the rest of the group is a ticket.
                 group = replace(group, type=rules.COMMAND.match(command.text)[1].lower())
@@ -560,7 +635,7 @@ class Pipeline:
         if category == "chat" and group.verdict != "needs_human":
             # Plain talk with nothing for the team (12.11); a tag is judged later, by `_safety`.
             return Plan(key, messages, first, "model", "chat", _chat_value(wording), clarify=(),
-                        reason=REASON_MODEL_CHAT, model_reason=group.reason)
+                        reason=REASON_MODEL_CHAT, model_reason=group.reason, details=group.details)
         typed = False
         if action == "issue" and missing:
             action, typed = "needs_human", True
@@ -570,7 +645,7 @@ class Pipeline:
         return Plan(key, messages, first, "model", action, value, typed=typed, clarify=missing,
                     text=(group.title, group.summary) if action == "needs_human" else None,
                     reason=REASON_MODEL_NOISE if action == "noise" else None, fallback=fallback or unusable,
-                    model_reason=group.reason)
+                    model_reason=group.reason, details=group.details)
 
     def _plan_single(self, case_key, ordered, first, cache):
         """One group for the whole window, for classifiers that cannot split topics."""
@@ -597,7 +672,8 @@ class Pipeline:
         return Plan(case_key, ordered, first, tier, action, classification, typed=typed, clarify=clarify,
                     text=text, key_ids=self._key_ids(analysis, ordered), reason=reason, fallback=unusable,
                     chat_hint=(category == "chat" and action in ("issue", "needs_human")),
-                    model_reason=analysis.reason if analysis is not None else None)
+                    model_reason=analysis.reason if analysis is not None else None,
+                    details=analysis.details if analysis is not None else {})
 
     # ---- execution: one issue per group ------------------------------------------------
 
@@ -630,7 +706,7 @@ class Pipeline:
                 plan.action == "needs_human", self.config.ollama.model,
                 case_messages=plan.messages, key_message_ids=plan.key_ids, images=found.images,
                 documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
-                max_quoted=len(plan.messages))
+                max_quoted=len(plan.messages), details=plan.details if plan.details is not None else {})
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)
@@ -679,6 +755,9 @@ class Pipeline:
         first = next((item for item in messages if item.message_id == case["first_message_id"]),
                      messages[0])
         try:
+            if (any(m.has_image for m in messages)
+                    and getattr(self.classifier, "supports_vision", False)):
+                self._prepared_images = self.attachments.prepare_images(case_key, messages)
             plans = self._plan(case_key, messages, first, rule_cache if rule_cache is not None else {})
             # The whole partition is stored before anything is sent: a message belongs to one group.
             self.store.plan_groups(case_key, [(plan.key, [item.message_id for item in plan.messages])
@@ -694,6 +773,10 @@ class Pipeline:
             except Exception as storage_error:
                 LOG.error("Case quarantine failed exception=%s", type(storage_error).__name__)
             raise
+        finally:
+            if self._prepared_images is not None:
+                self._prepared_images.close()
+                self._prepared_images = None
         self._log_split(case_key, plans, tally)
         self._log(first.chat_id, first.message_id, result, tally.status)
         return result

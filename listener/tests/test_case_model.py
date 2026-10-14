@@ -67,6 +67,8 @@ class AnalyzeCaseTests(unittest.TestCase):
         return Classifier(config().ollama, opener=http, prompt="fixed", case_prompt="CASE PROMPT")
 
     def test_request_controls_schema_and_numbered_transcript(self):
+        from tg_triage.classifier import DETAILS_PROMPT
+
         http = FakeHTTP(envelope(verdict_json()))
         items = [message(1, "đăng nhập lỗi"), message(2, "bấm là văng ra")]
         value = self.classifier(http).analyze_case(items)
@@ -78,11 +80,13 @@ class AnalyzeCaseTests(unittest.TestCase):
         self.assertIs(body["stream"], False)
         self.assertEqual(body["options"], {"temperature": 0})
         self.assertEqual(body["format"], CASE_SCHEMA)
+        self.assertIn("details", body["format"]["properties"])
+        self.assertNotIn("details", body["format"]["required"])
         self.assertEqual(set(body["format"]["required"]), {
             "category", "type", "actionable", "title", "summary", "priority", "confidence",
             "missing_info", "reason", "key_message_ids"})
         self.assertEqual(body["format"]["properties"]["type"]["enum"], ["bug", "feature", "question", "task"])
-        self.assertEqual(body["messages"][0], {"role": "system", "content": "CASE PROMPT"})
+        self.assertEqual(body["messages"][0], {"role": "system", "content": "CASE PROMPT\n" + DETAILS_PROMPT})
         self.assertTrue(body["messages"][1]["content"].startswith("[1] "))
         self.assertIn("[2] ", body["messages"][1]["content"])
 
@@ -147,6 +151,8 @@ class PipelineWithRealClassifierTests(unittest.TestCase):
         return json.dumps({"groups": [group]}, ensure_ascii=False)
 
     def test_real_classifier_response_drives_one_issue_and_filters_foreign_ids(self):
+        from tg_triage.classifier import DETAILS_PROMPT
+
         pipeline = self.build(self.groups_json([2]))
         result = pipeline.process(message(2, "app nexora đăng nhập lỗi rồi"))
         self.assertEqual(result.decision, "issue")
@@ -154,8 +160,11 @@ class PipelineWithRealClassifierTests(unittest.TestCase):
         self.assertEqual(len(self.http.calls), 1)
         self.assertIn("[bug] Lỗi đăng nhập", self.github.calls[0].title)
         body = json.loads(self.http.calls[0][0].data)
-        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT")
+        self.assertEqual(body["messages"][0]["content"], "TOPICS PROMPT\n" + DETAILS_PROMPT)
         self.assertEqual(body["format"]["required"], ["groups"])
+        group_schema = body["format"]["properties"]["groups"]["items"]
+        self.assertIn("details", group_schema["properties"])
+        self.assertNotIn("details", group_schema["required"])
 
     def test_foreign_id_is_retried_once_then_one_needs_human_issue_without_it(self):
         bad = self.groups_json([2, 999])

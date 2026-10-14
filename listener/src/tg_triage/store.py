@@ -532,7 +532,7 @@ class Store:
 
         Rules (12.1): a reply joins the case of the replied message; otherwise, when
         the window is enabled, the latest case of the chat whose last message is within
-        `window_minutes` and that has the same sender (any sender for a forward).
+        `window_minutes` and that has the same sender (including forwards).
         A command never joins a finished case as a follow-up (it is an explicit new
         request) unless it is a direct reply. Full cases accept nothing more.
         """
@@ -646,8 +646,6 @@ class Store:
                 continue
             if is_command and case["status"] != "open":
                 continue
-            if message.is_forward:
-                return case
             if message.sender_id is not None and self.connection.execute(
                     "SELECT 1 FROM messages WHERE case_key = ? AND sender_id = ? LIMIT 1",
                     (case["case_key"], message.sender_id)).fetchone():

@@ -21,10 +21,10 @@ class ModelProvider:
 
     name = ""
 
-    def classify_topics(self, transcript):
+    def classify_topics(self, transcript, *, images=None):
         raise NotImplementedError
 
-    def analyze_case(self, messages, forced_type=None):
+    def analyze_case(self, messages, forced_type=None, *, images=None):
         raise NotImplementedError
 
 
@@ -33,10 +33,10 @@ class OllamaProvider(Classifier, ModelProvider):
 
     name = "ollama"
 
-    def classify_topics(self, transcript):
+    def classify_topics(self, transcript, *, images=None):
         """Split a closed window into topic groups. `transcript` is the numbered transcript, or the
         window's messages (the transcript is then built here)."""
-        return self.split_topics(transcript)
+        return self.split_topics(transcript, images=images)
 
 
 def build_provider(config, **options):

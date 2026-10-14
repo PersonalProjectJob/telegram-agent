@@ -76,13 +76,13 @@ class GroupingTests(CaseBase):
         pipeline.process(message(2, "login app nexora hai", received_at=at(1)))
         self.assertNotEqual(self.case_key(1), self.case_key(2))
 
-    def test_forward_groups_by_chat_and_time_not_by_sender(self):
+    def test_forward_requires_same_sender_or_explicit_reply(self):
         pipeline = self.pipeline()
         pipeline.process(msg(1, 0, sender=1))
         pipeline.process(msg(2, 5, sender=2, is_forward=True))
         pipeline.process(msg(3, 6, sender=3, is_forward=True, chat_id=-777))
         pipeline.process(msg(4, 40, sender=4, is_forward=True))
-        self.assertEqual(self.case_key(2), self.case_key(1))
+        self.assertNotEqual(self.case_key(2), self.case_key(1))
         self.assertEqual(self.store.get(-777, 3)["case_key"], "-777:3")
         self.assertEqual(self.case_key(4), f"{CHAT}:4")
 
@@ -255,7 +255,7 @@ class AnalysisTests(CaseBase):
         self.assertIn("KEY\\_MESSAGE", body)
         self.assertIn("NOISE\\_BEFORE", body)
         self.assertNotIn("SECRET\\_OTHER\\_CASE", body)
-        self.assertEqual(body.count("**Tin gốc**"), 0)
+        self.assertEqual(body.count("Tin gốc (2 tin)"), 1)   # one collapsed block for the whole case
         self.assertEqual(body.count("tin chính"), 1)
 
     def test_filtering_all_ids_still_quotes_the_whole_case_without_marker(self):
@@ -287,7 +287,8 @@ class AnalysisTests(CaseBase):
         body = self.github.calls[0].body
         self.assertTrue(body.startswith(f"<!-- tg:{CHAT}:1 -->"))
         self.assertIn("case 3 tin", body)
-        self.assertEqual(body.count("**Tin "), 3)
+        self.assertIn("Tin gốc (3 tin)", body)
+        self.assertEqual(body.count(" · tin chính"), 3)   # one header per message, all three marked
 
     def test_window_not_yet_expired_means_nothing_is_closed(self):
         pipeline = self.pipeline()

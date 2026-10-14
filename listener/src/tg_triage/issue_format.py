@@ -5,7 +5,7 @@ import unicodedata
 import html
 from dataclasses import dataclass
 
-from .models import Classification, IncomingMessage, TICKET_TYPES
+from .models import Classification, IncomingMessage, TICKET_TYPES, canonical_category, immutable_details
 
 
 MAX_QUOTED_MESSAGES = 10
@@ -46,6 +46,9 @@ _EMAIL = re.compile(
 # +84 901 234 567, 090-123-4567; also 090.123.4567. Longer digit runs (ids, card numbers) are left alone.
 _PHONE = re.compile(
     r"(?<![\d+])(?:\+?\d(?:[ \-]?\d){8,10}|\d{3,4}\.\d{3}\.\d{3,4})(?!\d)(?!:\d)")
+# US/Canada numbers with parentheses, including sanitize's Markdown escapes.
+_PAREN_PHONE = re.compile(
+    r"(?<![\w+])(?:\+?1[ .\-]*)?\\?\(\d{3}\\?\)[ .\-]*\d{3}[ .\-]*\d{4}(?!\d)")
 _DATE_LIKE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}-\d{2,4}")
 
 
@@ -56,6 +59,7 @@ def _phone(match) -> str:
 def redact(value: str) -> str:
     """Replace e-mail addresses and phone numbers in already-sanitized text."""
     value = _EMAIL.sub(EMAIL_PLACEHOLDER, value)
+    value = _PAREN_PHONE.sub(PHONE_PLACEHOLDER, value)
     return _PHONE.sub(_phone, value)
 
 
@@ -97,9 +101,43 @@ def telegram_link(message: IncomingMessage) -> str | None:
     return None
 
 
+_BLOCK_START = re.compile(
+    r"( {0,3})(?:(?P<heading>#{1,6})(?=\s|$)|(?P<bullet>[-+])(?=\s|$)|(?P<ordered>\d{1,9})(?P<dot>[.)])(?=\s|$)"
+    r"|(?P<quote>>)|(?P<fence>~{3,}))")
+_RULE_LINE = re.compile(r"[-=+~ ]+")   # setext underline / thematic break made of these
+
+
+def line_safe(value: str) -> str:
+    """Neutralize Markdown block syntax at the start of each line of already sanitized text.
+
+    `sanitize` escapes inline syntax but not what only matters at the start of a line: "# x",
+    "- x", "+ x", "1. x", "> x", "---", "===", "~~~" and a 4-space indent. A backslash (or an
+    entity for the indent) makes them literal; text that is not block syntax is returned as is.
+    Call it AFTER sanitize/redact, on the text (never on a marker the code writes itself).
+    """
+    lines = []
+    for line in value.split("\n"):
+        if line.strip() and _RULE_LINE.fullmatch(line):
+            line = "".join(ch if ch == " " else "\\" + ch for ch in line)
+        elif line.startswith("    "):
+            line = "&#32;" + line[1:]
+        else:
+            match = _BLOCK_START.match(line)
+            if match:
+                lead, end = match.end(1), match.end()
+                if match["fence"]:
+                    line = line[:lead] + "".join("\\" + ch for ch in match["fence"]) + line[end:]
+                elif match["ordered"]:
+                    line = line[:end - 1] + "\\" + line[end - 1:]
+                else:
+                    line = line[:lead] + "\\" + line[lead:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _quote(text: str, limit: int) -> str:
     clean = redact(sanitize(text))   # before the cut, so a cut cannot leave half an address
-    quoted = "\n".join("> " + line for line in clean[:limit].split("\n"))
+    quoted = "\n".join("> " + line_safe(line) for line in clean[:limit].split("\n"))
     if len(clean) > limit:
         quoted += "\n> (đã cắt)"
     return quoted
@@ -186,11 +224,194 @@ def _clean_line(value) -> str:
     return redact(sanitize(value, inline=True)) if isinstance(value, str) else ""
 
 
+# 12.15 / 12.16: all template wording, headings, emoji, HTML tags and automatic questions are
+# code-owned constants; user and model text only ever enters through `sanitize` + `redact`.
+NO_DETAIL_LINE = "(chưa có thông tin)"
+DOD_EVIDENCE_LINE = "- [ ] Đính kèm evidence kết quả (ảnh/link/log) khi đóng issue"
+SUMMARY_HEADING = "### 📝 Tóm tắt"
+BUG_HEADING = "### 🐞 Lỗi"
+EVIDENCE_HEADING = "### 🖼 Minh họa / Evidence"
+FEEDBACK_HEADING = "### 💡 Vấn đề / nhu cầu"
+ACCEPTANCE_HEADING = "### ✅ Tiêu chí chấp nhận (nháp)"
+CONTEXT_HEADING = "### 🧭 Ngữ cảnh"
+TASK_HEADING = "### 🛠 Việc cần làm"
+TASK_EVIDENCE_HEADING = "### 🖼 Minh họa / Evidence (đầu vào)"
+DONE_HEADING = "### 🏁 Xong khi"
+CLARIFY_HEADING = "### ❓ Cần làm rõ"
+LABEL_ENVIRONMENT = "Môi trường"
+LABEL_STEPS = "Các bước tái hiện"
+LABEL_EXPECTED = "Mong đợi"
+LABEL_ACTUAL = "Thực tế"
+LABEL_USER_STORY = "User story"
+LABEL_PROPOSAL = "Đề xuất"
+LABEL_ALTERNATIVES = "Phương án khác"
+LABEL_REASON = "Lý do"
+LABEL_SCOPE = "Phạm vi"
+LABEL_DUE = "Hạn / người được nhắc"
+SCOPE_IN_LINE = "Làm — "
+SCOPE_OUT_LINE = "Không làm — "
+SCOPE_SEPARATOR = " · "
+DOCUMENT_BULLET = "- 📎 "
+DETAILS_OPEN = "<details>"
+DETAILS_CLOSE = "</details>"
+SUMMARY_OPEN = "<summary>"
+SUMMARY_CLOSE = "</summary>"
+SUB_OPEN = "<sub>"
+SUB_CLOSE = "</sub>"
+FOOTER_RULE = "---"
+ORIGINAL_ICON = "💬"
+ORIGINAL_TITLE = "Tin gốc"
+UNKNOWN_SENDER = "(không rõ)"
+IMAGE_ONLY_LINE = "(chỉ có ảnh)"
+DOCUMENT_ONLY_LINE = "(chỉ có tài liệu)"
+TIME_FORMAT = "%d/%m %H:%M"
+BUG_QUESTIONS = (
+    "Lỗi xảy ra trên môi trường nào (app/bản build, thiết bị, trình duyệt)?",
+    "Các bước để tái hiện lỗi là gì?",
+    "Kết quả mong đợi và kết quả thực tế?",
+    "Gửi thêm ảnh/video màn hình lỗi",
+)
+FEEDBACK_QUESTIONS = ("Vấn đề / nhu cầu là gì?",
+                      "Là vai trò nào, bạn muốn hành động gì để có lợi ích gì?")
+TASK_WORK_QUESTION = "Việc cần làm là gì?"
+MAX_DETAIL_CHARS = 500
+MAX_DETAIL_ITEMS = 10
+MAX_DETAIL_ITEM_CHARS = 200
+
+
+def _labelled(label, value):
+    return f"**{label}:** {value}"
+
+
+def _join_lines(parts):
+    """Join (text, is_list) parts. A list sits right under its label; a blank line follows it, so
+    the next label is never swallowed as a lazy continuation of its last item."""
+    out = ""
+    previous_list = False
+    for index, (value, is_list) in enumerate(parts):
+        if index:
+            out += "\n\n" if previous_list else "\n"
+        out += value
+        previous_list = is_list
+    return out
+
+
+def _evidence_text(*parts):
+    return "\n\n".join(part for part in parts if part)
+
+
+def _type_sections(category, details, media, notes):
+    """Render only this category's fields; return section strings and missing-field questions.
+
+    `media` is the code-written image/document Markdown (shown inside the evidence/context area);
+    `notes` are code-written attachment failure notes, placed right under it."""
+    values = dict(immutable_details(details))
+
+    def text(key):
+        return line_safe(_clean_line(strip_image_marker(values.get(key)))[:MAX_DETAIL_CHARS])
+
+    def items(key, numbered=False):
+        entries = values.get(key, ())
+        lines = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
+                 for entry in entries[:MAX_DETAIL_ITEMS]]
+        lines = [line_safe(line) for line in lines if line]
+        return "\n".join(f"{index}. {line}" if numbered else f"- [ ] {line}"
+                         for index, line in enumerate(lines, 1))
+
+    sections, questions = [], []
+    notes_text = "\n".join(notes)
+    if category == "bug":
+        environment, steps, expected, actual = (text("environment"), items("steps", numbered=True),
+                                                text("expected"), text("actual"))
+        sections.append(BUG_HEADING + "\n" + _join_lines([
+            (_labelled(LABEL_ENVIRONMENT, environment or NO_DETAIL_LINE), False),
+            (f"**{LABEL_STEPS}:**" + ("" if steps else " " + NO_DETAIL_LINE), False),
+            *(((steps, True),) if steps else ()),
+            (_labelled(LABEL_EXPECTED, expected or NO_DETAIL_LINE), False),
+            (_labelled(LABEL_ACTUAL, actual or NO_DETAIL_LINE), False)]))
+        evidence = _evidence_text(text("error_text"), *media)
+        sections.append(EVIDENCE_HEADING + "\n"
+                        + _evidence_text(evidence or NO_DETAIL_LINE, notes_text))
+        if not environment:
+            questions.append(BUG_QUESTIONS[0])
+        if not steps:
+            questions.append(BUG_QUESTIONS[1])
+        if not expected or not actual:
+            questions.append(BUG_QUESTIONS[2])
+        if not evidence:
+            questions.append(BUG_QUESTIONS[3])
+    elif category == "feedback":
+        problem, user_story = text("problem"), text("user_story")
+        proposal, alternatives = text("proposal"), text("alternatives")
+        sections.append(FEEDBACK_HEADING + "\n" + _join_lines(
+            [(problem or NO_DETAIL_LINE, False)]
+            + [(_labelled(label, value), False) for label, value in
+               ((LABEL_USER_STORY, user_story), (LABEL_PROPOSAL, proposal),
+                (LABEL_ALTERNATIVES, alternatives)) if value]))
+        acceptance = items("acceptance")
+        if acceptance:
+            sections.append(ACCEPTANCE_HEADING + "\n" + acceptance)
+        context = _evidence_text(text("context"), *media, notes_text)
+        if context:
+            sections.append(CONTEXT_HEADING + "\n" + context)
+        questions.extend(question for value, question in
+                         zip((problem, user_story), FEEDBACK_QUESTIONS) if not value)
+    elif category == "task":
+        work = text("work")
+        scope = SCOPE_SEPARATOR.join(label + value for label, value in
+                                     ((SCOPE_IN_LINE, text("scope_in")), (SCOPE_OUT_LINE, text("scope_out")))
+                                     if value)
+        sections.append(TASK_HEADING + "\n" + _join_lines(
+            [(work or NO_DETAIL_LINE, False)]
+            + [(_labelled(label, value), False) for label, value in
+               ((LABEL_REASON, text("reason_context")), (LABEL_SCOPE, scope), (LABEL_DUE, text("due")))
+               if value]))
+        clean_links = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
+                       for entry in values.get("links", ())[:MAX_DETAIL_ITEMS]]
+        links = "\n".join("- " + line_safe(entry) for entry in clean_links if entry)
+        evidence = _evidence_text(*media, notes_text, links)
+        if evidence:
+            sections.append(TASK_EVIDENCE_HEADING + "\n" + evidence)
+        done = items("done")
+        sections.append(DONE_HEADING + "\n" + (done + "\n" if done else "") + DOD_EVIDENCE_LINE)
+        if not work:
+            questions.append(TASK_WORK_QUESTION)
+    return sections, questions
+
+
+def _sender(item) -> str:
+    return _clean_line(item.sender_name) or UNKNOWN_SENDER
+
+
+def _time(item) -> str:
+    return item.received_at.astimezone().strftime(TIME_FORMAT)
+
+
+def _sender_list(case_messages) -> str:
+    """Distinct senders in time order: up to two names, then "+K" for the rest."""
+    names = list(dict.fromkeys(_sender(item) for item in case_messages))
+    if len(names) >= 3:
+        return f"{names[0]}, {names[1]} +{len(names) - 2}"
+    return ", ".join(names)
+
+
+def _original_text(item, limit) -> str:
+    if not item.text.strip():
+        if item.has_image:
+            return "> " + IMAGE_ONLY_LINE
+        if item.has_document:
+            return "> " + DOCUMENT_ONLY_LINE
+    return _quote(item.text, limit)
+
+
 def format_issue(message: IncomingMessage, classification: Classification | None,
                  tier: str, needs_human: bool, model: str = "qwen3.5:9b", *,
                  case_messages=None, key_message_ids=None, images=(), documents=(), notes=(),
-                 clarify=None, text=None, max_quoted=None) -> Issue:
+                 clarify=None, text=None, max_quoted=None, details=None) -> Issue:
     """Render one issue. `message` is the case's (or topic group's) first message.
+
+    `details=None` preserves the legacy body; an empty mapping enables the type template
+    for trusted tickets, including typed needs-human tickets (12.15).
 
     All `case_messages` are quoted in time order; `key_message_ids` (Assistant
     definition 12.2) only marks the messages the model called key. `images` ((alt, url) pairs) and `notes` are written by code
@@ -207,6 +428,7 @@ def format_issue(message: IncomingMessage, classification: Classification | None
     if not needs_human and (classification is None or not classification.is_valid()
                             or classification.type not in TICKET_TYPES):
         raise ValueError("An issue requires a valid non-noise classification")
+    typed = not needs_human
     fallback_messages = sorted(case_messages or [message],
                                key=lambda item: (item.received_at, item.message_id))
     fallback_messages = [message] + [item for item in fallback_messages if item is not message]
@@ -240,22 +462,14 @@ def format_issue(message: IncomingMessage, classification: Classification | None
     if max_quoted is not None:
         limit = max(limit, MIN_QUOTE_PER_MESSAGE)
     blocks = []
-    for index, item in enumerate(shown, 1):
+    for item in shown:
         link = telegram_link(item)
-        link_text = f"[mở trên Telegram]({link})" if link else "không có link"
-        label = "**Tin gốc**" if len(case_messages) == 1 else f"**Tin {index}**"
+        link_text = f" · [mở trên Telegram]({link})" if link else ""
         mark = " · tin chính" if item.message_id in key_ids else ""
-        blocks.append(
-            f"{label} — {_clean_line(item.sender_name)}, "
-            f"{item.received_at.astimezone().isoformat()} · {link_text}{mark}\n"
-            f"{_quote(item.text, limit)}")
+        blocks.append(f"**{_sender(item)} · {_time(item)}**{link_text}{mark}\n"
+                      f"{_original_text(item, limit)}")
     if hidden:
         blocks.append(f"(còn {hidden} tin khác trong case, xem nhóm Telegram)")
-    case_line = ""
-    if len(case_messages) > 1:
-        case_line = (f"Case: {len(case_messages)} tin trong khoảng "
-                     f"{case_messages[0].received_at.astimezone().isoformat()} – "
-                     f"{case_messages[-1].received_at.astimezone().isoformat()}\n")
     if tier == "rule":
         provenance = "tầng 1 lệnh"
     else:
@@ -264,28 +478,55 @@ def format_issue(message: IncomingMessage, classification: Classification | None
         provenance = f"tầng 2 {sanitize(model, inline=True)}, confidence {confidence}"
     if len(case_messages) > 1:
         provenance += f" · case {len(case_messages)} tin"
-    clarify_block = ""
+
+    def clarify_section(entries):
+        return CLARIFY_HEADING + "\n" + "\n".join(f"- {line_safe(entry)}" for entry in entries)
+
+    clarify_blocks = []
     if clarify is not None and (needs_human or clarify):
         questions = [_clean_line(entry)[:MAX_CLARIFY_CHARS] for entry in clarify
                      if isinstance(entry, str) and entry.strip()][:MAX_CLARIFY]
-        lines = questions or [NEEDS_CLARITY_LINE]
-        clarify_block = "**Cần làm rõ**\n" + "\n".join(f"- {entry}" for entry in lines) + "\n\n"
-    extras = []
+        clarify_blocks.append(clarify_section(questions or [NEEDS_CLARITY_LINE]))
+    media = []
     if images:
-        extras.append("**Ảnh đính kèm**\n" + "\n".join(f"![{alt}]({url})" for alt, url in images))
+        media.append("\n".join(f"![{alt}]({url})" for alt, url in images))
     if documents:
-        links = [f"- [{document_label(name, f'tài liệu {index}')}]({url})"
-                 for index, (name, url) in enumerate(documents, 1)]
-        extras.append("**Tài liệu đính kèm**\n" + "\n".join(links))
-    if notes:
-        extras.append("\n".join(" ".join(note.split()) for note in notes))
-    body = (
-        f"<!-- tg:{message.chat_id}:{message.message_id} -->\n"
-        f"**Tóm tắt:** {summary}\n"
-        + (case_line + "\n" if case_line else "\n")
-        + clarify_block
-        + "\n\n".join(blocks) + "\n\n"
-        + "".join(extra + "\n\n" for extra in extras)
-        + f"---\nPhân loại: {provenance} · tạo tự động bởi tg-triage"
-    )
+        media.append("\n".join(
+            f"{DOCUMENT_BULLET}[{document_label(name, f'tài liệu {index}')}]({url})"
+            for index, (name, url) in enumerate(documents, 1)))
+    clean_notes = [" ".join(note.split()) for note in notes]
+    type_blocks = []
+    category = canonical_category(classification.type) if typed else None
+    if details is not None and category in ("bug", "feedback", "task"):
+        # Move the existing, code-owned attachment Markdown into the category's evidence area.
+        type_blocks, auto_questions = _type_sections(category, details, media, clean_notes)
+        media, clean_notes = [], []
+        questions = []
+        seen = set()
+        for entry in clarify or ():
+            clean = _clean_line(strip_image_marker(entry))[:MAX_CLARIFY_CHARS]
+            if clean and clean not in seen:
+                seen.add(clean)
+                questions.append(clean)
+        for question in auto_questions:
+            key = _clean_line(question)
+            if key not in seen:
+                seen.add(key)
+                questions.append(question)
+        questions = questions[:MAX_CLARIFY]
+        clarify_blocks = []
+        if questions or (needs_human and clarify is not None):
+            clarify_blocks.append(clarify_section(questions or [NEEDS_CLARITY_LINE]))
+    extra_evidence = _evidence_text(*media, "\n".join(clean_notes))
+    if extra_evidence:   # untyped / legacy issue: images, documents and notes under one heading
+        type_blocks = [*type_blocks, EVIDENCE_HEADING + "\n" + extra_evidence]
+    original_title = (f"{ORIGINAL_ICON} {ORIGINAL_TITLE} ({len(case_messages)} tin)"
+                      f" — {_sender_list(case_messages)}, {_time(case_messages[0])}")
+    original = (f"{DETAILS_OPEN}{SUMMARY_OPEN}{original_title}{SUMMARY_CLOSE}\n\n"
+                + "\n\n".join(blocks) + f"\n\n{DETAILS_CLOSE}")
+    sections = [
+        f"<!-- tg:{message.chat_id}:{message.message_id} -->\n{SUMMARY_HEADING}\n{line_safe(summary)}",
+        *type_blocks, *clarify_blocks, original,
+        f"{FOOTER_RULE}\n{SUB_OPEN}Phân loại: {provenance} · tạo tự động bởi tg-triage{SUB_CLOSE}"]
+    body = "\n\n".join(sections)
     return Issue(title, body, labels)
