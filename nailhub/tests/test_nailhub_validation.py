@@ -3,11 +3,124 @@ import unittest
 import json
 from unittest.mock import patch
 from nailhub.browser import posting_from_data
-from nailhub.validation import (FACT_KINDS, NeedsHuman, amounts, dedup_phones, evidence,
-                                        invariant_facts, invariant_title, normalize_extraction, number, proposal, salary)
+from nailhub.validation import (AMOUNT, MONEY, FACT_KINDS, NeedsHuman, amounts, dedup_phones, evidence,
+                                        invariant_facts, invariant_title, normalize_extraction, number,
+                                        numeric_pay_clauses, proposal, salary, source_salary_policy,
+                                        current_address_repair, current_address_state_repair)
 from tests.nailhub_fixtures import extracted, raw_post, settings
 
 class ValidationTests(unittest.TestCase):
+    def test_source_worker_pay_variants_keep_local_units_and_exclude_unresolved_claims(self):
+        cases = [('Bao lương từ 2000$ /tuần', '2000', 'week'),
+                 ('Lương 1.5k~2k/ tuần tùy tay nghề', '2000', 'week'),
+                 ('Bao lương 250 đô la', '250', None),
+                 ('Bao lương 1,500 tuần', '1500', 'week'),
+                 ('mức lương $1,200-$2,000đô la/tuần', '2000', 'week')]
+        for source, high, period in cases:
+            with self.subTest(source=source):
+                pay = source_salary_policy(source)
+                self.assertIsNotNone(pay)
+                self.assertEqual(pay['high'], high)
+                self.assertEqual(pay['period'], period)
+        for source in ('Salary $20/hour. Work 30 or 40 hours/week.',
+                       'Potential income up to $1200/week',
+                       'Bao $1200/week plus tips',
+                       'Tiệm ở Louisiana thu nhập hơn $2M mỗi năm',
+                       'Income $6000 gross per month tip cao.',
+                       'Salary $6000 and up per day.',
+                       'Salary $6000 and up per hour.'):
+            with self.subTest(source=source):
+                self.assertIsNone(source_salary_policy(source))
+        bounded_unit = source_salary_policy('Salary $6000 and up mỗi tháng.')
+        self.assertEqual(bounded_unit['period'], 'month')
+        self.assertEqual(bounded_unit['high'], str(number('6000') * 12 / 52))
+        for nonworker in ('Business income $5000-$7000/week, hiring nail technician, tip cao.',
+                          'Revenue income $5000-$7000/week and up.',
+                          'Rent income $5000-$7000/week and up.'):
+            with self.subTest(nonworker=nonworker):
+                self.assertIsNone(source_salary_policy(nonworker))
+        worker = source_salary_policy('Income $5000-$7000/week for nail technicians, tip cao.')
+        self.assertEqual(worker['high'], '7000')
+        for role in ('Business', 'Rent'):
+            mixed = f'Salary $1500/week and up.\n{role} income $5000-$7000/week.'
+            with self.subTest(role=role):
+                self.assertEqual(source_salary_policy(mixed)['high'], '1500')
+        for source in ('No salary $1000-$1500/week and up.',
+                       'Không bao lương $1000-$1500/tuần, chỉ ăn chia trên ăn chia.'):
+            with self.subTest(negated=source):
+                self.assertIsNone(source_salary_policy(source))
+                with self.assertRaises(NeedsHuman):
+                    salary(source, extracted(source, '$1000-$1500', 'week')['salary'])
+        source = 'Hiring nail technician. Lương $1.800-$2.500/tuần, tùy theo khả năng, trên ăn chia.'
+        post = posting_from_data(raw_post(source))
+        model = extracted(source)
+        model['category'] = {'target': 'JobPosting', 'field': 'content',
+                             'evidence': {'quote': 'Hiring nail technician'}}
+        model['salary_candidates'] = [{'kind': 'worker', 'amount_text': '$1.800-$2.500/tuần',
+            'period': 'week', 'evidence': {'quote': 'Lương $1.800-$2.500/tuần, tùy theo khả năng, trên ăn chia.'},
+            'role': 'nail technician', 'schedule': None}]
+        normalized = normalize_extraction(post, model)
+        self.assertNotIn('salary_candidates', normalized)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(proposal(post, normalized, settings(directory))['fields']['salary_amount'], '2500')
+
+    def test_address_repairs_require_complete_pair_and_resolve_street_direction(self):
+        def post(address, content, *, city='', state='MS', zip_code=''):
+            return posting_from_data(raw_post(content, address=address, city=city,
+                                              state=state, zipCode=zip_code))
+        suite = post('300 N Sharaf Ave, Suite # 106 Red Oak, TX 75154',
+                     'Hiring nail technicians.', state='TX')
+        self.assertEqual(current_address_repair(suite)['city']['value'], 'Red Oak')
+        city_only = post('Lansdowne, PA 19050', 'Salon for sale.', state='PA')
+        self.assertEqual(current_address_repair(city_only)['zip']['value'], '19050')
+        street_direction = post('1138 Church Rd W Southaven, MS 38671',
+                                'Salon in Southaven, Mississippi. ', state='MS')
+        self.assertEqual(current_address_repair(street_direction)['city']['value'], 'Southaven')
+        full_cardinal_city = post('4920 Cypress St West Monroe, LA 71291',
+                                  'Tiệm ở West Monroe, LA cần thợ.', state='LA')
+        self.assertEqual(current_address_repair(full_cardinal_city)['city']['value'], 'West Monroe')
+        self.assertEqual(current_address_repair(post('4920 Cypress St West Monroe, LA 71291',
+            'Hiring nail technicians.', state='LA')), {})
+        city_level_cardinal = post('West Monroe, LA 71291', 'Hiring nail technicians.', state='LA')
+        self.assertEqual(current_address_repair(city_level_cardinal)['city']['value'], 'West Monroe')
+        unproven = post('1701 Mcfarland Boulevard East Tuscaloosa, AL 35404',
+                        'Hiring nail technicians.', state='AL')
+        self.assertEqual(current_address_repair(unproven), {})
+        self.assertEqual(current_address_repair(post('1138 Church Rd W Southaven, MS 38671',
+            'Salon in Memphis, TN 38111.', state='MS')), {})
+        corrected_state = post('Alliance, OH 44601', 'Hiring nail technicians.',
+                               city='Alliance', state='IL', zip_code='44601')
+        self.assertEqual(current_address_state_repair(corrected_state)['state']['value'], 'OH')
+        route = post('4490 U.s. 80 Pearl, MS 39208', 'Tiệm em ở Pearl đang tuyển thợ.')
+        self.assertEqual(current_address_repair(route)['city']['value'], 'Pearl')
+        self.assertEqual(current_address_repair(post('4490 U.s. 80 Pearl, MS 39208',
+            'Tiệm em ở Jackson đang tuyển thợ.')), {})
+        route_state = post('448 Mississippi 12 Starkville, MS 39759',
+                           'Tiệm ở Starkville, Mississippi cần thợ.', state='LA')
+        self.assertEqual({key: item['value'] for key, item in current_address_repair(route_state).items()},
+                         {'city': 'Starkville', 'state': 'MS', 'zip': '39759'})
+        self.assertEqual(current_address_repair(post('448 Mississippi 12 Starkville, MS 39759',
+            'Tiệm ở Starkville, Alabama cần thợ.', state='LA')), {})
+
+    def test_valid_stored_phone_survives_model_placeholder_and_publisher_fallback(self):
+        source = 'Hiring nail technicians. Call (Cell) Phone or John.'
+        post = posting_from_data(raw_post(source))
+        data = extracted(source, None, None, 'none', 'negotiated')
+        data['location'] = {'phone_primary': {'value': 'Phone', 'evidence': {'quote': 'Phone'}},
+                            'phone_other': {'value': 'John', 'evidence': {'quote': 'John'}}}
+        self.assertEqual(normalize_extraction(post, data)['location'], {})
+        changed_source = source + ' New phone: 770-555-0101.'
+        changed_post = posting_from_data(raw_post(changed_source))
+        changed_data = extracted(changed_source, None, None, 'none', 'negotiated')
+        changed_data['location'] = {'phone_primary': {'value': 'Phone', 'evidence': {'quote': 'Phone'}}}
+        self.assertIn('phone_primary', normalize_extraction(changed_post, changed_data)['location'])
+        with tempfile.TemporaryDirectory() as directory:
+            placeholder = posting_from_data(raw_post('Hiring nail technicians.', businessName='BaoNail.com'))
+            intended = proposal(placeholder, extracted(placeholder.content, None, None, 'none', 'negotiated'),
+                                settings(directory))
+            self.assertEqual(intended['fields']['salon'], 'nailhub.ai')
+            self.assertFalse(intended['field_corrections']['salon']['actual_business_name_known'])
+
     def test_owner_default_start_date_only_becomes_processing_utc_date(self):
         with tempfile.TemporaryDirectory() as directory, patch('nailhub.validation.processing_start_date',return_value='2026-10-12T00:00:00'):
             for start in ('0001-01-01T00:00:00',None,'2020-01-01T00:00:00','2030-01-01T00:00:00'):
@@ -35,6 +148,13 @@ class ValidationTests(unittest.TestCase):
                 a,b,r=amounts(raw);self.assertEqual(str(a),low);self.assertEqual(str(b),high);self.assertTrue(r)
         for invalid in ('1,2345','NaN','1.234.56','10K-6K','-12','0'):
             with self.assertRaises(NeedsHuman): amounts(invalid)
+        self.assertEqual(amounts('$2M')[0], number('2000000'))
+        for text, expected in (('$7000 monthly', '$7000'), ('$20 monthly', '$20'),
+                               ('$1000 manicurist', '$1000')):
+            with self.subTest(text=text):
+                self.assertEqual(AMOUNT.match(text).group().strip(), expected)
+                self.assertEqual(MONEY.search(text).group(), expected)
+        self.assertEqual(numeric_pay_clauses('Salary $7000 monthly')[0].group(), '$7000 monthly')
 
     def test_exact_week_month_year_biweekly_conversion(self):
         for source,raw,period,wanted in [('Bao $1200/week','$1200','week','1200'),
@@ -75,7 +195,24 @@ class ValidationTests(unittest.TestCase):
             value['schedule']['days_per_week']='6'
             with self.assertRaises(NeedsHuman): salary(source,value)
         source='Bao $20/hour'
-        with self.assertRaises(NeedsHuman): salary(source,extracted(source,'$20','hour')['salary'])
+        self.assertEqual(salary(source,extracted(source,'$20','hour')['salary'])['mode'],'negotiated')
+
+    def test_hourly_requires_one_certain_worker_weekly_schedule(self):
+        for source in ('50% commission or $17.50 hourly pay',
+                       'Salary $20/hour. Salon opening hours: 40 hours/week.',
+                       'Salary $20/hour. Work 30 hours/week or 40 hours/week.',
+                       'Salary $20/hour. Position 1: 5 days/week, 8 hours/day. '
+                       'Position 2: 4 days/week, 8 hours/day.'):
+            with self.subTest(source=source):
+                self.assertEqual(salary(source,extracted(source,'$20','hour')['salary'])['mode'],'negotiated')
+        source='Salary $20/hour. Work 40 hours/week.'
+        value=extracted(source,'$20','hour')['salary']
+        value['evidence']={'quote':'Salary $20/hour.'}
+        value['schedule']={'days_per_week':None,'hours_per_day':None,'hours_per_week':'40',
+                           'evidence':{'quote':'Work 40 hours/week.'}}
+        self.assertEqual(salary(source,value)['low'],'800')
+        value['schedule']['hours_per_week']='30'
+        with self.assertRaises(NeedsHuman): salary(source,value)
 
     def test_hidden_and_negotiated_need_source_evidence(self):
         source='Hiring technician. Call us.';value=extracted(source,None,None,'none','hidden')['salary']
@@ -206,8 +343,12 @@ class ValidationTests(unittest.TestCase):
             for key in ('salon','address','city','state','zip','phone_primary'):
                 fields={**post.fields,key:''}
                 with self.subTest(missing=key):
-                    with self.assertRaises(NeedsHuman):proposal(type(post)(post.id,post.status,post.category,post.content,fields),
-                                                               extracted(post.content),cfg)
+                    candidate=type(post)(post.id,post.status,post.category,post.content,fields)
+                    if key == 'salon':
+                        self.assertEqual(proposal(candidate,extracted(post.content),cfg)['fields']['salon'],
+                                         'nailhub.ai')
+                    else:
+                        with self.assertRaises(NeedsHuman):proposal(candidate,extracted(post.content),cfg)
             for key,value in (('zip','123'),('zip','ABCDE'),('state','Georgia'),
                               ('phone_primary','111-111-1111'),('phone_primary','4045550100 or 7705550100')):
                 fields={**post.fields,key:value}

@@ -45,7 +45,7 @@ class TransientTests(unittest.IsolatedAsyncioTestCase):
             timer=threading.Timer(0.03,stop.set);timer.start()
             try:
                 with patch('nailhub.model.MODEL_LOCK',lock):
-                    with self.assertRaises(LockStopped):await service.process(SimpleNamespace(),post)
+                    with self.assertRaises(LockStopped):await service.process(SimpleNamespace(verify_listing_age=AsyncMock()),post)
             finally:timer.cancel();marker.unlink()
             self.assertEqual(service.state.get(post.id)['state'],'analyzing')
             model.opener.assert_not_called()
@@ -58,7 +58,7 @@ class TransientTests(unittest.IsolatedAsyncioTestCase):
             model=NailHubModel(cfg,opener=Mock());service=Service(cfg,model=model)
             service.state.observe(post.id,post.fingerprint,post.snapshot())
             with patch('nailhub.model.MODEL_LOCK',ModelLock(bad)),self.assertLogs('nailhub.service',level='ERROR') as logs:
-                with self.assertRaises(LockUnavailable):await service.process(SimpleNamespace(),post)
+                with self.assertRaises(LockUnavailable):await service.process(SimpleNamespace(verify_listing_age=AsyncMock()),post)
             self.assertEqual(service.state.get(post.id)['state'],'analyzing')
             self.assertTrue(any('model_lock' in record.getMessage() for record in logs.records))
             model.opener.assert_not_called()
@@ -73,7 +73,7 @@ class TransientTests(unittest.IsolatedAsyncioTestCase):
             async def scan():
                 calls.append(service.state.get(post.id)['state'])
                 if len(calls)==1:
-                    await service.process(SimpleNamespace(),post)
+                    await service.process(SimpleNamespace(verify_listing_age=AsyncMock()),post)
                 stop.set()
                 return 'retry reached'
             clock=FakeClock()

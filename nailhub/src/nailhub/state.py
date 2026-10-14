@@ -97,6 +97,36 @@ class State:
                        (post_id, fingerprint, json.dumps(original, ensure_ascii=False)))
             return True
 
+    def skip_old(self, post_id, fingerprint, original, receipt, age_days):
+        """Record a proven old listing without entering the manual-review queue."""
+        if (type(age_days) is not int or age_days <= 45
+                or not isinstance(receipt, dict) or receipt.get('id') != post_id
+                or not isinstance(receipt.get('source_hash'), str)):
+            raise NeedsHuman('old listing proof is incomplete')
+        details = json.dumps({'kind': 'age', 'field': 'listing.Created',
+                              'visible_created': receipt['visible_created'],
+                              'raw_created': receipt['created'],
+                              'observed_at': receipt['observed_at'],
+                              'source_hash': receipt['source_hash'],
+                              'age_days': age_days}, sort_keys=True)
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            old = db.execute('SELECT * FROM posts WHERE id=?', (post_id,)).fetchone()
+            if old and old['state'] in ('approved', 'uncertain', 'before_save',
+                                        'before_approve', 'before_publish', 'category_before_save'):
+                return False  # Never unlock or overwrite a protected publication checkpoint.
+            if old:
+                # Keep the prior detail snapshot/hash. The listing DTO omits
+                # protected detail metadata and must not replace its CAS proof.
+                db.execute("UPDATE posts SET state='skipped-age',reason=?,details=? WHERE id=?",
+                           ('listing Created is older than 45 days', details, post_id))
+            else:
+                db.execute("INSERT OR REPLACE INTO posts(id,hash,state,original,expected,reason,details) "
+                           "VALUES(?,?,'skipped-age',?,'{}',?,?)",
+                           (post_id, fingerprint, json.dumps(original, ensure_ascii=False),
+                            'listing Created is older than 45 days', details))
+            return True
+
     def claim_post(self, post_id):
         with self.connection() as db:
             return db.execute("UPDATE posts SET state='analyzing' WHERE id=? AND state='queued'", (post_id,)).rowcount == 1

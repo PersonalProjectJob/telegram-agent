@@ -1,12 +1,13 @@
 """Source-backed category projection; enums verified against NailHub's real form/API."""
 import re
-from .validation import NeedsHuman, EvidenceError, folded, evidence
+from .validation import NeedsHuman, EvidenceError, MONEY, folded, evidence
 
 SUPPORTED_CATEGORIES = ('JobPosting', 'SalonForSale', 'Portfolio')
 CATEGORY_LABELS = dict(zip(SUPPORTED_CATEGORIES, ('Cần thợ nail', 'Sang nhượng tiệm', 'Tìm việc')))
 APPROVED_CATEGORY_REPAIRS = frozenset(('987c7202-2124-4e6d-90d0-05e55dff1f33',
                                      '03908741-40a8-4579-b941-374a1a9c54d2'))
 SALE = re.compile(r'\b(?:ban|sang(?:\s+nhuong)?|chuyen\s+nhuong|nhuong\s+lai)\s+(?:tiem|salon)\b'
+                  r'|\bcan\s+(?:tim\s+)?nguoi\s+mua\s+tiem\b'
                   r'|\b(?:nail\s+)?(?:salon|business)\s+for\s+(?:sale|transfer)\b'
                   r'|\bselling\s+(?:(?:a|my|our)\s+)?(?:nail\s+)?salon\b')
 NEGATIVE_SALE = re.compile(r'\b(?:not|never|no\s+longer)\s+(?:currently\s+)?for\s+(?:sale|transfer)\b'
@@ -14,7 +15,8 @@ NEGATIVE_SALE = re.compile(r'\b(?:not|never|no\s+longer)\s+(?:currently\s+)?for\
                            r'|\b(?:tiem|salon)\s+(?:khong|chua)\s+(?:ban|sang)\b')
 NEGATIVE_RECRUIT = re.compile(r'\b(?:not|never|no\s+longer)\s+(?:currently\s+)?(?:hiring|recruiting|looking\s+for)\b'
                               r'|\b(?:khong|chua)\s+(?:can|tuyen|tim)\s+tho\b')
-RECRUIT = re.compile(r'\b(?:can(?:\s+tim)?|tuyen(?:\s+dung)?|tim)\s+tho\b'
+RECRUIT = re.compile(r'\b(?:can(?:\s+tim)?|tuyen(?:\s+dung)?|tim)\s+'
+                     r'(?:(?:gap|rat\s+nhieu|nhieu|them)\s+){0,2}(?:\d+\s+)?tho\b'
                      r'|\b(?:hiring|recruiting|looking\s+for|need(?:ed)?|wanted)\s+(?:(?:a|nail|more)\s+)*(?:technicians?|workers?|staff)\b'
                      r'|\bhiring\s+nail\s+techs?\b'
                      r'|\bnail\s+technicians?\s+wanted\b')
@@ -55,7 +57,13 @@ def category_proposal(post, suggestion=None):
             match = re.match(r'\s*(?:(?:tho\s+nail\s+)?can\s+)?tim\s+viec\b', text)
             if match:
                 found['Portfolio'].append({'field': field, 'quote': _quote(raw, match)})
-    if found['SalonForSale'] and not negative_sale:
+    stale_sale_title = (found['SalonForSale'] and all(item['field'] == 'title' for item in found['SalonForSale'])
+                        and any(item['field'] == 'content' for item in found['JobPosting'])
+                        and not MONEY.search(post.fields.get('title', ''))
+                        and not re.search(r'\b(?:asking|sale)\s+price\b|\b(?:gia\s+ban|gia\s+sang)\b'
+                                          r'|\b(?:price|gia)\s*[:=]?\s*\$?\s*\d',
+                                          folded(post.content)))
+    if found['SalonForSale'] and not negative_sale and not stale_sale_title:
         target = 'SalonForSale'
     elif not any(found.values()) and suggestion is not None:
         target, model_field, model_quote = model_category(post, suggestion)
@@ -71,7 +79,7 @@ def category_proposal(post, suggestion=None):
     else:
         target = 'Portfolio' if found['Portfolio'] else 'JobPosting'
     result = {'current': post.category, 'target': target, 'source_hash': post.fingerprint,
-              'evidence': found[target][:4], 'policy': 'Owner: original intent; explicit salon sale precedes recruitment'}
+              'evidence': found[target][:4], 'policy': 'Owner: original intent; explicit business sale precedes recruitment'}
     if 'model_quote' in locals():
         result['model_evidence'] = {'target': target, 'field': model_field, 'evidence': {'quote': model_quote}}
     return result

@@ -10,13 +10,14 @@ import time
 import os
 import re
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from .credentials import load_credentials
-from .validation import NeedsHuman, Posting, PHONE, SENTINEL_START_DATE, phone_key, processing_start_date
+from .validation import (NeedsHuman, Posting, PHONE, SENTINEL_START_DATE, phone_key,
+                         processing_start_date, publisher_branding_rewrite, unknown_business_name)
 from .categories import (SUPPORTED_CATEGORIES, CATEGORY_LABELS, category_change_valid,
                          category_repair_valid)
 from .publication import eligible, rewrite_valid, publication_valid, approval_readback, unchanged_valid_date
@@ -30,7 +31,96 @@ TYPES = {'Guaranteed': 'weekly', 'NoGuaranteed': 'hidden', 'Negotiable': 'negoti
 TRANSLATION_PATH = '/api/v1/Postings/GetTranslation'
 PRESERVED = ('coverImage', 'images', 'videoUrls', 'specialNotes', 'isPublic', 'country', 'isUrgent',
              'pricePeriod', 'minPrice', 'maxPrice', 'priceNegotiable', 'priceCurrency', 'startDate', 'endDate',
-             'isVIP', 'publishedAt', 'expiresAt', 'hashtags', 'extraInformation', 'yearsInOperation', 'workingHours')
+             'isVIP', 'publishedAt', 'expiresAt', 'hashtags', 'extraInformation', 'yearsInOperation', 'workingHours',
+             'numberOfOpening', 'workSchedule', 'skills', 'workingExperience', 'applyByDateTime')
+LISTING_HEADERS_10 = ('Title','Business Name','Posted By','State','City','Zip Code',
+                      'Category','Status','Created','Actions')
+LISTING_HEADERS_12 = ('Title','Business Name','Posted By','State','City','Zip Code',
+                      'Category','Schedule','Apply By','Status','Created','Actions')
+LISTING_TIMEZONE = timezone(timedelta(hours=7), 'Asia/Saigon')
+MAX_POST_AGE_DAYS = 45
+
+
+class OldPosting(Exception):
+    """A verified listing date is outside the Owner's approval window."""
+
+    def __init__(self, receipt, age_days):
+        self.receipt, self.age_days = receipt, age_days
+        super().__init__('posting is older than 45 days')
+
+
+def listing_date_receipt(raw, visible_created, *, observed_at=None):
+    """Bind the displayed Created day to the same identified listing response row."""
+    created = raw.get('created')
+    if (not isinstance(created, str) or not re.fullmatch(
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?', created)
+            or not isinstance(visible_created, str)
+            or not re.fullmatch(r'\d{1,2}/\d{1,2}/\d{4}', visible_created)):
+        raise NeedsHuman('listing Created date is missing or outside verified format')
+    try:
+        raw_day = datetime.fromisoformat(created).date()
+        visible_day = datetime.strptime(visible_created, '%m/%d/%Y').date()
+    except ValueError:
+        raise NeedsHuman('listing Created date is invalid') from None
+    if raw_day.year == 1 or raw_day != visible_day:
+        raise NeedsHuman('listing Created date differs from identified response')
+    post = posting_from_data(raw)
+    shared = {'id': post.id, 'status': post.status, 'category': post.category,
+              'content': post.content, 'title': post.fields['title']}
+    # Listing DTOs omit protected detail metadata. Compare only fields the
+    # identified listing response actually returned; never hash it as detail.
+    for remote, local in (('businessName','salon'), ('address','address'),
+                          ('city','city'), ('state','state'), ('zipCode','zip')):
+        if remote in raw:
+            shared[local] = post.fields[local]
+    return {'id': post.id, 'source_hash': post.fingerprint, 'created': created,
+            'visible_created': visible_created,
+            'shared_source': shared,
+            'observed_at': observed_at or datetime.now(LISTING_TIMEZONE).isoformat()}
+
+
+def listing_age_days(post, receipt, *, today=None):
+    """Compare the verified visible calendar day with today's Asia/Saigon day."""
+    if (not isinstance(receipt, dict) or receipt.get('id') != post.id
+            or not isinstance(receipt.get('source_hash'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', receipt['source_hash'])):
+        raise NeedsHuman('listing Created proof does not match current posting source')
+    shared = receipt.get('shared_source')
+    actual = {'id': post.id, 'status': post.status, 'category': post.category,
+              'content': post.content, 'title': post.fields.get('title', '')}
+    for local in ('salon','address','city','state','zip'):
+        actual[local] = post.fields.get(local, '')
+    allowed = {'id','status','category','content','title','salon','address','city','state','zip'}
+    if (not isinstance(shared, dict) or not {'id','status','category','content','title'}.issubset(shared)
+            or not set(shared).issubset(allowed)
+            or any(actual.get(key) != value for key, value in shared.items())):
+        raise NeedsHuman('listing Created proof differs from shared detail source')
+    shown = receipt.get('visible_created')
+    if not isinstance(shown, str) or not re.fullmatch(r'\d{1,2}/\d{1,2}/\d{4}', shown):
+        raise NeedsHuman('listing Created proof is unavailable')
+    try:
+        created_day = datetime.strptime(shown, '%m/%d/%Y').date()
+    except ValueError:
+        raise NeedsHuman('listing Created proof is invalid') from None
+    raw_created = receipt.get('created')
+    observed_at = receipt.get('observed_at')
+    if (not isinstance(raw_created, str) or not re.fullmatch(
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?', raw_created)
+            or not isinstance(observed_at, str)):
+        raise NeedsHuman('listing Created proof lacks source date or observation time')
+    try:
+        raw_day = datetime.fromisoformat(raw_created).date()
+        observed = datetime.fromisoformat(observed_at)
+    except ValueError:
+        raise NeedsHuman('listing Created proof has invalid source date or observation time') from None
+    if raw_day != created_day or observed.utcoffset() != timedelta(hours=7):
+        raise NeedsHuman('listing Created proof differs from source or Asia/Saigon observation')
+    if created_day.year == 1:
+        raise NeedsHuman('listing Created proof is a sentinel date')
+    current_day = today if today is not None else datetime.now(LISTING_TIMEZONE).date()
+    if not isinstance(current_day, date) or created_day > current_day:
+        raise NeedsHuman('listing Created day is in the future or processing date is invalid')
+    return (current_day - created_day).days
 
 
 def same_form_value(key, value, source):
@@ -234,6 +324,7 @@ class Browser:
         self.config, self.page = config, page
         self.manager = self.context = None
         self.current = None
+        self.age_receipts = {}
         self.check_action = lambda: None
 
     async def __aenter__(self):
@@ -359,15 +450,16 @@ class Browser:
         await self.ready()
         data = await self._navigate(self.config.url, LIST_PATH)
         results, seen = [], set()
+        self.age_receipts = {}
         for page_number in range(1, self.config.max_pages + 1):
             if (not isinstance(data, dict) or not isinstance(data.get('items'), list)
                     or data.get('pageNumber') != page_number or type(data.get('hasNextPage')) is not bool):
                 raise NeedsHuman('unverified listing response')
-            for raw in data['items']:
-                post = posting_from_data(raw)
+            for post, _, receipt in await self._verified_listing_rows(data):
                 if post.id in seen:
                     raise NeedsHuman('duplicate posting identity across pages')
                 seen.add(post.id)
+                self.age_receipts[post.id] = receipt
                 if eligible(post):
                     results.append(post)
             if not data['hasNextPage']:
@@ -380,7 +472,84 @@ class Browser:
                     raise NeedsHuman('pagination readiness mismatch')
                 await next_button.click()
             data = await self._json(await received.value)
+            await self.page.wait_for_load_state('networkidle')
         return results
+
+    async def _verified_listing_rows(self, data):
+        """Bind every response item and Created date to its visible table row."""
+        table = await self.one('table')
+        headers = tuple(await table.locator('thead th').all_inner_texts())
+        if headers not in (LISTING_HEADERS_10, LISTING_HEADERS_12):
+            raise NeedsHuman('listing table columns differ from verified contract')
+        status_index, created_index = (7, 8) if headers == LISTING_HEADERS_10 else (9, 10)
+        rows = table.locator('tbody > tr')
+        items = data['items']
+        if items:
+            await rows.nth(len(items) - 1).wait_for(state='visible', timeout=30000)
+        if await rows.count() != len(items):
+            raise NeedsHuman('listing table rows differ from identified response')
+        bound = []
+        compact = lambda text: ' '.join(str(text).split())
+        for index, raw in enumerate(items):
+            post = posting_from_data(raw)
+            row = rows.nth(index)
+            cells = await row.locator('td').all_inner_texts()
+            expected = [listing_title(raw['title']), raw.get('businessName') or '-',
+                raw.get('postedByUserName') or raw.get('postedByName') or '-',
+                raw.get('state') or '-', raw.get('city') or '-', raw.get('zipCode') or '-',
+                raw['postingCategory'], raw['status']]
+            visible = [*cells[:7], cells[status_index]] if len(cells) == len(headers) else []
+            if [compact(value) for value in visible] != [compact(value) for value in expected]:
+                raise NeedsHuman('listing visible row differs from identified response')
+            receipt = listing_date_receipt(raw, cells[created_index].strip())
+            bound.append((post, row, receipt))
+        return bound
+
+    async def verify_listing_age(self, post, *, fresh=False):
+        """Return source-bound proof or reject an old, unknown, or changed posting."""
+        if fresh:
+            page = await self.page.context.new_page()
+            try:
+                reader = Browser(self.config, page=page)
+                receipt = await reader.listing_receipt(post.id)
+            finally:
+                await page.close()
+        else:
+            receipt = self.age_receipts.get(post.id)
+        age_days = listing_age_days(post, receipt)
+        if age_days > MAX_POST_AGE_DAYS:
+            raise OldPosting(receipt, age_days)
+        return receipt
+
+    async def listing_receipt(self, post_id):
+        """Fresh identified listing-date read, stopping at the target row."""
+        if not isinstance(post_id, str) or not UUID.fullmatch(post_id):
+            raise NeedsHuman('stable UUID identity required for listing Created proof')
+        await self.ready()
+        data = await self._navigate(self.config.url, LIST_PATH)
+        seen = set()
+        for page_number in range(1, self.config.max_pages + 1):
+            if (not isinstance(data, dict) or not isinstance(data.get('items'), list)
+                    or data.get('pageNumber') != page_number or type(data.get('hasNextPage')) is not bool):
+                raise NeedsHuman('unverified listing response')
+            for item, _, receipt in await self._verified_listing_rows(data):
+                if item.id in seen:
+                    raise NeedsHuman('duplicate posting identity across pages')
+                seen.add(item.id)
+                if item.id == post_id:
+                    return receipt
+            if not data['hasNextPage']:
+                raise NeedsHuman('identified posting is missing from verified listing')
+            if page_number == self.config.max_pages:
+                raise NeedsHuman('listing exceeds configured page bound; increase after review')
+            async with self.page.expect_response(lambda response: self._response(response, LIST_PATH)) as received:
+                next_button = await self.control('next_page')
+                if not await next_button.is_enabled():
+                    raise NeedsHuman('pagination readiness mismatch')
+                await next_button.click()
+            data = await self._json(await received.value)
+            await self.page.wait_for_load_state('networkidle')
+        raise NeedsHuman('identified posting is missing from verified listing')
 
     async def read(self, post_id):
         if not isinstance(post_id, str) or not UUID.fullmatch(post_id):
@@ -404,36 +573,20 @@ class Browser:
         """Actual frontend rejects sequential GUID deep links; use its verified row View UI."""
         data = await self._navigate(self.config.url, LIST_PATH)
         seen = set()
-        headers = ['Title','Business Name','Posted By','State','City','Zip Code','Category','Status','Created','Actions']
-        compact = lambda text: ' '.join(str(text).split())
         for page_number in range(1, self.config.max_pages+1):
             if (not isinstance(data, dict) or not isinstance(data.get('items'), list)
                     or data.get('pageNumber') != page_number or type(data.get('hasNextPage')) is not bool):
                 raise NeedsHuman('unverified listing response')
-            items = data['items']
-            for raw in items:
-                identified = posting_from_data(raw)
+            bound = await self._verified_listing_rows(data)
+            for identified, _, _ in bound:
                 if identified.id in seen:
                     raise NeedsHuman('duplicate posting identity across pages')
                 seen.add(identified.id)
-            table = await self.one('table')
-            if await table.locator('thead th').all_inner_texts() != headers:
-                raise NeedsHuman('listing table columns differ from verified contract')
-            rows = table.locator('tbody > tr')
-            if await rows.count() != len(items):
-                raise NeedsHuman('listing table rows differ from identified response')
             target = None
-            for index, raw in enumerate(items):
-                row = rows.nth(index)
-                cells = await row.locator('td').all_inner_texts()
-                expected = [listing_title(raw['title']), raw.get('businessName') or '-',
-                    raw.get('postedByUserName') or raw.get('postedByName') or '-',
-                    raw.get('state') or '-', raw.get('city') or '-', raw.get('zipCode') or '-',
-                    raw['postingCategory'], raw['status']]
-                if len(cells) != 10 or [compact(value) for value in cells[:8]] != [compact(value) for value in expected]:
-                    raise NeedsHuman('listing visible row differs from identified response')
-                if raw['id'] == post_id:
+            for identified, row, receipt in bound:
+                if identified.id == post_id:
                     target = row
+                    self.age_receipts[post_id] = receipt
             if target is not None:
                 button = target.get_by_role('button', name='View', exact=True)
                 await button.wait_for(state='visible')
@@ -582,6 +735,7 @@ class Browser:
 
     async def edit_and_rewrite(self, post, changes):
         self._live(post)
+        await self.verify_listing_age(post, fresh=True)
         await self._open_edit(post)
         await self.select_category(post, changes.get('category', post.category))
         await self._apply_changes(post, changes)
@@ -592,7 +746,20 @@ class Browser:
         if not await (await self.control('ai')).is_enabled():
             raise NeedsHuman('AI completion unverified')
         title = await (await self._field('title')).input_value()
-        content = await (await self.control('editor')).inner_text()
+        editor = await self.control('editor')
+        content = await editor.inner_text()
+        current_salon = post.fields.get('salon', '').strip()
+        if ((not current_salon or unknown_business_name(current_salon))
+                and changes.get('salon', '').strip().casefold() == 'nailhub.ai'):
+            branded = publisher_branding_rewrite(
+                post.fields.get('title', '') + '\n' + post.content, content,
+                changes.get('category', post.category))
+            if branded != content:
+                self.check_action()
+                await editor.fill(branded)
+                if canonical_text(await editor.inner_text()) != canonical_text(branded):
+                    raise NeedsHuman('publisher branding edit was not retained by the AI editor')
+                content = branded
         return title, canonical_text(content)
 
     async def assert_fresh(self, post):
@@ -614,6 +781,7 @@ class Browser:
                 raise NeedsHuman('approved category repair is not authorized')
         else:
             self._live(post)
+            await self.verify_listing_age(post, fresh=True)
         await self.authenticated()
         await self.assert_fresh(post)
         # Abort a UI request which would silently drop a protected field, before it reaches NailHub.
@@ -653,6 +821,7 @@ class Browser:
         self._live(post)
         if not publication_valid(post, expected):
             raise NeedsHuman('publication transition is not authorized')
+        await self.verify_listing_age(post, fresh=True)
         await self._open_edit(post)
         editor = await self.control('editor')
         if canonical_text(await editor.inner_text()) != post.content:
@@ -695,6 +864,8 @@ class Browser:
             raise NeedsHuman('saved post changed before approval')
         await self.action_click('approve')
         await (await self.control('approve_dialog')).wait_for(state='visible')
+        await self.verify_listing_age(post, fresh=True)
+        self.check_action()
         async with self.page.expect_response(lambda r: self._response(r, LIST_PATH + '/' + post.id + '/status', 'PATCH')) as received:
             await self.action_click('approve_confirm')
         response = await received.value

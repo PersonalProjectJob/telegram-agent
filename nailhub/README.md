@@ -19,6 +19,24 @@ JSON with exactly email/password keys. Never store them or profiles in Git.
 Live mode still requires verified contract evidence and the verified numeric
 Owner binding. Deployment isolation does not grant new website write authority.
 
+## Current handoff — 2026-10-14
+
+Business source of truth: [NailHub business workflow v1.0.8](../Docs/01-product/nailhub-postings-noissue_business_261013_v1.0.0.md).
+Agents working on this package must first read the [module agent instructions](src/nailhub/AGENTS.md),
+including BR-01…14, BUG-01…09 and the source regression matrix. D-01…03 are now Owner-confirmed;
+D-04/05 retain actual location uncertainty only. The controlled rerun closed with reviewed standalone deployments:30completed (29Draft approvals +1existingApproved publication),16age-skipped,1genuine salon-address hold and3protected historic uncertain records.
+BR-13 skips posts older than45 calendar days using the NailHub listing date; BR-14 uses an audited nailhub.ai publisher
+label only after real source names are exhausted, and corrects its localized post-AI introduction.
+Markdown is not automatically consumed by the extraction model; deployed prompt/code and live evidence are separate.
+The current branding editor preserves other plain text but can flatten rich-text formatting; do not claim HTML preservation.
+Final all50 fresh source/readback and protected116 DB-row audit passed with no Admin/AI mutations; the periodic scan is resumed. The local Python738-test suite and independent114tests passed;46actual captured responses were replayed offline against their sources. Standalone imports/hashes and live UI evidence are separate checks. See Businessv1.0.8/Masterv1.0.25 for the separate controlled-run counts and private evidence. No issue/commit/push for these additions yet.
+
+Production runs as the standalone **tg-nailhub** service (config `/etc/nailhub/nailhub.toml`, package `nailhub`).
+The earlier optional listener integration (`tg_triage.nailhub`) no longer exists; do not reintroduce it.
+No second Telegram instance sharing another session is authorized. Use the latest
+[Master handoff](../Docs/00-master/nailhub-postings-noissue_master_261012_v1.0.0.md) and inspect the actual release before deploying.
+(The 738/114 test counts above are from the pre-split main release, not from this tree.)
+
 ## Contract and write gates
 
 Source used read-only: the-nail-hub/frontend PostingManagement, PostingDetailsDialog,
