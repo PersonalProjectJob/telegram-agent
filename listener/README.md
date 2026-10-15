@@ -231,6 +231,23 @@ For reviewed image-caption fixtures, select `--case image_caption_context --imag
 
 Technical vision-partition failures can create `context_pending` notice records for unclassified source components. These are not ticket-root authority. Exact sent-notice/pending-source proof routes a reply into fresh intake; see TG-12/TG-16. Preserve original case/group accounting and do not reset reservations to force a retry.
 
+## Reformat an existing ticket
+
+Use `python scripts/reformat-telegram-issue.py --input /path/to/reviewed-source.json --output /path/to/preview.json`
+from repository root. Input contains `category`, `title`, `summary`, `sources` (IncomingMessage fields with
+timezone-aware ISO `received_at`), `details`, and optional `images`/`documents` URL pairs. Only include
+reviewed sources belonging to that ticket. The tool imports the same `format_issue` used by the daemon,
+always enables the category template, and marks provenance as manual confirmation.
+
+Review the preview, then append `--apply --repo owner/repo --issue NUMBER --expected-body-sha256 SHA`
+where SHA is the UTF-8 SHA-256 of the current GitHub body. The tool validates the existing source marker,
+uses GET/PATCH on that exact issue, preserves unrelated labels, and verifies the result. It cannot create
+a ticket or send a Telegram reply. Read back after a failed/uncertain PATCH before retrying. Source binding
+repairs require a separate reviewed maintenance operation; this command does not alter SQLite or source history.
+Never write a replacement body by hand for reprocessing: supply reviewed structured fields to this renderer.
+
+Offline checks: `python scripts/test_reformat_telegram_issue.py`.
+
 ## Changelog
 
 | Version | Date/time (Asia/Saigon) | Author | Change |

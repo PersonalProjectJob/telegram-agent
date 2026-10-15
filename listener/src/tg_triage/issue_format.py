@@ -470,7 +470,9 @@ def format_issue(message: IncomingMessage, classification: Classification | None
                       f"{_original_text(item, limit)}")
     if hidden:
         blocks.append(f"(còn {hidden} tin khác trong case, xem nhóm Telegram)")
-    if tier == "rule":
+    if tier == "manual":
+        provenance = "xác nhận thủ công"
+    elif tier == "rule":
         provenance = "tầng 1 lệnh"
     else:
         confidence = (f"{classification.confidence:.2f}"
