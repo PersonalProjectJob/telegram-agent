@@ -1,6 +1,6 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.0.2 · **Updated** 2026-10-15 22:26 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.1.0 · **Updated** 2026-10-15 23:29 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
@@ -122,6 +122,18 @@ Test the production Pipeline, Store and provider entry paths with fake GitHub/Te
 
 **Expected Result**: the clear existing-setting bug is actionable without demanding platform/logs/full reproduction; vague object/behavior gets a focused question. Do not change confidence thresholds, fixture labels or source partition assertions. Do not invent any unknown debugging facts.
 
+### TC-10: Image-caption regression acceptance
+
+Production-path fixtures in `listener/tests/test_thinking_image_context.py` cover: captioned image + long backend Q&A + ack; lone caption image; fair marked excerpts with all IDs/reply refs; uncertain image group beside independent task/chat; image-reply partition contradiction; unavailable pixels/pure questions; cloud-image-consent false; explicit command failure/type; exact pending notice/source proof and fresh reply intake preserving old rows/dedup. Existing image tests now check text-only classification with unavailable-pixel markers and scoped failure instead of asserting a whole-case fallback ticket.
+
+Opt-in actual-image smoke (fake GitHub/Telegram/upload, memory SQLite):
+
+```text
+python scripts/telegram-thinking-model-smoke.py --config /etc/tg-triage/listener.toml --case image_caption_context --image-path /path/to/reviewed.jpg --sources-fixture /path/to/ignored-sources.json
+```
+
+The source fixture is optional; exact historical source export and pixels remain ignored/local and are never committed. Assert one actionable task/feedback for source442, matching reply, grounded Salon/visibility/selected Chat only context, no unneeded design-layout/deadline/ordering questions, source443 Q&A and444 ack classified chat/noise. Actual provider transport must receive the exact image SHA under existing consent and remain within8000 text bytes. Reports expose sanitized generated wording, JSON diagnostics and counts, never private reasoning. Run all four earlier model cases too. No real tickets/notices/live DB replay. Code tests alone do not establish vision grounding; failed semantic previews remain evidence until corrected package proof passes.
+
 ## Performance Benchmarks
 
 Semantic model work has a shared 40-second deadline including model-lock queue, bounded DNS, TCP/TLS and response reading; each attempted model request gets at most 20 seconds of remaining time. Two attempts total, three logical scoped retrieval batches and conservative 8000 UTF-8 text bytes per request. Source-role decisions cap 512 output tokens; complete topic/followup drafts retain configured output limits. Images have provider-specific token costs outside the text bound. Attachment/GitHub/Telegram operations keep their existing timeouts: **40 seconds is not an end-to-end ticket/reply SLA**. Assert budgets with deterministic clocks plus real queue/DNS stop tests; small live-model smoke is not p95 or accuracy measurement.
@@ -158,6 +170,7 @@ python scripts/telegram-thinking-model-smoke.py --config /etc/tg-triage/listener
 
 ## Acceptance Criteria
 
+- [ ] Default THINKING wire has one USER context bundle containing captions, all source IDs/reply edges and all permitted images; multiple-image order maps explicitly to source IDs for local and cloud. Actual-image smoke reports `single_context_bundle=true`.
 - [ ] All P0 deterministic cases and full listener regression pass on reviewed source.
 - [ ] Independent code review and verification approve current source.
 - [ ] Real configured-model smoke passes; report sample size and limitations.
@@ -171,6 +184,7 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.1.0 | 2026-10-15 23:29 Asia/Saigon | Codex / AlexChu owner | Image-caption/context, privacy, scoped failure and fresh-intake regression with actual-image proof criteria. |
 | v1.0.2 | 2026-10-15 22:26 Asia/Saigon | Codex / AlexChu owner | Intake essentials and DeepSeek sampling wire regression; fixed-label smoke remains required. |
 | v1.0.1 | 2026-10-15 22:19 Asia/Saigon | Codex / AlexChu owner | Wire-level existing think=false contract and fixed-label default-budget verification. |
 | v1.0.0 | 2026-10-15 21:39 Asia/Saigon | Codex / AlexChu owner | Capture production-path acceptance, model-smoke isolation and honest budget limits. |

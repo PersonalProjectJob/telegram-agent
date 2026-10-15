@@ -50,7 +50,7 @@ class FollowupStoreMixin:
             return None
         with self._lock:
             notice = self.connection.execute("""SELECT message_id FROM group_notices
-                WHERE chat_id=? AND status='sent' AND (notice_message_id=? OR message_id=?)
+                WHERE chat_id=? AND status='sent' AND kind!='context_pending' AND (notice_message_id=? OR message_id=?)
                 ORDER BY reserved_at DESC LIMIT 1""",
                 (message.chat_id, message.reply_to_id, message.reply_to_id)).fetchone()
             if notice is None:

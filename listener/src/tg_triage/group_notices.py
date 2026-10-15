@@ -98,6 +98,10 @@ def notice_text(result, missing_info, repo):
     elif result.decision == "rate_limited":
         text = ("Chưa tạo GitHub issue vì đã đạt giới hạn tạo issue. "
                 "Nhờ Owner kiểm tra và xác nhận cách xử lý ngay trong group.")
+    elif result.decision == 'context_pending':
+        text=('Em chưa phân tích được phạm vi tin này lúc này nên chưa gộp vào ticket nào. '
+              'Anh/Chị trả lời tin gốc này hoặc phản hồi này, nêu đầy đủ yêu cầu cần xử lý '
+              '(hoặc xác nhận đây chỉ là trao đổi) giúp Em nhé.')
     else:
         return None
     return text[:MAX_NOTICE_CHARS]

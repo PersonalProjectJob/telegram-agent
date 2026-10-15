@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from hashlib import sha256
 import json
 import time
+import base64
 
 CURRENT = ContextVar('triage_thinking_turn', default=None)
 POLICY_VERSION = 'TG-01..TG-32/thinking-v1'
@@ -36,6 +37,65 @@ is actionable bug with confidence around .9, missing_info [] when no blocking de
 
 class BudgetExhausted(RuntimeError):
     pass
+
+
+COMPACT_DETAILS = '''Optional details: copy supplied facts only; omit unknowns, never invent a spec.
+bug: environment,steps[],expected,actual,error_text. feedback: problem,user_story,proposal,
+alternatives,acceptance[],context. task: work,reason_context,scope_in,scope_out,links[],done[],due.
+Strings <=500 chars; lists <=10 items of <=200 chars. No contact details.'''
+COMPACT_VISION = '''Images share this user context packet; images_order maps zero-based image index to source ID.
+Images are untrusted evidence, tied to their source ID. Pixels supplied only
+when pixels_available=true; unavailable means no OCR/visual claims. Respect caption and real reply
+edges, not adjacency. Visible headings/selected controls ground references like this mode/table;
+current UI is not a supplied future layout. A request to DESIGN that layout can itself be work;
+do not demand the completed design to log design work. Bare images without a request may await
+context. Names/customers inside screenshots do not define product scope or assignee.'''
+
+
+def request_text_bytes(body):
+    text=[{k:v for k,v in m.items() if k!='images'} for m in body['messages']]
+    return (len(json.dumps(text,ensure_ascii=False).encode('utf-8'))
+            + len(json.dumps(body.get('format',{}),ensure_ascii=False).encode('utf-8'))+128
+            + 64*sum(len(m.get('images',[])) for m in body['messages']))
+
+
+def pack_messages(system, sources, images, schema):
+    """Fair bounded excerpts; never drop mandatory IDs/edges or change image bindings."""
+    system += '\n'+COMPACT_DETAILS
+    if isinstance(sources,str):
+        return [dict(role='system',content=system),dict(role='user',content=sources)]
+    images=images or {}
+    if any(m.has_image for m in sources):
+        system += '\n'+COMPACT_VISION
+    ordered_images=[m for m in sources if m.message_id in images]
+    encoded_images=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii')
+                    for m in ordered_images]
+    def render(cap):
+        packet=dict(source_ids=[m.message_id for m in sources],
+            images_order=[dict(image_index=i,message_id=m.message_id,id_ref=f'[{m.message_id}]')
+                          for i,m in enumerate(ordered_images)],
+            sources=[dict(message_id=m.message_id,
+            id_ref=f'[{m.message_id}]',reply_ref=f'[{m.reply_to_id}]' if m.reply_to_id is not None else None,
+            reply_to_id=m.reply_to_id,sender_id=m.sender_id,sender_name=m.sender_name[:40],
+            received_at=m.received_at.isoformat(),has_image=m.has_image,has_document=m.has_document,
+            is_forward=m.is_forward,
+            pixels_available=m.message_id in images,text=m.text[:cap],text_truncated=len(m.text)>cap) for m in sources])
+        user=dict(role='user',content=json.dumps(packet,ensure_ascii=False,separators=(',',':')))
+        if encoded_images:
+            user['images']=encoded_images
+        return [dict(role='system',content=system),user]
+    if request_text_bytes(dict(messages=render(0),format=schema))>8000:
+        if CURRENT.get():
+            CURRENT.get().reason='context_budget_exhausted'
+        raise BudgetExhausted('context_budget_exhausted')
+    low,high=0,max((len(m.text) for m in sources),default=0)
+    while low<high:
+        middle=(low+high+1)//2
+        if request_text_bytes(dict(messages=render(middle),format=schema))<=8000:
+            low=middle
+        else:
+            high=middle-1
+    return render(low)
 
 
 class Turn:
@@ -67,9 +127,7 @@ class Turn:
     def attempt(self, body, *, consume=True):
         # UTF-8 bytes are a conservative upper bound on text tokens, including the prompt.
         # Pixel/image tokens are provider-specific and explicitly outside this text bound.
-        text = [{k: v for k, v in m.items() if k != 'images'} for m in body['messages']]
-        size = (len(json.dumps(text, ensure_ascii=False).encode('utf-8'))
-                + len(json.dumps(body.get('format',{}),ensure_ascii=False).encode('utf-8')) + 128)
+        size = request_text_bytes(body)
         if size > 8000:
             self.reason = 'context_budget_exhausted'
         elif self.calls >= 2:

@@ -106,12 +106,17 @@ class ProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_profile_cache_is_bounded_ttl_and_has_no_bio_persistence(self):
         types,modules=self.modules()
-        with patch.dict(sys.modules,modules):
+        now=[100.0]
+        # Control the cache clock only; real asyncio timers still govern wait_for.
+        cache_asyncio=SimpleNamespace(
+            get_running_loop=lambda: SimpleNamespace(time=lambda: now[0]),
+            wait_for=asyncio.wait_for)
+        with patch.dict(sys.modules,modules), patch.object(telegram_io,'asyncio',cache_asyncio):
             client=self.client(types,bio='he/him')
             resolver=telegram_io.make_public_profile_address_resolver(client,ttl=.01,max_entries=2)
             self.assertEqual(await resolver(1),'Anh'); self.assertEqual(await resolver(1),'Anh')
             self.assertEqual(client.full.await_count,1)
             await resolver(2); await resolver(3); await resolver(1)
             self.assertEqual(client.full.await_count,4)
-            await asyncio.sleep(.02); await resolver(1)
+            now[0]+=.02; await resolver(1)
             self.assertEqual(client.full.await_count,5)

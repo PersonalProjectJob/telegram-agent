@@ -569,7 +569,7 @@ class Store(FollowupStoreMixin):
                     WHERE case_key=? AND decision NOT IN ('error', 'followup')
                 """, (row["case_key"],))
 
-    def assign_case(self, message, *, window_minutes, max_messages, is_command=False) -> CaseAssignment:
+    def assign_case(self, message, *, window_minutes, max_messages, is_command=False, fresh=False) -> CaseAssignment:
         """Attach a message to exactly one case, atomically and idempotently.
 
         Rules (12.1): a reply joins the case of the replied message; otherwise, when
@@ -584,10 +584,10 @@ class Store(FollowupStoreMixin):
                 case = self._case(row["case_key"])
                 return CaseAssignment(case["case_key"], case["first_message_id"], False,
                                       row["decision"] == "followup", case["message_count"])
-            notice = self._notice_followup(message)
+            notice = self._notice_followup(message) if not fresh else None
             if notice is not None:
                 return notice
-            target = self._find_case(message, window_minutes, max_messages, is_command)
+            target = self._find_case(message, window_minutes, max_messages, is_command) if not fresh else None
             created = target is None
             if created:
                 key = f"{message.chat_id}:{message.message_id}"
@@ -645,7 +645,7 @@ class Store(FollowupStoreMixin):
             FROM group_notices n
             JOIN messages m ON m.chat_id=n.chat_id AND m.message_id=n.message_id
             JOIN cases c ON c.case_key=m.case_key
-            WHERE n.chat_id=? AND n.status='sent'
+            WHERE n.chat_id=? AND n.status='sent' AND n.kind!='context_pending'
               AND (n.message_id=? OR n.notice_message_id=?)
         """, (message.chat_id, message.reply_to_id, message.reply_to_id)).fetchone()
         if source is None:
@@ -664,6 +664,20 @@ class Store(FollowupStoreMixin):
               self.clock().isoformat(), message.chat_id, message.message_id))
         return CaseAssignment(source["case_key"], source["first_message_id"], False, True,
                               source["message_count"] + 1)
+
+    def pending_context_source(self, message):
+        """Exact same-chat pending clarification, never a ticket/foreign root permission."""
+        if message.reply_to_id is None:
+            return None
+        with self._lock:
+            row=self.connection.execute('''SELECT m.* FROM messages m JOIN group_notices n
+                ON n.chat_id=m.chat_id AND n.message_id=m.message_id AND n.status='sent'
+                AND n.kind='context_pending'
+                WHERE m.chat_id=? AND m.decision='pending_review' AND m.issue_number IS NULL AND m.issue_url IS NULL
+                AND m.reason='vision_partition_unresolved'
+                AND (m.message_id=? OR n.notice_message_id=?) LIMIT 1''',
+                (message.chat_id,message.reply_to_id,message.reply_to_id)).fetchone()
+            return dict(row) if row else None
 
     def _find_case(self, message, window_minutes, max_messages, is_command):
         if message.reply_to_id is not None:

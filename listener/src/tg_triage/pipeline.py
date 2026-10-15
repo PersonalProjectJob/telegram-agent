@@ -298,7 +298,8 @@ class Pipeline:
                      "decision=duplicate issue_number=None latency_ms=0",
                      message.chat_id, message.message_id)
             return None
-        source = self.store.followup_source(message)
+        pending_context=self.store.pending_context_source(message)
+        source = self.store.followup_source(message) if pending_context is None else None
         if source is not None:
             from .followups import sweep
             self.store.enqueue_followup(message, source)
@@ -311,7 +312,8 @@ class Pipeline:
         aggregation = self.config.aggregation
         assignment = self.store.assign_case(
             message, window_minutes=aggregation.window_minutes,
-            max_messages=aggregation.max_messages_per_case, is_command=is_command)
+            max_messages=aggregation.max_messages_per_case, is_command=is_command,
+            fresh=pending_context is not None)
         if assignment.followup:
             # Late message of a finished case: recorded on the case, never a second issue.
             return self._waiting(message, assignment, "followup", start)
@@ -319,7 +321,7 @@ class Pipeline:
         # usually follows in the next message (12.8: the image must reach the issue).
         lone_noise = (assignment.created and rule is not None and rule.type == "noise"
                       and not message.has_attachment)
-        due = (is_command or lone_noise or aggregation.window_minutes == 0
+        due = (is_command or lone_noise or pending_context is not None or aggregation.window_minutes == 0
                or assignment.message_count >= aggregation.max_messages_per_case)
         if not due:
             return self._waiting(message, assignment, "case_open", start)
@@ -466,6 +468,42 @@ class Pipeline:
                         "vision_needs_human" if group is not None else "vision_context_missing"),
                     fallback=group is None, model_reason=group.reason if group is not None else None)
 
+    def _vision_failure_plans(self, messages, reason):
+        """Only explicit reply-connected components share failure scope, never adjacency."""
+        by_id={m.message_id:m for m in messages}; parents={i:i for i in by_id}
+        def find(i):
+            while parents[i]!=i:
+                i=parents[i]
+            return i
+        for m in messages:
+            if m.reply_to_id in by_id:
+                parents[find(m.message_id)]=find(m.reply_to_id)
+        components={}
+        for m in messages:
+            components.setdefault(find(m.message_id),[]).append(m)
+        plans=[]
+        for members in components.values():
+            first=min(members,key=lambda m:m.message_id)
+            explicit=next((m for m in members if rules.is_command(m.text)
+                           and rules.evaluate(m.text).type!='noise'),None)
+            if explicit is not None:
+                visual=any(m.has_image for m in members)
+                questions=((VISION_NOTE,) if reason=='vision_pixels_unavailable' else
+                    ('Em chưa nhận được phân tích hợp lệ cho ảnh/nhóm tin này. Anh/Chị xác nhận phần cần xử lý giúp Em nhé?',)) if visual else ()
+                plans.append(self._safety(Plan(f'{first.chat_id}:{first.message_id}',members,first,'rule',
+                    'needs_human' if visual else 'issue',rules.evaluate(explicit.text),typed=True,clarify=questions)))
+                continue
+            if any(m.has_image for m in members):
+                plan=self._vision_fallback(members)
+                if reason!='vision_pixels_unavailable':
+                    plan=replace(plan,clarify=('Em chưa nhận được phân tích hợp lệ cho nhóm tin này. '
+                        'Anh/Chị xác nhận yêu cầu cần xử lý và các tin/ảnh thuộc cùng yêu cầu giúp Em nhé?',))
+                plans.append(replace(plan,reason=reason))
+            else:
+                plans.append(Plan(f'{first.chat_id}:{first.message_id}',members,first,'model','pending_review',
+                    reason='vision_partition_unresolved',clarify=(),fallback=True))
+        return plans
+
     def _noise_plan(self, item, value, reason, tier="rule"):
         return Plan(f"{item.chat_id}:{item.message_id}", [item], item, tier, "noise", value,
                     clarify=(), reason=reason)
@@ -537,7 +575,12 @@ class Pipeline:
 
     def _plan(self, case_key, messages, first, cache):
         ordered = sorted(messages, key=_order)
-        if self._vision_unavailable(ordered):
+        from .thinking import CURRENT
+        explicit_vision = (getattr(self.classifier, 'supports_vision', False)
+                           or (CURRENT.get() and getattr(self.classifier, 'rejects_images', False)))
+        if CURRENT.get() and explicit_vision and all(m.has_image for m in ordered) and not any(m.text.strip() for m in ordered):
+            return self._vision_failure_plans(ordered,'image_without_request')
+        if self._vision_unavailable(ordered) and CURRENT.get() is None:
             return [self._vision_fallback(ordered)]
         if self._topics_call() is None:
             plan = self._plan_single(case_key, ordered, first, cache)
@@ -562,15 +605,19 @@ class Pipeline:
         if (len(rest) > size and any(m.has_image for m in rest)
                 and getattr(self.classifier, "supports_vision", False)):
             # Do not sever an image/request pair at an arbitrary model chunk boundary.
-            return plans + [self._vision_fallback(rest)]
+            return plans + (self._vision_failure_plans(rest,'vision_window_exceeded') if CURRENT.get()
+                            else [self._vision_fallback(rest)])
         for start in range(0, len(rest), size):
             plans.extend(self._plan_chunk(rest[start:start + size], cache))
         plans.sort(key=lambda plan: plan.first.message_id)
         return plans
 
     def _plan_chunk(self, chunk, cache):
+        from .thinking import CURRENT
+        thinking=CURRENT.get() is not None
         has_images = any(m.has_image for m in chunk)
-        vision = has_images and getattr(self.classifier, "supports_vision", False)
+        vision = has_images and (getattr(self.classifier, "supports_vision", False)
+                                or (thinking and getattr(self.classifier,'rejects_images',False)))
         if vision and not any(m.text.strip() for m in chunk):
             return [self._vision_fallback(chunk)]
         if len(chunk) == 1:
@@ -585,6 +632,41 @@ class Pipeline:
                                               "issue", rule, typed=True, clarify=()))]
         by_id = {item.message_id: item for item in chunk}
         groups = self._split(chunk)
+        if vision and thinking:
+            if groups is None:
+                reason=CURRENT.get().reason or ('vision_pixels_unavailable' if self._vision_unavailable(chunk)
+                                               else 'vision_analysis_unavailable')
+                return self._vision_failure_plans(chunk,reason)
+            # Valid partition is semantic evidence. Uncertainty remains scoped to each
+            # affected group, preserving independent chat/task groups and their wording.
+            plans=[]
+            ownership={mid:i for i,g in enumerate(groups) for mid in g.message_ids}
+            affected=set()
+            for m in chunk:
+                if (m.reply_to_id in by_id and ownership[m.message_id]!=ownership[m.reply_to_id]
+                        and (m.has_image or by_id[m.reply_to_id].has_image)
+                        and any(groups[ownership[i]].verdict in ('ticket','needs_human')
+                                for i in (m.message_id,m.reply_to_id))):
+                    affected.update((ownership[m.message_id],ownership[m.reply_to_id]))
+            if affected:
+                selected=[m for m in chunk if ownership[m.message_id] in affected]
+                plans.extend(self._vision_failure_plans(selected,'vision_reply_scope_conflict'))
+            for index,group in enumerate(groups):
+                if index in affected:
+                    continue
+                selected=[by_id[i] for i in group.message_ids]
+                if any(m.has_image for m in selected) and not any(m.text.strip() for m in selected):
+                    plans.append(replace(self._vision_fallback(selected),reason='image_without_request'))
+                elif any(m.has_image for m in selected) and self._vision_unavailable(selected):
+                    # Provider received explicit unavailable-pixel markers; retain caption
+                    # semantics/known facts and pure-question intent, never invent a pixel read.
+                    plan=self._safety(self._plan_group(by_id,group,cache))
+                    plans.append(replace(plan,reason='vision_caption_only') if plan.action!='chat' else plan)
+                else:
+                    plan=self._safety(self._plan_group(by_id,group,cache))
+                    plans.append(replace(plan,reason='vision_needs_human') if plan.action=='needs_human'
+                                 and any(m.has_image for m in selected) else plan)
+            return plans
         if vision and groups is not None and len(groups) == 1 and groups[0].verdict == "needs_human":
             # A valid whole-case visual judgment is uncertainty, not a transport/partition
             # failure. Preserve its questions and wording, with normal output sanitization.
@@ -717,6 +799,9 @@ class Pipeline:
         if plan.action in NO_TICKET_ACTIONS:
             # noise / chat / pending_review: stored and reconciled, never sent, never reacted to.
             self.store.finish(first, result)
+            if plan.reason=='vision_partition_unresolved' and self.config.mode!='dry-run':
+                group_notices.notify(self.store,self.notice_sender,first,
+                    replace(result,decision='context_pending'),(),self.config.gh_repo)
             return result
         self._acknowledge(plan)   # ticket / needs_human, live or dry-run, before any issue
         if self.config.mode == "dry-run":

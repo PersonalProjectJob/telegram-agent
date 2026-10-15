@@ -227,6 +227,10 @@ python scripts/telegram-thinking-model-smoke.py --config /etc/tg-triage/listener
 
 Run from repository root with the listener venv/user and the reviewed installed wheel or source on PYTHONPATH. This opt-in command uses model resources under existing consent. It does not open the live database or Telegram session, and prints only outcome metadata. It is not a model-accuracy benchmark. Semantic deadlines and current limitations are defined in TG-19/TG-30/TG-32, avoiding a second policy source here.
 
+For reviewed image-caption fixtures, select `--case image_caption_context --image-path /path/to/reviewed.jpg`; optional `--sources-fixture /path/to/ignored-sources.json` supplies the three source texts/metadata. The JPEG and source export remain local/ignored. The report includes image SHA/transport byte counts and sanitized generated wording so semantic grounding can be reviewed. No real upload, issue, notice or live DB is used. See the QA document for fixed acceptance labels.
+
+Technical vision-partition failures can create `context_pending` notice records for unclassified source components. These are not ticket-root authority. Exact sent-notice/pending-source proof routes a reply into fresh intake; see TG-12/TG-16. Preserve original case/group accounting and do not reset reservations to force a retry.
+
 ## Changelog
 
 | Version | Date/time (Asia/Saigon) | Author | Change |

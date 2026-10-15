@@ -26,6 +26,12 @@ User đã yêu cầu chuẩn hóa nghiệp vụ và nghiên cứu Harness THINKI
 
 ## 1. Feature Overview
 
+### Image-caption context correction — 2026-10-15
+
+User bổ sung: ảnh, caption và hội thoại/reply liên quan phải nằm trong cùng một gói context USER gửi model. Mapping thứ tự ảnh → source ID phải rõ khi nhiều ảnh; retry/fallback gửi lại nguyên gói, không đọc ảnh riêng rồi ghép suy luận.
+
+User yêu cầu xử lý caption thiết kế kèm screenshot và không trộn trao đổi backend/ack không liên quan vào ticket. Audit issue46 cho thấy zero model calls vì envelope vượt budget, rồi fallback gộp toàn case. Phạm vi sửa: renderer THINKING gọn có ID/reply/media provenance và truncation rõ; fallback chỉ theo scope có bằng chứng; image/model smoke dùng asset gốc với fake tools, không replay live DB/issue/notices. Giữ8000bytes,20/40seconds,hai attempts, provider/consent và shared service modules.
+
 ### Phạm vi THINKING được user yêu cầu triển khai — 2026-10-15
 
 User đã yêu cầu triển khai thiết kế THINKING, kiểm thử các hội thoại đã gửi, cập nhật PR #43 và deploy THINKPAD. Phạm vi gồm controller có ngân sách tổng, quyết định có version/bằng chứng, bảo toàn xác nhận và thao tác đã reserve, switch rollback và kiểm thử offline bằng tool giả. Tham khảo Harness AlexChu chỉ ở mô hình state/validate/verify; không import executor CLI hay sửa Harness canonical. Đây là quyền triển khai riêng cho triage, không thay sign-off Fleet Draft. Kết quả deploy/verification được báo bằng bằng chứng thực tế sau triển khai.

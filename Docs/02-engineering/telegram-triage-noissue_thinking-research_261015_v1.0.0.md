@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.1.2 · **Updated**: 2026-10-15 22:26 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.2.0 · **Updated**: 2026-10-15 23:29 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -41,6 +41,16 @@ The classifier already requests temperature0, but the hosted adapter previously 
 Original research scope: inspected2026-10-15 before implementation authorization. No provider/consent/model/auth or canonical Harness changes follow from this implementation.
 
 ## Conclusion
+
+### Image-caption correction after issue46 audit
+
+The production audit found zero model calls and `context_budget_exhausted`, then global visual fallback mixed a design caption with unrelated backend Q&A/ack. This was an envelope/partition fallback defect, not evidence that a model had inspected the screenshot incorrectly. Static topic prompt/details/schema occupied7042bytes before transcript and added vision instructions.
+
+Default THINKING now uses compact policy/detail/visual projection and schema-aware fair source packing within the unchanged8000byte limit. Mandatory IDs, reply/sender/media/pixel provenance survive; truncated excerpts are marked. Image bytes keep exact source bindings and consent routes. Optional details keep their original schema/field types and supplied facts. Custom prompts/legacy rendering remain available.
+
+Valid visual partitions retain independent groups and focused questions. Invalid partitions are scoped by explicit reply-connected components; image requests get scoped technical clarification, unrelated unknown text is not guessed chat or merged into an image issue. Such text receives a durable `context_pending` notice. Exact same-chat pending/no-issue/sent-notice proof routes the next reply into a fresh immediate case; old source/case accounting stays immutable, unknown/foreign/failed notices grant no bypass, and positive issue followups retain their existing authority. No new root permissions, schema migration, model/consent changes or write retries.
+
+Unavailable pixels are explicit in text-only model context; known caption work and pure questions remain classifiable without visual claims. Image-command failures preserve type with needs_human; unrelated explicit commands preserve rule behavior. Budget, unavailable-pixel, model and semantic uncertainty reasons are distinct. The original image fixture is used only in opt-in fake-tool/memory-DB smoke; wire SHA, actual image receipt and sanitized generated title/summary/questions support independent review. Small live previews exposed unresolved mode references and excessive design-spec questions, retained as failed evidence; the fixture now requires actionable design work with panel/selected-mode grounding and no unnecessary owner/deadline/new-layout blockers. Tests and final installed-model evidence are reported separately, not inferred from prompt prose.
 
 Telegram triage already has durable context, source provenance and safe execution. Recommend a bounded application THINKING controller reusing SQLite and existing tools, not installing a new framework. Developer Harness is a model for durable state and verification, not a directly deployable Telegram semantic brain. Keep Harness identity and lineage AlexChu independent of runtime executor. THINKING is state + evidence + bounded decision + execution feedback; `think=true` alone does not provide it. Never request, log or store private chain-of-thought; use short decision reasons and evidence IDs.
 
@@ -204,6 +214,7 @@ FE/UI: không thay đổi trong nghiên cứu này. API/DB mới: chưa triển 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.2.0 | 2026-10-15 23:29 | Codex / owner AlexChu | Image-envelope root cause, scoped partition fallback/recovery and real-image semantic acceptance. |
 | v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Generic intake-essential principle and existing temperature0 intent; labels/threshold/budgets unchanged. |
 | v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Diagnose provider timeouts and explicit DeepSeek disable request; retain20/40, document experiment limits. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | Implement bounded controller/journal, separate historical pilot proposals and actual runtime limits; QA and isolated smoke. |

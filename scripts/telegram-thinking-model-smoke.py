@@ -12,6 +12,9 @@ import json
 import logging
 import sys
 import time
+import base64
+import hashlib
+from pathlib import Path
 from unittest.mock import patch
 
 from tg_triage.config import load_config, AggregationConfig
@@ -23,9 +26,10 @@ from tg_triage.thinking import decision_turn
 from tg_triage import classifier as classifier_module
 from tg_triage import thinking_transport as transport_module
 from tg_triage import thinking as thinking_module
+from tg_triage.group_notices import clean_question
 
 CASE_NAMES=('all','three_messages_one_request','three_short_independent_requests',
-            'three_clear_independent_requests','ancillary_vs_third_request')
+            'three_clear_independent_requests','ancillary_vs_third_request','image_caption_context')
 
 
 @contextmanager
@@ -76,7 +80,7 @@ class DiagnosticJSON:
         try:
             result=json.loads(value,*args,**kwargs)
         except json.JSONDecodeError as error:
-            event.update(outcome='invalid_json',error_position=error.pos)
+            event.update(outcome='invalid_json',error_position=error.pos,error_kind=error.msg)
             self.events.append(event)
             raise
         event.update(outcome='parsed_json',value_type=type(result).__name__)
@@ -115,12 +119,38 @@ class DiagnosticProvider:
         self.parses=[]
         self.transport_json=DiagnosticJSON()
         self.call_latency_ms=[]
+        self.image_requests=[]
+        self.image_group_wording=[]
 
     def __getattr__(self,name):
         return getattr(self.provider,name)
 
     def classify_topics(self,messages,**options):
         original=classifier_module.parse_topic_groups
+        original_complete=transport_module.complete
+        expected_images={mid:hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                         for mid,path in (options.get('images') or {}).items()}
+        def complete(*args,**kwargs):
+            payloads=[]
+            for m in args[3]:
+                payloads.extend(m.get('images',[]))
+                if isinstance(m.get('content'),list):
+                    payloads.extend(p['image_url']['url'].split(',',1)[1] for p in m['content']
+                        if isinstance(p,dict) and p.get('type')=='image_url')
+            hashes=[hashlib.sha256(base64.b64decode(p,validate=True)).hexdigest() for p in payloads]
+            users=[m for m in args[3] if m.get('role')=='user']
+            bundled=(len(users)==1 and bool(payloads) and bool(users[0].get('content')))
+            text_messages=[]
+            for m in args[3]:
+                safe={k:v for k,v in m.items() if k!='images'}
+                if isinstance(safe.get('content'),list):
+                    safe['content']=[part for part in safe['content'] if part.get('type')!='image_url']
+                text_messages.append(safe)
+            self.image_requests.append(dict(provider=args[0],image_count=len(hashes),image_sha256=hashes,
+                user_message_count=len(users),single_context_bundle=bundled,
+                expected_source_sha256=expected_images,expected_images_sent=bool(hashes) and set(hashes)==set(expected_images.values()),
+                text_envelope_bytes=thinking_module.request_text_bytes(dict(messages=text_messages,format=args[4]))))
+            return original_complete(*args,**kwargs)
         def parse(content):
             value=original(content)
             event=dict(outcome='valid_groups' if value is not None else 'invalid_output',content_bytes=_size(content))
@@ -135,10 +165,16 @@ class DiagnosticProvider:
             except (ValueError,TypeError):
                 event['content_json']='invalid'
             self.parses.append(event)
+            if expected_images and value is not None:
+                self.image_group_wording.extend(dict(ids=g.message_ids,type=g.type,category=g.category,
+                    title=clean_question(g.title),summary=clean_question(g.summary),
+                    missing_questions=[clean_question(q) for q in g.missing_info]) for g in value
+                    if set(g.message_ids)&set(expected_images))
             return value
         started=time.monotonic()
         # Only this standalone, fake-tool process is instrumented; daemon modules are untouched.
-        with patch.object(transport_module,'json',self.transport_json), patch.object(classifier_module,'parse_topic_groups',parse):
+        with patch.object(transport_module,'json',self.transport_json), patch.object(classifier_module,'parse_topic_groups',parse), \
+             patch.object(transport_module,'complete',complete):
             value=self.provider.classify_topics(messages,**options)
         self.call_latency_ms.append(round((time.monotonic()-started)*1000,2))
         self.groups.append(None if value is None else [dict(ids=g.message_ids,verdict=g.verdict,
@@ -154,13 +190,15 @@ def msg(mid,text,**extra):
     return IncomingMessage(**fields)
 
 
-def run(config_path,case='all'):
+def run(config_path,case='all',image_path=None,sources_fixture=None):
     if case not in CASE_NAMES:
         raise ValueError('Unsupported smoke case')
     # Schema-only identity placeholders are sufficient: no Telegram/GitHub client is created.
     cfg=load_config(config_path,validate_only=True)
     cfg=replace(cfg,mode='live',thinking_enabled=True,aggregation=AggregationConfig(5,3,40))
     results=[]
+    if case=='image_caption_context' and image_path is None:
+        raise ValueError('Image path required')
     # Clear work requires issue; abbreviated requests test partition/reply even when details
     # legitimately require clarification. Labels are fixed before the provider run.
     for name,texts,expected,clear in [
@@ -205,6 +243,53 @@ def run(config_path,case='all'):
                     [msg(902,'ảnh ở trên minh họa thêm thôi'),msg(904,'Yêu cầu khác: sửa trang thanh toán không lưu được')])
             roles={r['message_id']:r['role'] for r in (value or {}).get('source_roles',[])}
             results.append(dict(case='ancillary_vs_third_request',pass_=roles=={902:'ancillary',904:'request'},roles=roles))
+    if image_path is not None and case in ('all','image_caption_context'):
+        pixels=Path(image_path).read_bytes()
+        if not pixels.startswith(b'\xff\xd8\xff'):
+            raise ValueError('JPEG fixture required')
+        sources=(json.loads(Path(sources_fixture).read_text(encoding='utf-8'))['sources'] if sources_fixture else [
+            dict(message_id=442,text='Sau này mình cho chế độ nầy thì mình sẽ design đổi bảng nầy',has_image=True),
+            dict(message_id=443,text=('Câu hỏi thông tin ASP.NET: JWT và refresh token hoạt động như thế nào? '
+                'Trả lời: access token có hạn; refresh token cấp token mới. ')*30),
+            dict(message_id=444,text='dạ được anh',has_image=False)])
+        if (len(sources)!=3 or {s['message_id'] for s in sources}!={442,443,444}
+                or not sources[0].get('has_image') or any(s.get('has_image') for s in sources[1:])):
+            raise ValueError('Unexpected fixture source shape')
+        class Upload:
+            def ensure_release(self,tag):pass
+            def upload(self,tag,path,asset):return f'https://github.com/{cfg.gh_repo}/releases/download/synthetic/{asset}'
+        def download(chat,mid,directory):
+            if mid!=442:return None
+            target=Path(directory)/'source.jpg';target.write_bytes(pixels);return target
+        with closing(Store(':memory:')) as store:
+            usage=DiagnosticUsage();provider=DiagnosticProvider(build_provider(cfg,usage=usage),usage)
+            gh=FakeGitHub(cfg.gh_repo);notices=[]
+            p=Pipeline(cfg,store,provider,gh,downloader=download,uploader=Upload(),
+                notice_sender=lambda c,m,t:notices.append((m,clean_question(t))) or 1000+m)
+            for source in sources:
+                extra=dict(reply_to_id=source.get('reply_to_id'),is_forward=bool(source.get('is_forward')),
+                    has_image=bool(source.get('has_image')),image_size=len(pixels) if source.get('has_image') else None,
+                    image_mime='image/jpeg' if source.get('has_image') else None)
+                if source.get('received_at'):extra['received_at']=datetime.fromisoformat(source['received_at'])
+                p.process(msg(source['message_id'],source['text'],**extra))
+            wording=provider.image_group_wording
+            generated=' '.join(g['title']+' '+g['summary']+' '+' '.join(g['missing_questions']) for g in wording)
+            lower=generated.casefold()
+            grounded=('salon' in lower and ('visibility' in lower or 'hiển thị' in lower)
+                      and ('chat only' in lower or 'chỉ chat' in lower or 'chỉ trò chuyện' in lower))
+            valid=(len(gh.created)==1 and [n[0] for n in notices]==[442] and grounded
+                and store.get(-1009999999999,442)['decision']=='issue'
+                and all(store.get(-1009999999999,i)['decision'] in ('chat','noise') for i in (443,444))
+                and any(r['expected_images_sent'] and r['single_context_bundle'] for r in provider.image_requests)
+                and bool(wording) and all(set(g['ids'])=={442} and g['category'] in ('task','feedback')
+                    and not g['missing_questions'] for g in wording))
+            results.append(dict(case='image_caption_context',pass_=valid,tickets=len(gh.created),
+                source_decisions={i:store.get(-1009999999999,i)['decision'] for i in (442,443,444)},
+                reply_targets=[n[0] for n in notices],generated_image_groups=wording,grounded_panel_mode=grounded,
+                image_requests=provider.image_requests,attempts=usage.attempts,
+                diagnostics=dict(transport_json=provider.transport_json.events,parses=provider.parses,
+                    semantic_calls_latency_ms=provider.call_latency_ms),
+                fixture_image_sha256=hashlib.sha256(pixels).hexdigest()))
     return dict(status='PASS' if all(r['pass_'] for r in results) else 'FAIL',
         kind='small synthetic configured-model smoke, not accuracy benchmark',cases=results,
         model=dict(provider=cfg.model.provider,name=cfg.model.name,max_output=cfg.model.max_output,
@@ -218,11 +303,13 @@ if __name__=='__main__':
     parser.add_argument('--case',choices=CASE_NAMES,default='all')
     parser.add_argument('--experiment-call-seconds',type=int,choices=(20,30))
     parser.add_argument('--experiment-turn-seconds',type=int,choices=(40,60))
+    parser.add_argument('--image-path')
+    parser.add_argument('--sources-fixture')
     args=parser.parse_args()
     logging.disable(logging.CRITICAL)
     try:
         with budget_experiment(args.experiment_call_seconds,args.experiment_turn_seconds):
-            report=run(args.config,args.case)
+            report=run(args.config,args.case,args.image_path,args.sources_fixture)
         if args.experiment_call_seconds is not None:
             report['experimental_budget']=dict(call_seconds=args.experiment_call_seconds,
                 turn_seconds=args.experiment_turn_seconds,production_runtime_changed=False)
