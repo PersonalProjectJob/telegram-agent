@@ -104,3 +104,20 @@ FOLLOWUP_SCHEMA['properties']['questions'].update(maxItems=3)
 FOLLOWUP_SCHEMA['properties']['questions']['items']['maxLength']=180
 for field in ('title','summary'):
     FOLLOWUP_SCHEMA['properties']['groups']['items']['properties'][field]['maxLength']=200 if field=='title' else 300
+
+
+ROLE_SCHEMA={"type":"object","properties":{"source_roles":FOLLOWUP_SCHEMA['properties']['source_roles']},
+             "required":["source_roles"],"additionalProperties":False}
+
+
+def parse_source_roles(content):
+    from .classifier import strip_thinking
+    try:
+        data=json.loads(strip_thinking(content))
+    except (ValueError,TypeError):
+        return None
+    if not isinstance(data,dict) or 'source_roles' not in data:
+        return None
+    checked=validate_followup(dict(action='clarify',confidence=1.0,target_ordinal=None,
+                                  summary='',questions=[],groups=[],source_roles=data['source_roles']))
+    return {'source_roles':checked['source_roles']} if checked is not None else None

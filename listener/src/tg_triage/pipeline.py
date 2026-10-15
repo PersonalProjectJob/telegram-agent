@@ -210,10 +210,11 @@ def _legacy_analysis(value, messages):
 
 class Pipeline:
     def __init__(self, config, store, classifier, github=None, *, timer=time.monotonic,
-                 uploader=None, downloader=None, reactor=None, notice_sender=None):
+                 uploader=None, downloader=None, reactor=None, notice_sender=None, notice_editor=None):
         self.config = config
         self.reactor = reactor
         self.notice_sender = notice_sender
+        self.notice_editor = notice_editor
         self.store = store
         self.classifier = classifier
         self.github = github
@@ -223,6 +224,10 @@ class Pipeline:
         self.attachments = AttachmentProcessor(
             config.attachments, store, repo=config.gh_repo,
             downloader=downloader, uploader=uploader)
+
+    def set_notice_editor(self, editor):
+        """Bounded edit of an explicitly recovered analysis notice; never a new send."""
+        self.notice_editor = editor
 
     def set_notice_sender(self, sender):
         """Existing Telegram loop supplies a bounded blocking plain-text sender."""

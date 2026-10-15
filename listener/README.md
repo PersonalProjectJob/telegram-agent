@@ -540,3 +540,33 @@ sweep. This requires a stored same-chat sent-notice association and does not rea
 case or globally backfill past replies.
 
 For isolated THINKPAD deployment and rollback, see [deploy/README.md](../deploy/README.md).
+
+
+### Grounded role analysis, explicit recovery and account address
+
+Once the request count and anchors are confirmed, unresolved text uses a separate minimal
+`source_roles` request through the configured provider. It contains only short confirmed-anchor
+and unresolved-text snippets, with exact requested-ID coverage. It does not request groups,
+repeat history, read images or change consent/model/output settings. General followup analysis
+continues to use its existing schema. Ancillary roles allow the already-grounded split;
+request/unknown, invalid IDs or provider failure retain confirmations and ask targeted questions.
+
+An operator may explicitly call
+`store.retry_followup_analysis(chat_id, message_id, configured_repo, expected_notice_id)` once
+for a terminal `provider_unavailable` clarification only. It requires zero operations across the
+root, no siblings/split plan, no other active root job, canonical source-repo proof and that exact
+sent notice. The additive `followup_analysis_retries` audit preserves the old plan/result.
+This never retries an ambiguous GitHub call or resets original messages/cases. The result edits
+the existing notice through the normal Telegram client; it never deletes or sends a duplicate.
+Notice edits commit `planned -> reserved -> done/ambiguous`; only planned edits resume after
+restart. Missing editors remain planned, while reserved/unknown edits require operator review.
+
+The assistant refers to itself as Em. At send/edit time, the existing Telegram client checks
+only explicit preferred-address/gender/pronoun self-description in the recipient's accessible
+public bio. It never infers from a name, avatar or message content. Clear he/him or male/nam
+self-description uses Anh, she/her or female/nữ uses Chị; missing, conflicting, unavailable or
+unclear evidence uses Anh/Chị. The stored source sender ID is used, including when editing a
+retry notice. Lookup has a two-second timeout and a transient 256-entry, five-minute address
+cache; raw profiles/bios/photos/contact fields are never persisted, logged or sent to models.
+Only generated address prose changes: source quotations, URLs and GitHub issue content remain
+protected. No manual account mapping is required.

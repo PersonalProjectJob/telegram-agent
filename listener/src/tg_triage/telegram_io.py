@@ -94,20 +94,85 @@ def make_reaction_sender(client):
     return send
 
 
-def make_group_notice_sender(client):
+def make_public_profile_address_resolver(client, *, timeout=2.0, ttl=300.0, max_entries=256):
+    """Bounded transient address cache; never stores/logs bio, photos or contact fields."""
+    cache={}
+    async def resolve(sender_id):
+        default=group_notices.ADDRESS_DEFAULT
+        if type(sender_id) is not int or sender_id<=0:
+            resolve.last_status="unknown"
+            return default
+        now=asyncio.get_running_loop().time()
+        if sender_id in cache and cache[sender_id][1]>now:
+            resolve.last_status='cached_explicit' if cache[sender_id][0]!=default else 'cached_unknown'
+            return cache[sender_id][0]
+        async def read():
+            from telethon.tl.functions.users import GetFullUserRequest
+            entity=await client.get_input_entity(sender_id)
+            result=await client(GetFullUserRequest(entity))
+            full=getattr(result,'full_user',None)
+            if (full is None or getattr(full,'blocked',False) or
+                    any(getattr(user,'deleted',False) or getattr(user,'restricted',False)
+                        for user in getattr(result,'users',()))):
+                return default
+            return group_notices.address_from_public_bio(getattr(full,'about',None))
+        try:
+            address=await asyncio.wait_for(read(),timeout)
+            resolve.last_status="explicit" if address!=default else "unknown"
+        except Exception:
+            resolve.last_status="unavailable"
+            address=default
+        for key in list(cache):
+            if cache[key][1]<=now: cache.pop(key,None)
+        if len(cache)>=max_entries: cache.pop(next(iter(cache)))
+        cache[sender_id]=(address,now+ttl)
+        return address
+    return resolve
+
+
+def _notice_sender_id(store,chat_id,message_id,editing=False):
+    if store is None:
+        return None
+    if editing:
+        message_id=store.group_notice_reply_target(chat_id,message_id)
+    row=store.get(chat_id,message_id)
+    return row['sender_id'] if row is not None else None
+
+
+def make_group_notice_sender(client, store=None):
     """Use the existing client only, and refuse private chats and broadcast channels."""
+    resolve=make_public_profile_address_resolver(client)
     async def send(chat_id, message_id, text):
         from telethon.tl import types
 
         entity = await client.get_entity(chat_id)
         if not (isinstance(entity, types.Chat) or getattr(entity, "megagroup", False) is True):
             return False
+        address=await resolve(_notice_sender_id(store,chat_id,message_id))
+        LOG.info("Notice profile address source=stored_sender status=%s",resolve.last_status)
+        text=group_notices.personalize_notice(text,address)
         sent = await client.send_message(entity, text, reply_to=message_id, parse_mode=None,
                                          link_preview=False)
         notice_id = getattr(sent, "id", None)
         return notice_id if type(notice_id) is int and notice_id > 0 else None
 
     return send
+
+
+def make_group_notice_editor(client, store=None):
+    """Edit only the existing notice using the same group-only Telegram client."""
+    resolve=make_public_profile_address_resolver(client)
+    async def edit(chat_id, message_id, text):
+        from telethon.tl import types
+        entity=await client.get_entity(chat_id)
+        if not (isinstance(entity,types.Chat) or getattr(entity,"megagroup",False) is True):
+            return False
+        address=await resolve(_notice_sender_id(store,chat_id,message_id,editing=True))
+        LOG.info("Notice profile address source=stored_sender status=%s",resolve.last_status)
+        text=group_notices.personalize_notice(text,address)
+        result=await client.edit_message(entity,message_id,text,parse_mode=None,link_preview=False)
+        return getattr(result,"id",None)==message_id
+    return edit
 
 
 def make_notice_sender(send, loop, *, timeout=group_notices.TIMEOUT_SECONDS):
@@ -372,7 +437,7 @@ async def _react_issue_created(pipeline, react, decision, chat_id, message_id):
                 _mark(store, chat_id, target, "ok")
 
 
-async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None):
+async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None, notice_edit=None):
     close_due = getattr(pipeline, "close_due_cases", None)
     interval = SWEEP_SECONDS if close_due is not None else None
     attach = getattr(pipeline, "set_reactor", None)
@@ -382,9 +447,14 @@ async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None):
     attach_notice = getattr(pipeline, "set_notice_sender", None)
     if attach_notice is not None and notice_send is not None:
         attach_notice(make_notice_sender(notice_send, asyncio.get_running_loop()))
+    attach_editor=getattr(pipeline,"set_notice_editor",None)
+    if attach_editor is not None and notice_edit is not None:
+        attach_editor(make_notice_sender(notice_edit,asyncio.get_running_loop()))
     try:
         await _work(queue, pipeline, stop, react, interval)
     finally:
+        if attach_editor is not None and notice_edit is not None:
+            attach_editor(None)
         if attach_notice is not None and notice_send is not None:
             attach_notice(None)
         if attach is not None and react is not None:
@@ -541,7 +611,8 @@ async def run(config, pipeline):
         if attach_downloader is not None:
             attach_downloader(make_media_downloader(client, asyncio.get_running_loop()))
         worker_task = asyncio.create_task(worker(queue, pipeline, stop, react=react,
-                                                       notice_send=make_group_notice_sender(client)))
+                                                       notice_send=make_group_notice_sender(client,pipeline.store),
+                                                       notice_edit=make_group_notice_editor(client,pipeline.store)))
         tasks = [worker_task, asyncio.create_task(heartbeat(queue)),
                  asyncio.create_task(client.run_until_disconnected()), stopper]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

@@ -12,7 +12,7 @@ MAX_QUESTIONS = 3
 MAX_QUESTION_CHARS = 180
 MAX_NOTICE_CHARS = 1100
 TIMEOUT_SECONDS = 15
-FALLBACK_QUESTION = "Bạn muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?"
+FALLBACK_QUESTION = "Anh/Chị muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?"
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -29,6 +29,43 @@ def clean_question(value):
     return value[:MAX_QUESTION_CHARS].strip()
 
 
+ADDRESS_DEFAULT="Anh/Chị"
+_PROTECTED=re.compile(r'“[^\n]*”|“[^\n]*$|"[^\n]*"|"[^\n]*$|https?://\S+|^>.*$',re.MULTILINE)
+
+
+def _outside_quotes(text,replace):
+    pieces=[]; last=0
+    for match in _PROTECTED.finditer(text):
+        pieces.extend((replace(text[last:match.start()]),match[0])); last=match.end()
+    pieces.append(replace(text[last:]))
+    return ''.join(pieces)
+
+
+def address_question(value):
+    """Normalize only the sanitized question prose, preserving quoted source text and URLs."""
+    return _outside_quotes(clean_question(value),lambda part:re.sub(r'\b[Bb]ạn\b',ADDRESS_DEFAULT,part))
+
+
+def personalize_notice(text,address=ADDRESS_DEFAULT):
+    """Render trusted address slots; never rewrite quotes, source links or issue content."""
+    address=address if address in ('Anh','Chị',ADDRESS_DEFAULT) else ADDRESS_DEFAULT
+    return _outside_quotes(text,lambda part:part.replace(ADDRESS_DEFAULT,address))
+
+
+def address_from_public_bio(bio):
+    """Only explicit self-description: never infer gender from a name, avatar or unrelated words."""
+    if not isinstance(bio,str):
+        return ADDRESS_DEFAULT
+    bio=bio[:4096].casefold()
+    pronouns=re.findall(r'(?:^|[\n•|;,])\s*(?:(?:pronouns?|my pronouns(?: are)?|i use)\s*:?\s*)?(he\s*/\s*him|she\s*/\s*her)\s*(?=$|[\n•|;,])',bio)
+    male=any(re.fullmatch(r'he\s*/\s*him',p) for p in pronouns)
+    female=any(re.fullmatch(r'she\s*/\s*her',p) for p in pronouns)
+    for match in re.finditer(r'(?m)^\s*(?:gender|giới tính|preferred address|xưng hô)\s*:\s*(male|female|nam|nữ|anh|chị)\s*(?:$|[;,.])',bio):
+        male=male or match[1] in ('male','nam','anh')
+        female=female or match[1] in ('female','nữ','chị')
+    return 'Anh' if male and not female else 'Chị' if female and not male else ADDRESS_DEFAULT
+
+
 def notice_text(result, missing_info, repo):
     issue_link = None
     if (isinstance(repo, str) and _REPO.fullmatch(repo)
@@ -40,13 +77,13 @@ def notice_text(result, missing_info, repo):
         text = f"Em đã ghi nhận nội dung này và tạo ticket: {issue_link} rồi nhé 😊"
     elif result.decision == "needs_human":
         text = ("Em đã ghi nhận nội dung này rồi nhé. "
-                "Nhờ bạn hoặc Owner bổ sung/xác nhận thông tin ngay trong group để làm rõ yêu cầu.")
+                "Nhờ Anh/Chị hoặc Owner bổ sung/xác nhận thông tin ngay trong group để làm rõ yêu cầu.")
         if issue_link:
             text += f"\nEm đã tạo ticket để tiện theo dõi: {issue_link}"
         questions = []
         if isinstance(missing_info, (tuple, list)):
             for value in missing_info[:20]:
-                question = clean_question(value)
+                question = address_question(value)
                 if question:
                     questions.append("• " + question)
                     if len(questions) == MAX_QUESTIONS:

@@ -33,10 +33,7 @@ class ContextTests(unittest.TestCase):
         return store,gh,sent,p
 
     def provider(self,p,value=None,error=None):
-        content=json.dumps(value or answer('clarify',source_roles=[
-            dict(message_id=429,role='request',confidence=.99),
-            dict(message_id=430,role='ancillary',confidence=.95),
-            dict(message_id=431,role='request',confidence=.99)]),ensure_ascii=False)
+        content=json.dumps(value or dict(source_roles=[dict(message_id=430,role='ancillary',confidence=.95)]),ensure_ascii=False)
         http=FakeHTTP(error if error else {'message':{'content':content}})
         p.classifier=Classifier(p.config.ollama,prompt='unused',opener=http)
         return http
@@ -83,13 +80,28 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(dict(store.get(incoming.chat_id,429)),original)
         self.assertEqual(dict(store.get_case(original['case_key'])),original_case)
         body=json.loads(http.calls[0][0].data); context=json.loads(body['messages'][-1]['content'])
-        self.assertEqual(context['REPLY']['reply_to_id'],431); self.assertEqual(context['REPLY']['sender_id'],OWNER)
+        self.assertEqual([r['id'] for r in context['confirmed_requests']],[429,431])
+        self.assertEqual([r['id'] for r in context['unresolved']],[430])
+        self.assertNotIn('HISTORY',context); self.assertNotIn('REPLY',context)
+        self.assertNotIn('groups',body['format']['properties'])
+        self.assertEqual(set(body['format']['properties']),{'source_roles'})
+        self.assertEqual(len(body['messages']),2)
+        p.close_due_cases(); self.assertEqual(len(gh.calls),2)
+
+    def test_general_followup_serialization_retains_reply_and_chronological_history(self):
+        store,gh,sent,p=self.setup_conversation(); self.import_old(store)
+        incoming=message(440,text='please clarify',reply_to_id=431,sender_id=OWNER)
+        store.start_classifying(incoming); store.enqueue_followup(incoming,store.followup_source(incoming))
+        job=next(j for j in store.pending_followups() if j['message_id']==440)
+        root,originals,reply,history=store.followup_context(job)
+        http=FakeHTTP({'message':{'content':json.dumps(answer('clarify'))}})
+        classifier=Classifier(p.config.ollama,prompt='unused',opener=http)
+        classifier.analyze_followup(originals,reply,[{'ordinal':0,'issue_number':101}],history)
+        body=json.loads(http.calls[0][0].data); context=json.loads(body['messages'][-1]['content'])
+        self.assertEqual(context['REPLY']['reply_to_id'],431)
+        self.assertEqual(context['REPLY']['sender_id'],OWNER)
         self.assertEqual([h['message_id'] for h in context['HISTORY']],[434,436,438])
         self.assertEqual(context['HISTORY'][-1]['reply_to_id'],429)
-        self.assertIn('confirmed_context',context['TRUSTED_TICKETS'][0])
-        self.assertEqual(len(body['messages']),2)
-        self.assertNotIn('DETAILS',body['messages'][0]['content'])
-        p.close_due_cases(); self.assertEqual(len(gh.calls),2)
 
     def test_direct_nonfirst_reply_routes_and_partial_label_ack_does_not_call_model(self):
         store,gh,sent,p=self.setup_conversation()

@@ -5,10 +5,10 @@ import re
 from .followup_model import validate_followup, MAX_SPLIT
 from .issue_format import Issue, format_issue, redact, sanitize, telegram_link
 from .models import Classification
-from .group_notices import clean_question
+from .group_notices import clean_question, address_question
 
 LOG=logging.getLogger(__name__)
-SCOPE_QUESTION='Em chưa xác định chắc mỗi yêu cầu gồm những tin/ảnh nào. Bạn chỉ rõ tin hoặc ảnh thuộc yêu cầu thứ nhất và thứ hai giúp Em nhé?'
+SCOPE_QUESTION='Em chưa xác định chắc mỗi yêu cầu gồm những tin/ảnh nào. Anh/Chị chỉ rõ tin hoặc ảnh thuộc yêu cầu thứ nhất và thứ hai giúp Em nhé?'
 TARGET_QUESTION='Em đang theo dõi nhiều ticket cho nội dung này. Bạn muốn bổ sung cho ticket thứ mấy trong danh sách dưới đây?'
 
 
@@ -24,10 +24,31 @@ def _tickets(root):
     return ([root['issue_number']] if type(root['issue_number']) is int and root['issue_number']>0 else []) + json.loads(root['siblings'])
 
 
-def _notify(pipeline, job, reply, text):
-    if pipeline.config.mode=='dry-run' or pipeline.notice_sender is None:
+def _edit_retry_notice(pipeline,job,text,retry):
+    editor=getattr(pipeline,'notice_editor',None)
+    if editor is None or pipeline.config.mode=='dry-run':
         return
     store=pipeline.store
+    if not store.reserve_followup_notice_edit(job['id']):
+        return
+    success=False
+    try:
+        success=editor(job['chat_id'],retry['notice_message_id'],text[:3500]) is True
+    except Exception as error:
+        LOG.warning('Followup notice edit unknown exception=%s',type(error).__name__)
+    store.finish_followup_notice_edit(job['id'],success)
+
+
+def _notify(pipeline, job, reply, text):
+    if pipeline.config.mode=='dry-run':
+        return
+    store=pipeline.store
+    retry=store.followup_analysis_retry(job['id'])
+    if retry is not None:
+        _edit_retry_notice(pipeline,job,text,retry)
+        return
+    if pipeline.notice_sender is None:
+        return
     try:
         if not store.reserve_group_notice(reply.chat_id,reply.message_id,'followup'):
             return
@@ -52,9 +73,9 @@ def _result(pipeline,job,root,reply,status,text,extra=(), *, include_links=True)
 
 
 def _clarify(questions):
-    questions=[clean_question(q) for q in questions[:3]]
+    questions=[address_question(q) for q in questions[:3]]
     questions=[q for q in questions if q]
-    return 'Em cần bạn xác nhận thêm để xử lý đúng nhé:\n'+'\n'.join('• '+q for q in (questions or [SCOPE_QUESTION]))
+    return 'Em cần Anh/Chị xác nhận thêm để xử lý đúng nhé:\n'+'\n'.join('• '+q for q in (questions or [SCOPE_QUESTION]))
 
 
 def _explicit_label(text):
@@ -149,11 +170,11 @@ def _context(pipeline,job,root,originals,reply):
 
 
 def _describe(item):
-    text=clean_question(item.text)
+    text=clean_question(item.text).replace('“',"'").replace('”',"'")
     if text:
         return '“'+text[:85]+'”'+(' (kèm ảnh)' if item.has_image else '')
     when=item.received_at.strftime('%H:%M')
-    sender=clean_question(item.sender_name)[:40]
+    sender='“'+clean_question(item.sender_name).replace('“',"'").replace('”',"'")[:40]+'”'
     return f'ảnh không caption của {sender} lúc {when}' if item.has_image else f'tin không có chữ của {sender} lúc {when}'
 
 
@@ -229,7 +250,19 @@ def _plan(pipeline,job,root,originals,reply,history):
                       scope=scopes[i]['summary'] if i<len(scopes) else '') for i,n in enumerate(tickets)]
         if mapping:
             mapping[0]['confirmed_context']=state
-        raw=anchor_plan if anchor_plan is not None and not unassigned_text else (ask(originals,reply,mapping,history) if ask else None)
+        if anchor_plan is not None:
+            if not unassigned_text:
+                raw=anchor_plan
+            else:
+                role_ask=getattr(pipeline.classifier,'analyze_source_roles',None)
+                anchors=[dict(ordinal=ordinal,message_id=m.message_id,text=m.text)
+                         for m in originals for ordinal in [state['bindings'].get(str(m.message_id))]
+                         if ordinal is not None and m.text.strip()]
+                response=role_ask(anchors,unassigned_text) if role_ask else None
+                raw=(dict(action='clarify',confidence=1.0,target_ordinal=None,summary='',questions=[],groups=[],
+                          source_roles=response.get('source_roles')) if isinstance(response,dict) else None)
+        else:
+            raw=ask(originals,reply,mapping,history) if ask else None
         value=validate_followup(raw)
     except Exception as error:
         LOG.warning('Followup classifier failed exception=%s',type(error).__name__)
@@ -238,8 +271,9 @@ def _plan(pipeline,job,root,originals,reply,history):
     LOG.info('Followup analysis job_id=%s status=%s confirmed_bindings=%s',job['id'],status,len(state['bindings']))
     expected_ids={m.message_id for m in originals}
     roles={r['message_id']:r for r in (value or {}).get('source_roles',[])}
-    valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=expected_ids)
-    if value is not None and value.get('source_roles') and not valid_roles:
+    valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=expected_ids
+                 and (anchor_plan is None or not unassigned_text or set(roles)=={m.message_id for m in unassigned_text}))
+    if value is not None and not valid_roles:
         return dict(action='clarify',ack=ack,questions=_context_questions(state,originals) or [SCOPE_QUESTION],
                     context_reason='invalid_source_roles'),[]
     role_clear=valid_roles and all(m.message_id in roles and roles[m.message_id]['role']=='ancillary'
@@ -378,7 +412,7 @@ def _run(pipeline,job):
         store.finish_followup(job,'dryrun','Simulated '+plan['action'])
         return
     if plan['action'] in ('clarify','chat'):
-        text=_clarify(plan.get('questions',[])) if plan['action']=='clarify' else 'Em đã nhận phản hồi của bạn rồi nhé 😊'
+        text=_clarify(plan.get('questions',[])) if plan['action']=='clarify' else 'Em đã nhận phản hồi của Anh/Chị rồi nhé 😊'
         if plan.get('ack'):
             text=plan['ack']+'\n'+text
         _result(pipeline,job,root,reply,'done',text)
@@ -437,3 +471,8 @@ def sweep(pipeline):
                 _run(pipeline,job)
             except Exception as error:
                 LOG.error('Followup processing failed job_id=%s exception=%s',job['id'],type(error).__name__)
+        for job in pipeline.store.pending_followup_notice_edits():
+            try:
+                _edit_retry_notice(pipeline,job,job['result'],pipeline.store.followup_analysis_retry(job['id']))
+            except Exception as error:
+                LOG.warning('Followup pending edit failed exception=%s',type(error).__name__)

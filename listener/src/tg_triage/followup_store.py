@@ -24,6 +24,10 @@ class FollowupStoreMixin:
                 message_id INTEGER NOT NULL, root_key TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'queued', plan TEXT, result TEXT,
                 UNIQUE(chat_id,message_id));
+            CREATE TABLE IF NOT EXISTS followup_analysis_retries (
+                job_id INTEGER PRIMARY KEY, original_plan TEXT NOT NULL, original_result TEXT,
+                notice_message_id INTEGER NOT NULL, authorized_at TEXT NOT NULL,
+                edit_status TEXT NOT NULL DEFAULT 'planned', edit_reserved_at TEXT);
             CREATE TABLE IF NOT EXISTS followup_operations (
                 job_id INTEGER NOT NULL, ordinal INTEGER NOT NULL, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'planned',
@@ -35,6 +39,7 @@ class FollowupStoreMixin:
         if 'context_state' not in existing:
             self.connection.execute("ALTER TABLE followup_roots ADD COLUMN context_state TEXT NOT NULL DEFAULT '{}'")
         if recover:
+            self.connection.execute("UPDATE followup_analysis_retries SET edit_status='ambiguous' WHERE edit_status='reserved'")
             self.connection.execute("UPDATE followup_operations SET status='ambiguous' WHERE status='reserved'")
             self.connection.execute("""UPDATE followup_jobs SET status='ambiguous'
                 WHERE id IN (SELECT job_id FROM followup_operations WHERE status='ambiguous')""")
@@ -244,3 +249,63 @@ class FollowupStoreMixin:
             JOIN messages m ON m.chat_id=j.chat_id AND m.message_id=j.message_id
             WHERE j.root_key=? AND j.id<? ORDER BY m.received_at,m.message_id LIMIT 100""",
             (job['root_key'],job['id']))]
+
+    def retry_followup_analysis(self, chat_id, message_id, repo, notice_message_id):
+        """One explicit recovery for a failed analysis that never planned ANY root operation."""
+        with self._followup_execution_lock, self._lock:
+            try:
+                self.connection.execute('BEGIN IMMEDIATE')
+                job=self.connection.execute('SELECT * FROM followup_jobs WHERE chat_id=? AND message_id=?',
+                                            (chat_id,message_id)).fetchone()
+                if job is None or job['status']!='done':
+                    self.connection.rollback(); return False
+                plan=json.loads(job['plan'] or '{}')
+                root=self.connection.execute('SELECT * FROM followup_roots WHERE root_key=?',(job['root_key'],)).fetchone()
+                notice=self.connection.execute("SELECT * FROM group_notices WHERE chat_id=? AND message_id=? AND status='sent'",
+                                               (chat_id,message_id)).fetchone()
+                source=self.get(chat_id,root['source_message_id'])
+                operations=self.connection.execute("""SELECT count(*) FROM followup_operations o JOIN followup_jobs j ON j.id=o.job_id
+                    WHERE j.root_key=?""",(job['root_key'],)).fetchone()[0]
+                active=self.connection.execute("""SELECT count(*) FROM followup_jobs WHERE root_key=? AND id!=?
+                    AND status IN ('queued','planned','ambiguous')""",(job['root_key'],job['id'])).fetchone()[0]
+                prior=self.connection.execute('SELECT 1 FROM followup_analysis_retries WHERE job_id=?',(job['id'],)).fetchone()
+                valid=(plan.get('action')=='clarify' and plan.get('context_reason')=='provider_unavailable'
+                       and not operations and not active and not prior and json.loads(root['siblings'])==[]
+                       and root['split_plan'] is None and type(notice_message_id) is int and notice_message_id>0
+                       and notice is not None and notice['notice_message_id']==notice_message_id
+                       and source is not None and type(root['issue_number']) is int and root['issue_number']>0
+                       and source['issue_number']==root['issue_number'] and isinstance(source['issue_url'],str)
+                       and source['issue_url'].casefold()==f"https://github.com/{repo}/issues/{root['issue_number']}".casefold())
+                if not valid:
+                    self.connection.rollback(); return False
+                self.connection.execute("""INSERT INTO followup_analysis_retries
+                    (job_id,original_plan,original_result,notice_message_id,authorized_at) VALUES (?,?,?,?,?)""",
+                    (job['id'],job['plan'],job['result'],notice_message_id,self.clock().isoformat()))
+                self.connection.execute("UPDATE followup_jobs SET status='queued',plan=NULL,result=NULL WHERE id=?",(job['id'],))
+                self.connection.commit()
+                return True
+            except Exception:
+                self.connection.rollback()
+                raise
+
+    @_locked
+    def followup_analysis_retry(self, job_id):
+        row=self.connection.execute('SELECT * FROM followup_analysis_retries WHERE job_id=?',(job_id,)).fetchone()
+        return dict(row) if row else None
+
+    def reserve_followup_notice_edit(self, job_id):
+        with self._lock, self.connection:
+            changed=self.connection.execute("""UPDATE followup_analysis_retries SET edit_status='reserved',edit_reserved_at=?
+                WHERE job_id=? AND edit_status='planned'""",(self.clock().isoformat(),job_id))
+            return changed.rowcount==1
+
+    def finish_followup_notice_edit(self, job_id, success):
+        with self._lock, self.connection:
+            self.connection.execute("UPDATE followup_analysis_retries SET edit_status=? WHERE job_id=? AND edit_status='reserved'",
+                                    ('done' if success else 'ambiguous',job_id))
+
+    @_locked
+    def pending_followup_notice_edits(self):
+        return [dict(row) for row in self.connection.execute("""SELECT j.* FROM followup_analysis_retries r
+            JOIN followup_jobs j ON j.id=r.job_id WHERE r.edit_status='planned' AND j.status IN ('done','blocked')
+            AND j.result IS NOT NULL ORDER BY j.id""")]
