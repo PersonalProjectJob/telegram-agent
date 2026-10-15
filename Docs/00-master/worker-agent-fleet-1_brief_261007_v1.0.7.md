@@ -1,21 +1,27 @@
 # Solution Brief: Worker Agent Fleet
 
-> Tài liệu trình bày giải pháp cho CTO. Nguồn sự thật là Master Doc
+<!-- telegram-triage-historical -->
+> **Telegram triage — phần lịch sử/đề xuất:** mô tả nghiệp vụ triage trong tài liệu này không còn là nguồn hiện hành. Xem [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) cho bản đã triển khai baseline `9746ef2`. Các kế hoạch Fleet/worker ngoài triage, sign-off, incident và số đo cũ được giữ nguyên; không coi đề xuất là chức năng đã chạy.
+
+
+> Tài liệu trình bày giải pháp cho CTO. Nguồn phạm vi Fleet là Master Doc
 > [`worker-agent-fleet-1_master_261007_v1.0.8.md`](./worker-agent-fleet-1_master_261007_v1.0.8.md).
-> Hai tài liệu lệch nhau thì Master Doc đúng.
+> Master Doc quản lý phạm vi Fleet; nghiệp vụ Telegram triage hiện hành theo nguồn TG-01..TG-32 phía trên.
 > **Giai đoạn 1 (MVP) chỉ làm Telegram Triage Agent chạy local** — kế hoạch từng bước: [`worker-agent-fleet-1_setup-plan_261008_v1.0.6.md`](./worker-agent-fleet-1_setup-plan_261008_v1.0.6.md). Tài liệu này mô tả toàn bộ hệ thống về sau.
 > **Giai đoạn 1 kết nối Telegram trực tiếp** (mạng hiện không chặn); MTProxy trên VPS trong các sơ đồ dưới đây là trạng thái về sau, khi bị chặn hoặc khi chuyển lên VPS (D7).
 
 | | |
 |---|---|
 | **Feature ID** | 1 (ticket nội bộ) |
-| **Phiên bản** | v1.0.7 — 2026-10-09 15:27 |
+| **Phiên bản** | v1.0.8 — 2026-10-15 21:15 (Asia/Saigon) |
 | **Người soạn** | AlexChu (Main Agent harness) |
 | **Trạng thái** | Chờ CTO duyệt |
 
 ---
 
 ## 1. Tóm tắt
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 - **Vấn đề:** agent AI đang chạy rời rạc trên máy dev, không có danh tính cố định, không có kênh nhận việc chung. Yêu cầu trên Telegram vẫn phải chép tay sang GitHub.
 - **Giải pháp:** mỗi máy Ubuntu là một **worker** có vai trò cố định, cài sẵn Claude Code, Codex và Antigravity. Một **máy gateway** đọc Telegram bằng tài khoản cá nhân qua MTProto, **phân loại bằng model local Qwen 3.5 9B**, rồi tạo ticket GitHub. Worker nhận ticket, làm việc và báo cáo lại lên Telegram.
@@ -27,6 +33,8 @@
 
 ## 2. Vấn đề hiện tại
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 | Hiện trạng | Hệ quả |
 |---|---|
 | Agent chạy trên máy cá nhân, gắn với phiên làm việc của một người | Người đó tắt máy là việc dừng, không ai tiếp quản |
@@ -37,6 +45,8 @@
 ---
 
 ## 3. Kiến trúc tổng thể
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 ```mermaid
 flowchart LR
@@ -91,6 +101,8 @@ flowchart LR
 
 ## 4. Luồng chính: từ tin nhắn tới báo cáo
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -123,6 +135,8 @@ sequenceDiagram
 ---
 
 ## 5. Bộ phân loại 3 tầng
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 ```mermaid
 flowchart TD
@@ -325,3 +339,9 @@ gantt
 | v1.0.5 | 2026-10-09 | 11:52 | AlexChu (Claude Code) | Cập nhật link: Master v1.0.6, Setup Plan v1.0.4 (có số đo B4 thật) |
 | v1.0.6 | 2026-10-09 | 15:09 | AlexChu (Claude Code) | Thêm D8; cập nhật link Master v1.0.7, Setup Plan v1.0.5 |
 | v1.0.7 | 2026-10-09 | 15:27 | AlexChu (Claude Code) | Cập nhật link: Master v1.0.8, Setup Plan v1.0.6 |
+
+## Changelog chuẩn hóa Telegram triage
+
+| Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
+|---|---|---|---|
+| v1.0.8 | 2026-10-15 21:15 | Codex / owner AlexChu | Gắn nhãn snapshot/đề xuất, thêm đối chiếu nguồn TG-01..TG-32; giữ lịch sử và sign-off. |

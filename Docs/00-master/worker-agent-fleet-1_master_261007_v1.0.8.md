@@ -1,19 +1,34 @@
 # Master Document: Worker Agent Fleet — mỗi máy Ubuntu là một worker, cả đội làm việc qua Telegram
 
+<!-- telegram-triage-historical -->
+> **Telegram triage — phần lịch sử/đề xuất:** mô tả nghiệp vụ triage trong tài liệu này không còn là nguồn hiện hành. Xem [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) cho bản đã triển khai baseline `9746ef2`. Các kế hoạch Fleet/worker ngoài triage, sign-off, incident và số đo cũ được giữ nguyên; không coi đề xuất là chức năng đã chạy.
+
+
 ## Metadata
 - **Feature ID**: 1 (ticket nội bộ — repo chỉ local, chưa có GitHub issue)
 - **Branch Name**: feat/1_worker-agent-fleet
 - **File Naming Convention**: worker-agent-fleet-1_<type>_<yymmdd>_v<major>.<month>.<day>.md
 - **Created Date**: 2026-10-07 15:54
-- **Last Updated**: 2026-10-09 15:27
-- **Current Version**: v1.0.8
+- **Last Updated**: 2026-10-15 21:12 (Asia/Saigon)
+- **Current Version**: v1.0.9
 - **Author**: AlexChu (Main Agent harness, phiên Claude Code)
 - **Status**: Draft
 - **Approved By**: — (chờ duyệt)
 
+## Bổ sung phạm vi 2026-10-15 — Telegram triage hiện hành
+
+User đã yêu cầu chuẩn hóa nghiệp vụ và nghiên cứu Harness THINKING trong phiên này. Đây là quyền thực hiện phần chuẩn hóa/nghiên cứu; **không phải phê duyệt toàn bộ Fleet Master**, các sign-off Draft phía dưới được giữ nguyên.
+
+- [Nguồn nghiệp vụ duy nhất TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md): mô tả bản triển khai tại baseline `9746ef2`, truy vết code/test và giới hạn.
+- [Nghiên cứu THINKING](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md): đề xuất kiến trúc, chưa triển khai hay đổi cấu hình production.
+- Các mục triage trước đây phía dưới là bối cảnh/đề xuất lịch sử; quy tắc hiện hành nằm ở nguồn trên. Lộ trình bootstrap, worker và Fleet khác vẫn giữ giá trị phạm vi riêng.
+- Chỉ thay tài liệu và công cụ kiểm tra drift tài liệu; không đổi runtime, prompt, DB hay cấu hình đang chạy. Không có ticket mới cho việc này; `noissue` trong tên tài liệu là chủ đích. [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43) là liên kết thay đổi, không phải issue yêu cầu.
+
 ## 1. Feature Overview
 
 ### Problem Statement
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 Các agent AI (Claude Code, Codex, Antigravity) hiện chạy rải rác trên máy Windows dev. Chúng không có danh tính worker cố định và không có kênh chung để nhận việc hay báo cáo. Telegram mới chỉ được dùng một chiều (bot gửi thông báo vào thread 718/727/735). Chưa có gì lắng nghe Telegram rồi tạo ticket GitHub.
 
 ### Business Context
@@ -31,6 +46,8 @@ Các agent AI (Claude Code, Codex, Antigravity) hiện chạy rải rác trên m
 ## 2. Scope
 
 ### In-Scope
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 1. **Bootstrap worker Ubuntu**: cài git, gh, Node LTS, Python 3, Claude Code CLI, Codex CLI, Antigravity, tuỳ chọn Docker CE; tạo user và thư mục làm việc; ghi file danh tính worker.
 2. **Danh tính worker**: `worker.yaml` (ví dụ `worker_id`, `role`, `agents`, `telegram_thread`), bản mẫu `worker.example.yaml` trong repo.
 3. **Kết nối Telegram**: giai đoạn 1 kết nối **thẳng** (kiểm tra 2026-10-08: mạng không chặn), code giữ sẵn ô cấu hình proxy. MTProxy (`mtg` trên VPS nước ngoài) là bước tối ưu sau, chỉ làm khi bị chặn hoặc khi chuyển lên VPS (D7).
@@ -60,6 +77,8 @@ Các agent AI (Claude Code, Codex, Antigravity) hiện chạy rải rác trên m
 - **AlexChu harness**: chủ sở hữu dữ liệu, task history và handoff. Worker ghi state theo chuẩn harness (`.agent-tasks/`).
 
 ## 4. Success Metrics (KPIs)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 - **Bootstrap**: một máy Ubuntu 26.04 sạch thành worker sẵn sàng trong **≤ 30 phút**, không tính thời gian người dùng đăng nhập thủ công. Chạy lại script lần 2 không đổi gì (idempotent).
 - **Listener**: **≥ 95%** tin nhắn hợp lệ trong group được theo dõi tạo đúng 1 issue (không trùng), độ trễ **≤ 60 giây**.
 - **Phân loại**: **≥ 85%** nhãn đúng trên tập 50 tin nhắn mẫu do Owner chấm.
@@ -113,6 +132,8 @@ Các agent AI (Claude Code, Codex, Antigravity) hiện chạy rải rác trên m
 ## 10. Notes & Assumptions
 
 ### Quyết định đã chốt (2026-10-07)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 | # | Quyết định | Hệ quả |
 |---|---|---|
 | D1 | Repo `AgentBuilder`, chỉ local | Tracking bằng `Docs/` + `.agent-tasks/`; chưa có issue/PR. Ticket do listener tạo phải trỏ tới **repo khác** (xem Q2). |
@@ -147,3 +168,9 @@ Các agent AI (Claude Code, Codex, Antigravity) hiện chạy rải rác trên m
 - **Q5**: Nghe **group/chat nào**? Có cần nghe tin nhắn riêng (DM) không?
 - **Q6** — *đã trả lời (D7)*: chưa cần MTProxy; giai đoạn 1 kết nối thẳng, VPS là bước tối ưu sau.
 - **Q7**: Lỗi Docker trên máy chủ Docker: cần log (`systemctl status docker`, `journalctl -u docker -n 50`) từ **chính máy đó**.
+
+### Changelog chuẩn hóa
+
+| Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
+|---|---|---|---|
+| v1.0.9 | 2026-10-15 21:12 | Codex / owner AlexChu | Bổ sung phạm vi user yêu cầu, nguồn nghiệp vụ và nghiên cứu; giữ Draft/sign-off gốc. |

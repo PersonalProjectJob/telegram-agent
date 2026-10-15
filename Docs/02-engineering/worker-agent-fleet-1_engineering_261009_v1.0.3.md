@@ -1,11 +1,17 @@
 # Engineering Document: Telegram Triage Agent — B6 listener
 
+<!-- telegram-triage-historical -->
+> **Telegram triage — phần lịch sử/đề xuất:** mô tả nghiệp vụ triage trong tài liệu này không còn là nguồn hiện hành. Xem [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) cho bản đã triển khai baseline `9746ef2`. Các kế hoạch Fleet/worker ngoài triage, sign-off, incident và số đo cũ được giữ nguyên; không coi đề xuất là chức năng đã chạy.
+
+
 ## Metadata
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 - **Feature ID**: 1 (ticket nội bộ)
 - **Branch**: `feat/1_worker-agent-fleet`
 - **Created**: 2026-10-09 15:45
-- **Last Updated**: 2026-10-09 17:49
-- **Version**: v1.0.3
+- **Last Updated**: 2026-10-15 21:12 (Asia/Saigon)
+- **Version**: v1.0.4
 - **Author**: AlexChu (Claude Code)
 - **Status**: Draft — Owner chọn "build thử trên sandbox" khi CTO chưa duyệt (2026-10-09). **Không bật tạo issue vào repo sản phẩm (B8) khi chưa có CTO duyệt.**
 
@@ -26,6 +32,8 @@ Không áp dụng (dịch vụ chạy nền, không có giao diện).
 ## Backend Section
 
 ### B.1 Phạm vi lần này
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 **Làm:** gói Python `tg_triage` (nghe Telegram → phân loại → ghi SQLite → tạo issue GitHub), file systemd, cấu hình mẫu, test.
 
@@ -133,6 +141,8 @@ Làm sạch bắt buộc (áp cho tiêu đề, tóm tắt, tên người gửi, 
 
 ### B.5 Lưu trữ — SQLite (`store.py`)
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 Bảng `messages` — khoá chính `(chat_id, message_id)`:
 
 | Cột | Kiểu | Ghi chú |
@@ -179,6 +189,8 @@ Lỗi Ollama (timeout, không kết nối) ⇒ `needs_human` (không mất tin).
 
 ### B.8 Tầng 2 — `classifier.py`
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 Gọi `POST {url}/api/chat` bằng `urllib` (không thêm thư viện), body:
 ```json
 {"model": "<model>", "stream": false, "think": false,
@@ -199,9 +211,13 @@ Gọi `POST {url}/api/chat` bằng `urllib` (không thêm thư viện), body:
 
 ### B.9 GitHub — `github_issues.py`
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 `POST https://api.github.com/repos/{GH_REPO}/issues` bằng `urllib`, header `Authorization: Bearer <GH_TOKEN>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, timeout 30 s. Trả `(number, html_url)`. Lỗi HTTP ⇒ ném lỗi có mã + thông điệp ngắn, **không in token, không in header**.
 
 ### B.10 Telegram — `telegram_io.py` (file duy nhất import `telethon`)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 - `TelegramClient(session_path, api_id, api_hash, ...)` với tự kết nối lại vô hạn (dùng tham số của bản Telethon đang cài — kiểm trong mã nguồn/tài liệu Telethon, đừng đoán tên tham số), `catch_up=True` để nhận lại tin lỡ khi mất kết nối ngắn.
 - Proxy: `telegram.proxy.host` khác rỗng ⇒ `connection=ConnectionTcpMTProxyRandomizedIntermediate`, `proxy=(host, port, secret)`.
@@ -213,9 +229,13 @@ Gọi `POST {url}/api/chat` bằng `urllib` (không thêm thư viện), body:
 
 ### B.11 Log
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 `logging` ra stdout (journald). **Không bao giờ ghi nội dung tin nhắn, token, api_hash.** Mỗi tin: `chat_id`, `message_id`, `tier`, `type`, `confidence`, `decision`, `issue_number`, `latency_ms`.
 
 ### B.12 systemd — `systemd/tg-triage.service`
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 ```ini
 [Unit]
@@ -242,6 +262,8 @@ WantedBy=multi-user.target
 
 ### B.13 Sửa sau review vòng 1 (v1.0.1 — 2026-10-09) — **ưu tiên hơn các mục phía trên nếu mâu thuẫn**
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 Nguồn: `nx-verifier` (PASS_WITH_FINDINGS) và `nx-reviewer` (CHANGES_NEEDED) trên bản Codex vòng 1. Mỗi mục bắt buộc có test mới chứng minh.
 
 | # | Mức | Vấn đề | Yêu cầu sửa |
@@ -262,6 +284,8 @@ Giữ nguyên: tiêu đề tối đa 80 ký tự **tính cả tiền tố** `[ty
 
 ### B.14 Sửa sau review vòng 2 (v1.0.2 — 2026-10-09) — **ưu tiên hơn các mục phía trên nếu mâu thuẫn**
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 Nguồn: `nx-reviewer` vòng 2 (CHANGES_NEEDED, 1 BLOCKER) và `nx-verifier` vòng 2 (PASS_WITH_FINDINGS). F1–F11 giữ nguyên. Mỗi mục dưới đây bắt buộc có test mới **fail trên code hiện tại**.
 
 | # | Mức | Vấn đề | Yêu cầu sửa |
@@ -280,6 +304,8 @@ Nguồn: `nx-reviewer` vòng 2 (CHANGES_NEEDED, 1 BLOCKER) và `nx-verifier` vò
 Ngoài phạm vi code (Owner/điều phối xử lý): thư mục rác `MagicMock/` và `%SystemDrive%/` ở gốc repo do các lượt test tạo ra — **executor không được tự xoá** (ngoài phạm vi được phép).
 
 ### B.15 Sửa sau review vòng 3 (v1.0.3 — 2026-10-09) — **ưu tiên hơn các mục phía trên nếu mâu thuẫn**
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 Nguồn: `nx-reviewer` vòng 3 (**APPROVED**, 3 điểm nên sửa trước live) và `nx-verifier` vòng 3 (PASS_WITH_FINDINGS, chỉ LOW). Mỗi mục có test mới fail trên code hiện tại.
 
@@ -337,3 +363,9 @@ Telegram group ──MTProto──▶ telegram_io (Queue, 1 worker)
 | v1.0.1 | 2026-10-09 | 16:36 | AlexChu (Claude Code) | Thêm §B.13: 11 mục sửa sau review vòng 1 (2 BLOCKER: vượt giới hạn N/giờ, thoát khung trích dẫn trong issue; CSV injection; trạng thái queued/classifying/pending; umask, khoá tiến trình, secret proxy qua env…) |
 | v1.0.2 | 2026-10-09 | 17:20 | AlexChu (Claude Code) | Thêm §B.14: F12 (BLOCKER: tin độc gây crash lặp vô hạn) + F13–F20 (mất tin khi dừng, tham chiếu GH-/github.com, link bấm được trong tin gốc, đồng hồ lùi, export-csv DB sai, session thiếu/bot, CSV full-width, log Telethon) + F21 (4 test yếu) |
 | v1.0.3 | 2026-10-09 | 17:49 | AlexChu (Claude Code) | Review vòng 3: reviewer APPROVED, verifier PASS_WITH_FINDINGS. Thêm §B.15: F22 (link www.), F23 (FloodWait bị hiểu nhầm là chưa đăng nhập), F24 (ghi lỗi sau khi đã gọi GitHub), F25 (test thiếu) |
+
+## Changelog chuẩn hóa Telegram triage
+
+| Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
+|---|---|---|---|
+| v1.0.4 | 2026-10-15 21:12 | Codex / owner AlexChu | Gắn nhãn snapshot/đề xuất, thêm đối chiếu nguồn TG-01..TG-32; giữ lịch sử và sign-off. |

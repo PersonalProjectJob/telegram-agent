@@ -30,3 +30,9 @@ python console-ui/package.py --verify dist/agentfleet-console.zip
 Packaging reads current source bytes, including reviewed edits that have not been committed. It uses an exact allowlist of UI assets, runtime Python source, prompts and example TOML. Actual config, keys, `.env`, `.agentfleet`, sessions, profiles, tests, caches, private evidence and Git metadata are excluded. Symlinks/reparse points are refused. Existing output is never overwritten: choose a new filename for the next build. Inside this source folder, outputs must be under `dist/`.
 
 Extract the ZIP into a new folder, open its `agentfleet-console` subfolder and run the command above. No Git checkout, virtualenv or dependency install is needed for the console. `package-manifest.json` records every bundled source file's SHA256 and byte length; verification detects changes but is not a signed authenticity guarantee. ZIP paths use forward slashes and launchers work after relocation. The packager prints the archive SHA256 for transfer verification.
+
+## Telegram triage documentation
+
+[Canonical business rules TG-01..TG-32](Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md) describe the reviewed deployed behavior. [THINKING research](Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) is a proposal; [listener operations](listener/README.md) covers runtime commands.
+
+Documentation update v1.0.0 — 2026-10-15 21:12 (Asia/Saigon), owner AlexChu: add canonical triage entry; no runtime changes.
