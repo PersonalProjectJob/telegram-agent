@@ -54,6 +54,81 @@ class NoticeTests(unittest.TestCase):
         model = FakeCaseModel(CaseAnalysis("needs_human", None, missing_info=("Bước tái hiện nào?",)))
         self.pipeline(model=model).process(message())
         self.assertIn("Bước tái hiện nào?", self.calls[0][2])
+
+    def test_untagged_uncertainty_always_asks_once(self):
+        answers = (topic([1], actionable=False, missing_info=("Màn hình nào?",)),
+                   topic([1], confidence=0.65),
+                   topic([1], verdict="needs_human", missing_info=(None, " ", "\u200b", "\ud800")), None)
+        for index, answer in enumerate(answers):
+            with self.subTest(index=index):
+                store = Store(":memory:")
+                self.addCleanup(store.close)
+                github, calls = NumberedGitHub(), []
+                model = FakeTopicModel((answer,)) if answer else FakeTopicModel(None)
+                p = Pipeline(config("live"), store, model, github,
+                             notice_sender=lambda chat, target, text: calls.append((chat, target, text)) or 900)
+                result = p.process(message(1, mentions_listener=False))
+                self.assertEqual((result.decision, result.reason), ("needs_human", "auto_needs_human"))
+                self.assertEqual(len(github.calls), 1)
+                self.assertEqual(github.calls[0].labels, ("needs-human", "source:telegram"))
+                self.assertEqual(calls[0][:2], (message().chat_id, 1))
+                self.assertIn("https://github.com/sandbox/triage/issues/101", calls[0][2])
+                self.assertIn("?", calls[0][2])
+                if index == 0:
+                    self.assertIn("Màn hình nào?", calls[0][2])
+                    self.assertNotIn(group_notices.FALLBACK_QUESTION, calls[0][2])
+                else:
+                    self.assertIn(group_notices.FALLBACK_QUESTION, calls[0][2])
+                self.assertIsNone(p.process(message(1, mentions_listener=False)))
+                self.assertEqual((len(github.calls), len(calls)), (1, 1))
+                tally = store.reconcile(result.case_key)
+                self.assertTrue(tally.balanced)
+                self.assertEqual((tally.received, tally.needs_human, tally.pending_review), (1, 1, 0))
+
+    def test_two_untagged_low_confidence_topics_keep_questions_targets_and_links(self):
+        self.store.clock = Clock()
+        questions = ("Phần đặt lịch cần thay đổi thế nào?", "Lỗi thanh toán ở bước nào?")
+        groups = tuple(topic(ids, confidence=0.65, missing_info=(question,))
+                       for ids, question in zip(((429, 430), (431, 432)), questions))
+        github = NumberedGitHub()
+        p = self.pipeline(window=5, model=FakeTopicModel(groups), github=github)
+        for mid in range(429, 433):
+            p.process(message(mid, sender_id=7, mentions_listener=False))
+        self.store.clock.advance(6)
+        result = p.close_due_cases()[0]
+        self.assertEqual([call[1] for call in self.calls], [429, 431])
+        self.assertEqual(len(github.calls), 2)
+        for offset, target in enumerate((429, 431)):
+            number, text = 101 + offset, self.calls[offset][2]
+            self.assertIn(questions[offset], text)
+            self.assertNotIn(questions[1 - offset], text)
+            self.assertNotIn(group_notices.FALLBACK_QUESTION, text)
+            self.assertIn(f"https://github.com/sandbox/triage/issues/{number}", text)
+            self.assertEqual(github.calls[offset].labels, ("needs-human", "source:telegram"))
+            for mid in (target, target + 1):
+                row = self.store.get(message().chat_id, mid)
+                self.assertEqual((row["decision"], row["reason"], row["issue_number"]),
+                                 ("needs_human", "auto_needs_human", number))
+                self.assertTrue(row["issue_url"].endswith(f"/issues/{number}"))
+        tally = self.store.reconcile(result.case_key)
+        self.assertTrue(tally.balanced)
+        self.assertEqual((tally.received, tally.needs_human, tally.pending_review), (4, 4, 0))
+        self.assertEqual(p.close_due_cases(), [])
+        self.assertEqual(len(self.calls), 2)
+
+    def test_legacy_uncertain_information_question_stays_silent(self):
+        analysis = CaseAnalysis("ticket", classification(type="question"), category="feedback", actionable=False)
+        github = NumberedGitHub()
+        result = self.pipeline(model=FakeCaseModel(analysis), github=github).process(
+            message(1, text="Phiên bản hiện tại là bao nhiêu?", mentions_listener=False))
+        self.assertEqual((result.decision, result.reason), ("chat", "question_no_ticket"))
+        self.assertEqual((github.calls, self.calls), ([], []))
+
+    def test_usable_question_after_empty_entries_prevents_generic_fallback(self):
+        text = group_notices.notice_text(Decision("needs_human", "model", issue_number=42),
+                                        (None, " ", "\u200b", "Ở màn hình nào?"), "sandbox/triage")
+        self.assertIn("Ở màn hình nào?", text)
+        self.assertNotIn(group_notices.FALLBACK_QUESTION, text)
     def test_success_replies_to_logged_message_once_with_trusted_link(self):
         github = FakeGitHub()
         github.create_issue = lambda issue: (42, "https://evil.test/leak?token=secret")
@@ -99,11 +174,11 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(p.close_due_cases(), [])
         self.assertEqual(len(self.calls), 3)
 
-    def test_dry_run_noise_chat_pending_do_not_send(self):
+    def test_dry_run_noise_chat_question_do_not_send(self):
         self.pipeline(mode="dry-run").process(message(2))
         self.pipeline(mode="dry-run", model=FakeClassifier(classification())).process(message(6))
         self.pipeline().process(message(3, text="123"))
-        self.pipeline(model=FakeTopicModel((topic([4], verdict="needs_human"),))).process(message(4, mentions_listener=False))
+        self.pipeline(model=FakeTopicModel((topic([4], verdict="needs_human", category="feedback", type="question", actionable=False),))).process(message(4, mentions_listener=False))
         self.pipeline(model=FakeTopicModel((topic([5], category="chat", type="chat"),))).process(
             message(5, text="Đây là cuộc trao đổi giữa mọi thành viên hôm nay", mentions_listener=False))
         self.assertEqual(self.calls, [])

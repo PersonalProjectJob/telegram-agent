@@ -12,6 +12,7 @@ MAX_QUESTIONS = 3
 MAX_QUESTION_CHARS = 180
 MAX_NOTICE_CHARS = 1100
 TIMEOUT_SECONDS = 15
+FALLBACK_QUESTION = "Bạn muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?"
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -44,12 +45,15 @@ def notice_text(result, missing_info, repo):
             text += f"\nEm đã tạo ticket để tiện theo dõi: {issue_link}"
         questions = []
         if isinstance(missing_info, (tuple, list)):
-            for value in missing_info[:MAX_QUESTIONS]:
+            for value in missing_info[:20]:
                 question = clean_question(value)
                 if question:
                     questions.append("• " + question)
-        if questions:
-            text += "\nThông tin cần làm rõ:\n" + "\n".join(questions)
+                    if len(questions) == MAX_QUESTIONS:
+                        break
+        if not questions:
+            questions.append("• " + FALLBACK_QUESTION)
+        text += "\nThông tin cần làm rõ:\n" + "\n".join(questions)
     elif result.decision == "error":
         text = ("Chưa xác nhận được kết quả tạo GitHub issue cho nội dung này. "
                 "Nhờ Owner kiểm tra repo và hỗ trợ ngay trong group. "

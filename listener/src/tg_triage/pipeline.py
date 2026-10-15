@@ -12,10 +12,9 @@ Assistant definition 12.13 (replaces the "must be tagged" gate of 12.11): a grou
   - it has a /command with content, or a message that tags the listener (forced, whatever the model said:
     a model "chat" or "unsure" gives a needs-human issue), or
   - the model calls it bug, task or feedback (feature included) with enough confidence (automatic).
-Everything else is kept in SQLite without calling GitHub or reacting: `chat` (talk with no work for the
-team; a question, even tagged or /question, is `chat`), `pending_review` (the model was not sure and
-nobody tagged or used a command) or `noise` (no letter at all, an empty command, or the safety block:
-a group that is only contact data or an acknowledgement).
+Uncertain work requests and model failures become needs-human issues and receive clarification replies
+in the source group without requiring a tag or command. Chat (including pure information questions)
+and noise stay in SQLite. A standalone photo without a request still waits as pending_review.
 
 Assistant definition 12.12: the model (with reasoning) judges chat / bug / task / feedback, and no
 keyword list decides it. Code keeps only the safety locks, in `_safety`: a structural block for groups
@@ -41,15 +40,17 @@ LOG = logging.getLogger(__name__)
 CASE_STATUS = {"noise": "noise", "chat": "chat", "pending_review": "pending_review",
                "rate_limited": "error", "error": "error", "case_open": "open", "followup": "done"}
 # Written by code (never by the model) into the "Cần làm rõ" section of a fallback ticket.
-FALLBACK_NOTE = "Agent không tách được chủ đề cho các tin này, cần người đọc và tách thủ công"
-VISION_NOTE = "Agent chưa đọc hoặc chưa xác định được ảnh thuộc yêu cầu nào. Owner vui lòng xác nhận ảnh liên quan và nội dung cần xử lý."
+FALLBACK_NOTE = ("Em không tách được chủ đề cho các tin này. "
+                 "Bạn muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?")
+VISION_NOTE = ("Em chưa đọc hoặc chưa xác định được ảnh thuộc yêu cầu nào. "
+               "Bạn muốn team xử lý phần nào trong ảnh và kết quả mong muốn là gì?")
 # When one window yields several outcomes, the most urgent one is reported as the window's.
 _RANK = {"error": 0, "rate_limited": 1, "issue": 2, "dry_run_issue": 2,
          "needs_human": 3, "dry_run_needs_human": 3, "pending_review": 4, "chat": 5, "noise": 6}
 # 12.11: groups kept in SQLite only; no GitHub call, no reaction.
 NO_TICKET_ACTIONS = ("noise", "chat", "pending_review")
 # Why a group did not become a ticket (stored per message, exported in the CSV `reason` column).
-REASON_PENDING_UNTAGGED = "pending_untagged"  # the model was not sure, nobody tagged or used a command
+REASON_AUTO_NEEDS_HUMAN = "auto_needs_human"  # uncertain work request or model failure, no tag required
 REASON_MODEL_CHAT = "model_chat"              # model: plain talk, nothing for the team
 REASON_FORCED_COMMAND = "forced_command"      # a /command with content: always an issue (12.13)
 REASON_FORCED_MENTION = "forced_mention"      # a message tags the listener: always an issue (12.13)
@@ -442,11 +443,14 @@ class Pipeline:
         has_request = any(m.text.strip() for m in messages)
         question = any(rules.COMMAND.match(m.text) and
                        rules.COMMAND.match(m.text)[1].lower() == "question" for m in messages)
+        question = question or (group is not None and group.type == "question"
+                                and group.category in (None, "feedback"))
         return Plan(f"{first.chat_id}:{first.message_id}", messages, first, "model",
                     "chat" if question else "needs_human" if has_request else "pending_review",
                     clarify=(group.missing_info or (VISION_NOTE,)) if group is not None else (VISION_NOTE,),
                     text=(group.title, group.summary) if group is not None else None,
-                    reason="vision_needs_human" if group is not None else "vision_context_missing",
+                    reason=REASON_QUESTION if question else (
+                        "vision_needs_human" if group is not None else "vision_context_missing"),
                     fallback=group is None, model_reason=group.reason if group is not None else None)
 
     def _noise_plan(self, item, value, reason, tier="rule"):
@@ -476,7 +480,7 @@ class Pipeline:
         3. A /command with content, or a tag from Telegram, FORCES an issue (`forced_command`,
            `forced_mention`): a model "chat" / "unsure" gives a `needs-human` issue, never a drop.
         4. Otherwise the model decides: bug / task / feedback with enough confidence is an issue
-           (`auto_*`); chat is `chat`; anything unsure is `pending_review` (`pending_untagged`).
+           (`auto_*`); chat is `chat`; uncertain requests need clarification (`auto_needs_human`).
         5. Safety block: a group with no product content (only contact data or an acknowledgement) is
            never an issue, even forced, unless it holds an explicit command with content.
         Every outcome except an issue keeps all messages in SQLite and is reconciled.
@@ -491,6 +495,8 @@ class Pipeline:
             REASON_FORCED_MENTION if _tagged(plan.messages) else None)
         if plan.action == "noise":
             return plan
+        if plan.action == "chat" and plan.reason == REASON_QUESTION:
+            return plan
         if (isinstance(value, Classification) and value.type == "question"
                 and plan.action in ("issue", "needs_human")):
             return self._set_aside(plan, "chat", REASON_QUESTION, replace(value, type="chat"))
@@ -500,9 +506,9 @@ class Pipeline:
                 return self._set_aside(plan, "chat", REASON_MODEL_CHAT, plan.classification)
             reason = self._auto_reason(plan)
             if reason is None:
-                return self._set_aside(plan, "pending_review", REASON_PENDING_UNTAGGED,
-                                       plan.classification)
-            candidate = replace(plan, reason=reason)
+                candidate = replace(plan, action="needs_human", reason=REASON_AUTO_NEEDS_HUMAN)
+            else:
+                candidate = replace(plan, reason=reason)
         elif plan.action in ("issue", "needs_human") and (not model_chat or explicit):
             # An explicit command keeps its own type even when the model said chat.
             candidate = replace(plan, reason=forced, chat_hint=False)
@@ -588,6 +594,7 @@ class Pipeline:
                 for g in groups) and any(g.verdict in ("ticket", "needs_human") for g in groups)
         if vision and (groups is None or any(
                 any(by_id[i].has_image for i in g.message_ids)
+                and not (g.type == "question" and g.category in (None, "feedback"))
                 and (g.verdict == "needs_human" or not any(by_id[i].text.strip() for i in g.message_ids))
                 for g in groups) or split_image_reply or dropped_image_beside_ticket):
             return [self._vision_fallback(chunk)]
@@ -617,8 +624,7 @@ class Pipeline:
                 value = Classification(rule.type, 1.0, source.title, source.summary,
                                        source.priority if usable else rule.priority)
                 needs = group.verdict == "needs_human" or bool(missing)
-                # 12.11 point 7: the command still goes through the category gate; a model that
-                # calls the group chat sends it to pending_review (never silently dropped).
+                # Explicit commands preserve their type; missing context needs clarification.
                 return Plan(key, messages, first, "rule", "needs_human" if needs else "issue", value,
                             typed=True, clarify=missing, text=(value.title, value.summary),
                             chat_hint=group.category == "chat", fallback=fallback,
@@ -634,6 +640,9 @@ class Pipeline:
         elif category is None and group.type in TICKET_TYPES and not question:
             group = replace(group, type=canonical_category(group.type))   # legacy answer: fold feature
         action, value = decide_group(group, self.config.ollama.confidence_threshold)
+        if question:
+            return Plan(key, messages, first, "model", "chat", _chat_value(wording),
+                        clarify=(), reason=REASON_QUESTION, model_reason=group.reason)
         if category == "chat" and group.verdict != "needs_human":
             # Plain talk with nothing for the team (12.11); a tag is judged later, by `_safety`.
             return Plan(key, messages, first, "model", "chat", _chat_value(wording), clarify=(),
@@ -656,6 +665,11 @@ class Pipeline:
         if reason == "rule_noise" and any(rules.is_command(item.text) for item in ordered):
             reason = REASON_SAFETY_BLOCK   # an empty command
         category = analysis.category if analysis is not None else None
+        wording = analysis.classification if analysis is not None else None
+        if (tier == "model" and isinstance(wording, Classification)
+                and wording.type == "question" and category in (None, "feedback")):
+            return Plan(case_key, ordered, first, tier, "chat", _chat_value(wording),
+                        clarify=(), reason=REASON_QUESTION, model_reason=analysis.reason)
         chat = category == "chat" and tier == "model"
         if chat and action == "noise":
             action, reason = "chat", REASON_MODEL_CHAT
@@ -667,6 +681,8 @@ class Pipeline:
         unusable = action == "needs_human" and classification is None and not unsure
         missing = analysis.missing_info if analysis is not None and tier == "model" else ()
         clarify, typed, text = (missing if missing else None), False, None
+        if action == "needs_human" and isinstance(wording, Classification):
+            text = (wording.title, wording.summary)
         if missing and action == "issue":
             # 12.9: a confident ticket that still lacks information is a needs-human ticket with questions.
             action, typed, clarify = "needs_human", True, missing

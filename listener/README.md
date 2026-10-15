@@ -133,7 +133,7 @@ timeout_seconds = 600      # reasoning is slow on CPU; measure on the real host 
   `missing_info` (list) and `reason` (a short why). `verdict` is optional: when absent it is derived
   (`chat` = noise, a ticket category = ticket, or needs-human when `actionable` is false).
 - **`reason`** is stored for the reviewer only, in `messages.model_reason` (a new column added with a safe
-  `ALTER`; the older `reason` column keeps the code's own reason such as `pending_untagged`) and exported in the
+  `ALTER`; the older `reason` column keeps the code's own reason such as `auto_needs_human`) and exported in the
   `model_reason` column of `export-csv`. It is bounded to 300 characters and is never put in an issue, a log
   line or a GitHub call. The model is told not to put e-mail or phone numbers in it.
 - **Rules that stay in code** (`Pipeline._safety`, see "Issue creation rules (12.13)" below): a `/command`
@@ -266,8 +266,8 @@ decides everything:
   has a command, see below) with a "Cần làm rõ" section listing the (sanitized, at most 5 x 200 characters)
   `missing_info`, or a fixed line when there are none. The type label is kept only when it is trustworthy
   (explicit command, or a confident ticket that still lacks information). A `needs_human` VERDICT or a
-  confidence below `[ollama] confidence_threshold` is the model saying "not sure": since 12.13 that is
-  `pending_review` when nobody tagged or used a command, and a `needs-human` issue when somebody did.
+  confidence below `[ollama] confidence_threshold` is the model saying "not sure": that is
+  a `needs-human` issue with a clarification reply in the source group, regardless of tags or commands.
 - **One issue per group, one group per message:** the issue quotes all messages of its group in time
   order (no 10-message cap) and nothing of any other group. Titles, summaries and questions go through the
   same sanitizer as before; model text is never executed or used as a label. Trusted bug, feedback and
@@ -315,7 +315,8 @@ decision is taken after the model has judged each group, in `Pipeline._safety`:
 2. **Automatic issue.** The model calls the group bug, task or feedback with confidence >=
    `[ollama] confidence_threshold`: an issue without any tag (`reason = auto_bug`, `auto_task`,
    `auto_feedback`). Below the threshold, or when the model is unsure (`actionable = false`) or failed, and
-   nobody tagged or used a command, the group is `pending_review` (`reason = pending_untagged`).
+   nobody tagged or used a command, the group becomes a `needs_human` issue (`reason = auto_needs_human`)
+   and replies to its first message with questions. A tag or command is never required.
 3. **Questions are not tickets.** A model `type = question` under `feedback`, or a `/question` command, is
    `chat` (`reason = question_no_ticket`) even when tagged: no issue, no reaction (a `/question` is not hearted
    on receipt either).
@@ -336,7 +337,7 @@ all appear in `export-csv`; the `decision`, `type`, `reason` and `mentions_liste
 | decision | meaning | typical `reason` |
 |---|---|---|
 | `chat` | talk with no work for the team, or a question | `model_chat`, `question_no_ticket` |
-| `pending_review` | the model was not sure and nobody tagged or used a command | `pending_untagged` |
+| `pending_review` | standalone photo without a request; historical review rows remain unchanged | `vision_context_missing` |
 | `noise` | no letter at all, an empty command, a model noise group, or the safety block | `rule_noise`, `model_noise`, `safety_block` |
 
 The category gate of 12.11 (tag AND category) no longer applies; the `no_direct_call`, `model_unsure` and
@@ -466,8 +467,9 @@ Linux permissions and systemd behavior must be verified later on the ThinkPad.
 
 In live mode, each topic that ends as `needs_human` receives a plain-text reply to its first
 Telegram message, asking the sender or Owner to confirm/add information in that same group.
-The reply includes up to three short, sanitized missing-information questions when available
-and a GitHub issue link built from the configured repository and positive issue number.
+The reply includes up to three short, sanitized missing-information questions, using a safe
+product-context question if none are usable, and a GitHub issue link built from the configured
+repository and positive issue number.
 GitHub creation failures (including an ambiguous result) ask Owner to check the repository
 before any manual retry. The issue hourly limit also produces a group notice. Successful issues
 receive a friendly confirmation with their GitHub ticket link, replying to the first message of

@@ -206,13 +206,14 @@ class AnalysisTests(CaseBase):
         self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "forced_mention"))
         self.assertIsNone(self.row(1)["type"])
 
-    def test_needs_human_verdict_without_a_tag_is_kept_for_review(self):
+    def test_needs_human_verdict_without_a_tag_creates_a_clarification_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(CaseAnalysis("needs_human", None, (1,))))
         pipeline.process(msg(1, 0, mentions_listener=False))
         results = self.close_all(pipeline)
-        self.assertEqual([item.decision for item in results], ["pending_review"])
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
+        self.assertEqual([item.decision for item in results], ["needs_human"])
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "auto_needs_human"))
 
     def test_confidence_below_threshold_with_a_tag_is_a_needs_human_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1], confidence=0.69)))
@@ -220,11 +221,12 @@ class AnalysisTests(CaseBase):
         self.assertEqual(self.close_all(pipeline)[0].decision, "needs_human")
         self.assertEqual(len(self.github.calls), 1)
 
-    def test_confidence_below_threshold_without_a_tag_is_kept_for_review(self):
+    def test_confidence_below_threshold_without_a_tag_creates_a_clarification_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1], confidence=0.69)))
         pipeline.process(msg(1, 0, mentions_listener=False))
-        self.assertEqual(self.close_all(pipeline)[0].decision, "pending_review")
-        self.assertEqual(self.github.calls, [])
+        self.assertEqual(self.close_all(pipeline)[0].decision, "needs_human")
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
 
     def test_ticket_verdict_with_invalid_type_is_needs_human(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1], type="noise")))

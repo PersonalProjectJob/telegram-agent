@@ -95,6 +95,35 @@ class ImageContextTests(unittest.TestCase):
         self.assertIn("[2]", payload["messages"][-1]["content"])
         self.assertEqual(len(self.github.calls), 1)
 
+    def test_uncertain_pure_information_question_about_image_stays_silent(self):
+        p = self.pipeline(envelope(topic([1], verdict="needs_human", category="feedback",
+                                        type="question", actionable=False, confidence=0.3)))
+        p.process(replace(self.photo(), text="Màn hình này là phiên bản nào?"))
+        self.clock.advance(3)
+        result = p.close_due_cases()[0]
+        self.assertEqual((result.decision, result.reason), ("chat", "question_no_ticket"))
+        self.assertEqual((self.github.calls, self.notices), ([], []))
+
+    def test_image_information_question_does_not_swallow_independent_task(self):
+        p = self.pipeline(envelope(
+            topic([1], verdict="needs_human", category="feedback", type="question",
+                  actionable=False, confidence=0.3),
+            topic([2], category="task", type="task", title="Bổ sung hướng dẫn SMS")))
+        p.process(replace(self.photo(), text="Màn hình này là phiên bản nào?"))
+        p.process(self.request())
+        self.clock.advance(3)
+        result = p.close_due_cases()[0]
+        first = self.store.get(self.photo().chat_id, 1)
+        second = self.store.get(self.photo().chat_id, 2)
+        self.assertEqual((first["decision"], first["reason"], first["issue_number"]),
+                         ("chat", "question_no_ticket", None))
+        self.assertEqual((second["decision"], second["reason"]), ("issue", "auto_task"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.github.calls[0].labels, ("task", "triage", "source:telegram"))
+        self.assertNotIn("Màn hình này là phiên bản nào", self.github.calls[0].body)
+        self.assertEqual([notice[1] for notice in self.notices], [2])
+        self.assertTrue(self.store.reconcile(result.case_key).balanced)
+
     def test_after_120_seconds_different_sender_chat_and_forwards_are_separate(self):
         for second in (self.request(seconds=121), replace(self.request(), sender_id=8),
                        replace(self.request(), chat_id=-888),

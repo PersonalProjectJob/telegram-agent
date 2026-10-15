@@ -65,13 +65,15 @@ class SafetyLockTests(unittest.TestCase):
         self.assertEqual(row["issue_number"], 101)
         self.assertEqual(row["model_reason"], REASON)
 
-    def test_a_no_tag_group_the_model_is_not_sure_is_a_bug_waits_for_review(self):
+    def test_a_no_tag_group_the_model_is_not_sure_is_a_bug_asks_for_clarification(self):
         pipeline = provider_pipeline(self, envelope(group_json([1], confidence=0.5)))
         result = pipeline.process(message(1, "không đăng nhập được app nexora", mentions_listener=False))
         row = self.store.get(CHAT, 1)
-        self.assertEqual((result.decision, row["reason"]), ("pending_review", "pending_untagged"))
-        self.assertEqual(self.github.calls, [])
-        self.assertIsNone(row["issue_number"])
+        self.assertEqual((result.decision, row["reason"]), ("needs_human", "auto_needs_human"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual(row["issue_number"], 101)
+        self.assertEqual(self.github.calls[0].labels, ("needs-human", "source:telegram"))
         self.assertEqual(row["type"], "bug")                     # what the model thought is kept for the reviewer
         self.assertEqual(row["model_reason"], REASON)
 
@@ -109,13 +111,14 @@ class SafetyLockTests(unittest.TestCase):
         self.assertEqual(len(self.github.calls), 1)
         self.assertIn("needs-human", self.github.calls[0].labels)
 
-    def test_a_no_tag_message_the_model_finds_unclear_waits_for_review(self):
+    def test_a_no_tag_message_the_model_finds_unclear_asks_for_clarification(self):
         pipeline = provider_pipeline(self, envelope(group_json(
             [1], actionable=False, confidence=0.3, missing_info=["Bạn cần gì?"])))
         pipeline.process(message(1, "cái này sao vậy", mentions_listener=False))
         row = self.store.get(CHAT, 1)
-        self.assertEqual((row["decision"], row["reason"]), ("pending_review", "pending_untagged"))
-        self.assertEqual(self.github.calls, [])
+        self.assertEqual((row["decision"], row["reason"]), ("needs_human", "auto_needs_human"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
 
     def test_a_command_the_model_finds_unclear_is_still_a_ticket_for_a_human(self):
         pipeline = provider_pipeline(self, envelope(group_json([1, 2], actionable=False, confidence=0.3)),
@@ -154,7 +157,7 @@ class SafetyLockTests(unittest.TestCase):
         pipeline.close_due_cases()
         tally = self.store.connection.execute("SELECT * FROM reconciliation").fetchone()
         self.assertEqual((tally["received"], tally["issue"], tally["chat"], tally["pending_review"],
-                          tally["balanced"], tally["status"]), (3, 1, 1, 1, 1, "done"))
+                          tally["balanced"], tally["status"]), (3, 1, 1, 0, 1, "done"))
 
 
 class ThinkingTests(unittest.TestCase):
@@ -485,15 +488,16 @@ class SingleCaseMissingInfoTests(CaseBase):
         self.assertNotIn("LY-DO", issue.body)
         self.assertEqual(self.row(1)["model_reason"], REASON)
 
-    def test_a_case_model_ticket_that_is_not_actionable_waits_for_review(self):
+    def test_a_case_model_ticket_that_is_not_actionable_asks_for_clarification(self):
         # 12.13: without a tag (was: tagged, pending_review). A tagged one would be a needs-human issue.
         analysis = CaseAnalysis("ticket", classification(), (1,), "bug", False, REASON)
         pipeline = self.pipeline(model=FakeCaseModel(analysis))
         pipeline.process(msg(1, 0, text="app lỗi đăng nhập", mentions_listener=False))
         self.clock.advance(60)
         pipeline.close_due_cases()
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "auto_needs_human"))
 
 
 if __name__ == "__main__":

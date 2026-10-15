@@ -374,16 +374,17 @@ class NeedsHumanTests(TopicBase):
         self.assertEqual(self.row(1)["reason"], "forced_mention")
         self.assertEqual(self.reconciliation()["needs_human"], 2)
 
-    def test_needs_human_verdict_without_a_tag_is_kept_for_review(self):
+    def test_needs_human_verdict_without_a_tag_creates_a_clarification_issue(self):
         pipeline = self.pipeline(FakeTopicModel((topic(
             [1, 2], verdict="needs_human", title="Chưa rõ", summary="Thiếu ngữ cảnh."),)))
         for index, text in enumerate(("cái này sao vậy", "xem giúp mình"), 1):
             pipeline.process(msg(index, index, text=text, mentions_listener=False))
         self.close(pipeline)
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual(self.decisions(1, 2), ["pending_review"] * 2)
-        self.assertEqual(self.row(1)["reason"], "pending_untagged")
-        self.assertEqual(self.reconciliation()["pending_review"], 2)
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual(self.decisions(1, 2), ["needs_human"] * 2)
+        self.assertEqual(self.row(1)["reason"], "auto_needs_human")
+        self.assertEqual(self.reconciliation()["needs_human"], 2)
 
     def test_a_ticket_without_missing_info_has_no_clarify_section(self):
         pipeline = self.pipeline(FakeTopicModel((topic([1], details={
@@ -417,12 +418,13 @@ class NeedsHumanTests(TopicBase):
         self.assertEqual(self.row(1)["type"], "bug")
         self.assertEqual(self.row(1)["reason"], "forced_mention")
 
-    def test_low_confidence_group_without_a_tag_is_kept_for_review_not_an_issue(self):
+    def test_low_confidence_group_without_a_tag_creates_a_clarification_issue(self):
         pipeline = self.pipeline(FakeTopicModel((topic([1], confidence=0.5),)))
         pipeline.process(msg(1, 1, text="app nexora bị lỗi", mentions_listener=False))
         self.close(pipeline)
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual(self.decisions(1), ["pending_review"])
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual(self.decisions(1), ["needs_human"])
         self.assertEqual(self.row(1)["type"], "bug")
 
     def test_an_unusable_group_becomes_needs_human_without_losing_the_partition(self):
