@@ -15,6 +15,7 @@ from .github_issues import GitHubIssues
 from .pipeline import Pipeline
 from .provider import build_provider
 from .store import Store
+from .usage import UsageRecorder
 from .runtime import AlreadyRunning, ProcessLock, validate_data_directories
 
 
@@ -57,7 +58,8 @@ def main(argv=None) -> int:
                 try:
                     from .telegram_io import run
                     # Fail at startup, not per window, when the topics prompt is not installed.
-                    classifier = build_provider(config, topics_prompt=load_prompt("topics.md"))
+                    classifier = build_provider(config, topics_prompt=load_prompt("topics.md"),
+                                                usage=UsageRecorder(store, config))
                     github = (GitHubIssues(config.gh_repo, config.gh_token)
                               if config.mode == "live" else None)
                     # Issues use REST; image uploads use the gh CLI (Assistant definition 12.8).

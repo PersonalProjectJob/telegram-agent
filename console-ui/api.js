@@ -29,6 +29,7 @@ window.AgentFleetAPI = (() => {
   return {
     APIError,
     async bootstrap() { const data = await request('/api/bootstrap', {timeout:15000}); csrfToken = data.csrfToken; return data; },
+    usage() { return request('/api/usage', {timeout:15000}); },
     test(id, settings, apiKey) { return request(`${servicePath(id)}/test`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {})},timeout:120000}); },
     save(id, settings, apiKey, expectedRevision) { return request(`${servicePath(id)}/save`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {}),expectedRevision},timeout:30000}); },
     apply(id, expectedRevision) { return request(`${servicePath(id)}/apply`, {method:'POST',body:{expectedRevision},timeout:210000}); }

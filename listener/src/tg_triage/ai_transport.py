@@ -15,6 +15,9 @@ from urllib.parse import urlsplit
 PROVIDERS = {'ollama', 'anthropic', 'openai', 'deepseek', 'compatible'}
 ENDPOINTS = {'anthropic': 'https://api.anthropic.com', 'openai': 'https://api.openai.com/v1', 'deepseek': 'https://api.deepseek.com'}
 LIMIT = 1024 * 1024
+TEXT_INPUT_LIMIT = 128 * 1024
+IMAGE_INPUT_LIMIT = 20 * 1024 * 1024
+IMAGE_URL = re.compile(r'data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}')
 
 class ProviderError(ValueError):
     def __init__(self, code='provider_failed'):
@@ -140,11 +143,51 @@ def read_key(path, scope, environ=None, group_name=None):
     except Exception:
         raise ProviderError('credentials_unavailable') from None
 
-def redact(text):
-    text = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[email]', text)
-    return re.sub(r'(?<!\w)\+?\d[\d () .-]{6,}\d(?!\w)', '[phone]', text)
+_EMAIL = re.compile(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}')
+# Kept verbatim: timestamps (YYYY-MM-DD [HH:MM[:SS]], dd.mm.yyyy, a lone HH:MM), bracketed message ids
+# ([123456789], [trả lời 123456789]) and the code-built id list. Everything else that looks like a phone number goes.
+_REDACT = re.compile(
+    r'(?P<keep>\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?(?![\d:-])'
+    r'|(?<![\d.:-])\d{1,2}[.-]\d{1,2}[.-]\d{4}(?![\d.:-])'
+    r'|(?<![\d:])\d{1,2}:\d{2}(?::\d{2})?(?![\d:])'
+    r'|\[[1-9]\d*\]|\[trả lời [1-9]\d*\]'
+    r'|(?<=các ID bắt buộc: )[1-9]\d*(?:, [1-9]\d*)*)'
+    r'|(?P<phone>(?<!\w)\(?\+?\d[\d () .-]{6,}\d(?!\w|:\d))')
 
-def complete(provider, base_url, model, messages, schema, *, key='', timeout=60, max_output=2048, think=False, context=None, transport=request_json):
+def redact(text):
+    text = _EMAIL.sub('[email]', text)
+    return _REDACT.sub(lambda m: m.group('keep') or '[phone]', text)
+
+def _count(value):
+    return value if type(value) is int and value >= 0 else 0
+
+def usage_of(provider, envelope):
+    """Token counts from a provider envelope; counts only, never content. Unknown shapes give zeros."""
+    zero = {'prompt_tokens': 0, 'completion_tokens': 0, 'cache_hit_tokens': 0}
+    try:
+        if provider == 'ollama':
+            return {'prompt_tokens': _count(envelope.get('prompt_eval_count')),
+                    'completion_tokens': _count(envelope.get('eval_count')), 'cache_hit_tokens': 0}
+        usage = envelope.get('usage')
+        if not isinstance(usage, dict):
+            return zero
+        if provider == 'anthropic':
+            hit = _count(usage.get('cache_read_input_tokens'))
+            return {'prompt_tokens': _count(usage.get('input_tokens')) + hit,
+                    'completion_tokens': _count(usage.get('output_tokens')), 'cache_hit_tokens': hit}
+        details = usage.get('prompt_tokens_details')
+        hit = _count(usage.get('prompt_cache_hit_tokens')) or (
+            _count(details.get('cached_tokens')) if isinstance(details, dict) else 0)
+        return {'prompt_tokens': _count(usage.get('prompt_tokens')),
+                'completion_tokens': _count(usage.get('completion_tokens')), 'cache_hit_tokens': hit}
+    except Exception:
+        return zero
+
+def _image_parts(messages):
+    return [part for m in messages if isinstance(m.get('content'), list)
+            for part in m['content'] if isinstance(part, dict) and part.get('type') == 'image_url']
+
+def complete(provider, base_url, model, messages, schema, *, key='', timeout=60, max_output=2048, think=False, context=None, transport=request_json, usage_sink=None):
     validate_endpoint(provider, base_url)
     if not isinstance(model, str) or not model.strip() or len(model) > 200:
         raise ProviderError('invalid_model')
@@ -152,8 +195,15 @@ def complete(provider, base_url, model, messages, schema, *, key='', timeout=60,
         raise ProviderError('key_required')
     if provider != 'ollama' and think:
         raise ProviderError('thinking_unsupported')
+    images = _image_parts(messages)
+    if images and provider in ('ollama', 'anthropic'):
+        raise ProviderError('images_unsupported')
+    for part in images:
+        url = part.get('image_url', {}).get('url') if isinstance(part.get('image_url'), dict) else None
+        if not isinstance(url, str) or not IMAGE_URL.fullmatch(url):
+            raise ProviderError('invalid_image')   # only inline data: images; a remote URL is never fetched
     # Existing local vision supports five 10MiB images including base64 overhead.
-    input_limit=75*1024*1024 if provider=='ollama' else 128*1024
+    input_limit=75*1024*1024 if provider=='ollama' else IMAGE_INPUT_LIMIT if images else TEXT_INPUT_LIMIT
     if len(json.dumps(messages).encode()) > input_limit:
         raise ProviderError('input_too_large')
     headers = {'Content-Type':'application/json'}
@@ -176,6 +226,9 @@ def complete(provider, base_url, model, messages, schema, *, key='', timeout=60,
         path = '/chat/completions'
     try:
         envelope = transport(base_url.rstrip('/')+path, body, headers, min(max(float(timeout), 1), 1800), provider)
+        if usage_sink is not None:
+            try:usage_sink(usage_of(provider, envelope))
+            except Exception:pass
         if provider == 'anthropic':
             parts = [p for p in envelope['content'] if p.get('type')=='tool_use' and p.get('name')=='result']
             result = parts[0]['input'] if len(parts)==1 else json.loads(''.join(p.get('text','') for p in envelope['content'] if p.get('type')=='text'))

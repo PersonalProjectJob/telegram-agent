@@ -10,10 +10,12 @@ import json
 import logging
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from .ai_transport import usage_of
 from .model_lock import MODEL_LOCK, LockUnavailable
 
 from .models import (CATEGORIES, CaseAnalysis, Classification, DETAIL_LIST_KEYS, DETAIL_STRING_KEYS,
@@ -287,6 +289,8 @@ class Classifier:
     """Talks to Ollama `/api/chat`. `think` turns the model's reasoning on (12.12, default on)."""
 
     supports_vision = True
+    usage = None          # optional UsageRecorder; every model call then leaves one accounting row
+    usage_role = "primary"
 
     def _messages(self, system, messages, images):
         system += "\n" + DETAILS_PROMPT
@@ -325,7 +329,8 @@ class Classifier:
         return result
 
     def __init__(self, settings, *, opener=urlopen, prompt=None, case_prompt=None, topics_prompt=None,
-                 think=True):
+                 think=True, usage=None):
+        self.usage = usage
         self.settings = settings
         self.opener = opener
         self.prompt = load_prompt() if prompt is None else prompt
@@ -380,6 +385,11 @@ class Classifier:
     def _transcript(messages) -> str:
         return messages if isinstance(messages, str) else build_transcript(messages)
 
+    def _record(self, outcome, usage, started):
+        if self.usage is not None:
+            self.usage.record("ollama", self.settings.model, self.usage_role, outcome, usage,
+                              (time.monotonic() - started) * 1000)
+
     def _ask(self, body, parse, attempts=2):
         if hasattr(self, "max_output"):
             body.setdefault("options", {})["num_predict"] = self.max_output
@@ -388,34 +398,47 @@ class Classifier:
                 self.settings.url + "/api/chat",
                 data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST")
+            started, usage, outcome = time.monotonic(), {}, "ok"
             try:
                 with MODEL_LOCK.enter():
+                    started = time.monotonic()   # latency excludes the wait for the model lock
                     if self.opener is urlopen:
                         from .ai_transport import complete
                         value = complete('ollama', self.settings.url, self.settings.model,
                             body['messages'], body['format'], timeout=self.settings.timeout_seconds,
-                            max_output=getattr(self, 'max_output', 2048), think=self.think)
+                            max_output=getattr(self, 'max_output', 2048), think=self.think,
+                            usage_sink=usage.update)
                         envelope = {'message': {'content': json.dumps(value)}}
                     else:
                         with self.opener(request, timeout=self.settings.timeout_seconds) as response:
                             raw = response.read(1024 * 1024 + 1)
                             if len(raw) > 1024 * 1024:
+                                outcome = "response_too_large"
                                 return None
                             envelope = json.loads(raw)
+                            usage = usage_of("ollama", envelope)
                 # Only `content` is read. `message.thinking` (the reasoning) is deliberately ignored:
                 # it is never parsed, logged or stored.
                 content = envelope["message"]["content"]
                 result = parse(content)
+                if result is None:
+                    outcome = "invalid_output"
             except LockUnavailable as error:
                 LOG.error("model_lock I/O failed exception=%s", type(error).__name__)
+                outcome = None   # no model call was made
                 return None
             except (URLError, OSError) as error:
                 LOG.warning("Ollama request failed exception=%s", type(error).__name__)
                 if hasattr(error, "close"):
                     error.close()
+                outcome = "provider_failed"
                 return None
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError) as error:
+                outcome = getattr(error, "code", "invalid_json")
                 result = None
+            finally:
+                if outcome is not None:
+                    self._record(outcome, usage, started)
             if result is not None:
                 return result
         return None

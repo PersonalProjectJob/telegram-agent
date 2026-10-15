@@ -45,6 +45,15 @@ Console vẫn bind loopback. Browser phải truy cập cùng host/URL; bản nà
 
 `deploy/build_wheel.py` dùng source đã commit. Người dùng cần review/commit thay đổi runtime trước khi tạo wheel triển khai; kiểm wheel có `ai_transport.py` và `receipt.py`. Lệnh console local chạy trực tiếp source nên không cần commit để dùng thử. Không có commit/push được thực hiện tự động.
 
+## Chi phí API
+
+Mục **Chi phí API** (`#usage`, `GET /api/usage`) hiển thị số lần gọi, token, chi phí, lỗi và số lần fallback sang local của Telegram Triage theo Hôm nay / 7 ngày / 30 ngày, kèm bảng theo provider/model và biểu đồ cột 30 ngày. Console **không** mở database của runtime: nó chỉ đọc một tệp tổng hợp JSON `agentfleet-usage.json` mà runtime Triage ghi cạnh `storage.db_path` (cùng thư mục với file receipt `agentfleet-ready.json`).
+
+- Tệp tối đa 512 KiB, được kiểm schema chặt (số không âm, chuỗi/mảng có giới hạn, `schema` phải là 1). Trả về browser chỉ gồm các trường đã kiểm; không bao giờ có đường dẫn tệp hay lỗi hệ điều hành.
+- Trạng thái: `ok`; `missing` (runtime chưa ghi, hoặc không đọc được cấu hình Triage); `stale` (`generatedAt` cũ hơn 24 giờ, vẫn hiển thị số liệu cuối); `invalid` (sai schema, quá lớn, không phải JSON hoặc không đọc được).
+- Chi phí lấy nguyên từ tệp runtime ghi; console không tự tính hay đối chiếu với hoá đơn provider. Trình duyệt chỉ lưu lựa chọn khoảng thời gian trong `localStorage`.
+- Thêm route này không đổi danh sách tệp của ZIP portable.
+
 ## Verification
 
 Các lệnh kiểm thử bên dưới dành cho checkout source đầy đủ. ZIP portable không chứa tests hoặc báo cáo evidence.
