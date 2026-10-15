@@ -619,9 +619,13 @@ class WheelTests(unittest.TestCase):
         self.assertTrue(verify_record(data))
         with zipfile.ZipFile(io.BytesIO(data)) as wheel:
             prompts = [n for n in wheel.namelist() if '.data/data/share/tg-triage/prompts/' in n]
-            self.assertEqual(len(prompts), 4)
-            followup = next(n for n in prompts if n.endswith('/followup.md'))
-            self.assertEqual(wheel.read(followup), (ROOT/'listener/prompts/followup.md').read_bytes())
+            expected = ('classify.md', 'case.md', 'topics.md', 'followup.md', 'thinking-topics.md')
+            prompt_root = 'tg_triage-1.0.0.data/data/share/tg-triage/prompts/'
+            self.assertEqual(set(prompts), {prompt_root + filename for filename in expected})
+            self.assertEqual(len(prompts), len(expected))
+            for filename in expected:
+                self.assertEqual(wheel.read(prompt_root + filename),
+                                 (ROOT/'listener/prompts'/filename).read_bytes())
 
     def test_real_suites_from_real_staged_layout(self):
         # Pre-commit integration: archive actual worktree bytes, never smoke-test shapes.
