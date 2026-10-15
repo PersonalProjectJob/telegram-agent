@@ -40,7 +40,7 @@ class OllamaConfig:
     confidence_threshold: float
 
 
-SUPPORTED_PROVIDERS = ("ollama",)
+SUPPORTED_PROVIDERS = ("ollama", "anthropic", "openai", "deepseek", "compatible")
 # Assistant definition 12.12: reasoning is slow on CPU, so the default wait is generous.
 DEFAULT_MODEL_TIMEOUT_SECONDS = 600.0
 
@@ -57,6 +57,10 @@ class ModelConfig:
     name: str = "qwen3.5:9b"
     think: bool = True
     timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS
+    base_url: str = "http://127.0.0.1:11434"
+    max_output: int = 2048
+    cloud_consent: bool = False
+    key_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,7 @@ class Config:
     aggregation: AggregationConfig = field(default_factory=AggregationConfig)
     attachments: AttachmentsConfig = field(default_factory=AttachmentsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    console_revision: str = ""
 
     def redacted(self) -> dict:
         result = asdict(self)
@@ -153,7 +158,7 @@ def check_provider(provider):
     if provider == "claude":
         raise ConfigError("model.provider: 'claude' chưa hỗ trợ, hiện chỉ có 'ollama'")
     if provider not in SUPPORTED_PROVIDERS:
-        raise ConfigError("model.provider: expected 'ollama'")
+        raise ConfigError("model.provider: unsupported provider")
     return provider
 
 
@@ -171,8 +176,12 @@ def load_database_path(path):
     return _string(_table(_read_toml(path), "storage"), "db_path", "storage.db_path")
 
 
-def load_config(path, environ=None) -> Config:
-    env = os.environ if environ is None else environ
+def load_config(path, environ=None, *, validate_only=False) -> Config:
+    env = dict(os.environ if environ is None else environ)
+    if validate_only:
+        # Validate persisted schema independently of private systemd EnvironmentFile credentials.
+        # Genuine credentials and requested mode are checked again by authenticated startup.
+        env = {'TG_API_ID':'1','TG_API_HASH':'0'*32,'GH_TOKEN':'schema-validation','GH_REPO':'schema/validation','TG_PROXY_SECRET':'schema-validation'}
     data = _read_toml(path)
     mode = env.get("TG_TRIAGE_MODE") or data.get("mode")
     if mode not in ("dry-run", "live"):
@@ -253,6 +262,17 @@ def load_config(path, environ=None) -> Config:
         timeout = _number(ollama["timeout_seconds"], "ollama.timeout_seconds", 0.001)
     else:
         timeout = DEFAULT_MODEL_TIMEOUT_SECONDS
+    from .ai_transport import validate_endpoint, ProviderError, ENDPOINTS
+    base_url = model_table.get("base_url", ENDPOINTS.get(provider, url))
+    try:
+        validate_endpoint(provider, base_url)
+    except ProviderError:
+        raise ConfigError("model.base_url: invalid endpoint") from None
+    max_output = _integer(model_table.get("num_predict", 2048), "model.num_predict", 256)
+    consent = model_table.get("cloud_consent", False)
+    key_file = model_table.get("key_file", "")
+    if max_output > 8192 or type(consent) is not bool or not isinstance(key_file, str) or (key_file and not Path(key_file).is_absolute()) or (provider != "ollama" and think):
+        raise ConfigError("model: invalid capability or limits")
     aggregation_table = _optional_table(data, "aggregation")
     attachments_table = _optional_table(data, "attachments")
     default_aggregation, default_attachments = AggregationConfig(), AttachmentsConfig()
@@ -279,12 +299,13 @@ def load_config(path, environ=None) -> Config:
             _integer(tg.get("min_text_length"), "telegram.min_text_length", 0),
             ProxyConfig(host, port, secret), listen_all, tuple(ignored_prefixes)),
         ollama=OllamaConfig(
-            url.rstrip("/"), model_name, timeout,
+            (base_url if provider == "ollama" else url).rstrip("/"), model_name, timeout,
             _number(ollama.get("confidence_threshold"), "ollama.confidence_threshold", 0, 1)),
         max_issues_per_hour=_integer(
             _table(data, "github").get("max_issues_per_hour"), "github.max_issues_per_hour"),
         db_path=_string(_table(data, "storage"), "db_path", "storage.db_path"),
         api_id=api_id, api_hash=api_hash_value, gh_token=gh_token, gh_repo=gh_repo,
         aggregation=aggregation, attachments=attachments,
-        model=ModelConfig(provider, model_name, think, timeout),
+        model=ModelConfig(provider, model_name, think, timeout, base_url, max_output, consent, key_file),
+        console_revision=str(data.get("console", {}).get("revision", "")),
     )

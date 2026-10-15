@@ -53,7 +53,7 @@ class ConfigModelTests(unittest.TestCase):
             path=Path(directory)/'config.toml'
             base='[worker]\ndb_path='+json.dumps(str(Path(directory)/'a.db'))+'\nprofile_path='+json.dumps(str(Path(directory)/'profile'))+'\n'
             path.write_text(base);cfg=load_config(path);self.assertEqual(cfg.mode,'preview');self.assertEqual(cfg.owner_ids,())
-            for extra in ('[model]\nthink=true','[model]\nmodel="other"','mode="live"','owner_ids=[true]',
+            for extra in ('[model]\nthink=true','[model]\nmodel=""','mode="live"','owner_ids=[true]',
                           '[model]\nurl="http://example.com"','owner_username="Other"'):
                 path.write_text(base+extra)
                 with self.subTest(extra=extra):

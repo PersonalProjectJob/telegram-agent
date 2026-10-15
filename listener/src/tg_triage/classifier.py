@@ -381,6 +381,8 @@ class Classifier:
         return messages if isinstance(messages, str) else build_transcript(messages)
 
     def _ask(self, body, parse, attempts=2):
+        if hasattr(self, "max_output"):
+            body.setdefault("options", {})["num_predict"] = self.max_output
         for _ in range(attempts):
             request = Request(
                 self.settings.url + "/api/chat",
@@ -388,8 +390,18 @@ class Classifier:
                 headers={"Content-Type": "application/json"}, method="POST")
             try:
                 with MODEL_LOCK.enter():
-                    with self.opener(request, timeout=self.settings.timeout_seconds) as response:
-                        envelope = json.loads(response.read())
+                    if self.opener is urlopen:
+                        from .ai_transport import complete
+                        value = complete('ollama', self.settings.url, self.settings.model,
+                            body['messages'], body['format'], timeout=self.settings.timeout_seconds,
+                            max_output=getattr(self, 'max_output', 2048), think=self.think)
+                        envelope = {'message': {'content': json.dumps(value)}}
+                    else:
+                        with self.opener(request, timeout=self.settings.timeout_seconds) as response:
+                            raw = response.read(1024 * 1024 + 1)
+                            if len(raw) > 1024 * 1024:
+                                return None
+                            envelope = json.loads(raw)
                 # Only `content` is read. `message.thinking` (the reasoning) is deliberately ignored:
                 # it is never parsed, logged or stored.
                 content = envelope["message"]["content"]

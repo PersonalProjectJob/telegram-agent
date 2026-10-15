@@ -425,6 +425,8 @@ class Pipeline:
         return {}
 
     def _vision_unavailable(self, messages):
+        if getattr(self.classifier, "rejects_images", False):
+            return any(m.has_image for m in messages)
         # Legacy/injected models retain their established offline behavior. Real providers
         # explicitly opt in and must never judge images they did not receive.
         if not getattr(self.classifier, "supports_vision", False):

@@ -20,6 +20,10 @@ url = "https://nailhub.ai/admin/postings"
 range_policy = "upper_floor_100"
 
 [model]
+provider = "ollama" # anthropic/openai/deepseek/compatible also supported, same evidence/Owner gates.
+cloud_consent = false # Explicit permission before original post data leaves this host.
+# base_url = "https://api.openai.com/v1"
+# key_file = "/etc/nailhub/private/model-key.json" # mode0600 scoped JSON, never plaintext keys here.
 url = "http://127.0.0.1:11434"
 model = "qwen3.5:9b"
 think = false # Owner amendment 2026-10-12: keep extraction and semantic checks, disable thinking.

@@ -21,3 +21,9 @@ logs/
 .agent-rules
 .agent-rules.d/
 .agent-rules.local
+
+# AgentFleet console local configs, revision store and credentials
+.agentfleet/
+
+# Portable source archives
+dist/

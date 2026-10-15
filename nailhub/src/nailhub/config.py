@@ -40,6 +40,11 @@ class NailHubConfig:
     owner_username: str = 'SotaThao'
     num_predict: int = 2048
     categories: tuple = SUPPORTED_CATEGORIES
+    provider: str = "ollama"
+    base_url: str = ""
+    cloud_consent: bool = False
+    key_file: str = ""
+    console_revision: str = ""
     telegram_session: str = "/var/lib/agentfleet/nailhub/nailhub.session"
 
 
@@ -82,7 +87,7 @@ def load_config(path):
                 or type(num_predict) is not int or not 256 <= num_predict <= 8192
                 or type(places) is not int or not 0 <= places <= 2):
             raise ValueError()
-        if model.get("model", "qwen3.5:9b") != "qwen3.5:9b" or model.get("think", False) is not False:
+        if model.get("think", False) is not False:
             raise ConfigError("NailHub requires qwen3.5:9b with Owner-approved think=false")
         url = worker.get("url", "https://nailhub.ai/admin/postings")
         target = urlparse(url)
@@ -92,6 +97,17 @@ def load_config(path):
                 or target.password or local.scheme != "http" or local.hostname not in ("127.0.0.1", "localhost", "::1")
                 or local.username or local.password or local.path not in ("", "/")):
             raise ValueError()
+        from .ai_transport import validate_endpoint, ProviderError, ENDPOINTS
+        provider = model.get('provider', 'ollama')
+        base_url = model.get('base_url', ENDPOINTS.get(provider, ollama))
+        model_name = model.get('model', 'qwen3.5:9b')
+        consent, key_file = model.get('cloud_consent', False), model.get('key_file', '')
+        try:
+            validate_endpoint(provider, base_url)
+        except ProviderError:
+            raise ConfigError('model.base_url: invalid endpoint') from None
+        if not isinstance(model_name, str) or not model_name.strip() or type(consent) is not bool or not isinstance(key_file, str) or (key_file and not Path(key_file).is_absolute()):
+            raise ConfigError('model: invalid configuration')
         selectors, fields, options = (data.get(k, {}) for k in ("selectors", "fields", "options"))
         if any(not isinstance(d, dict) or any(not isinstance(k, str) or not isinstance(v, str) or not v.strip()
                                             for k, v in d.items()) for d in (selectors, fields, options)):
@@ -125,10 +141,10 @@ def load_config(path):
                 or contract.get('approved_status', 'Approved') != 'Approved'):
             raise ConfigError('Only verified recruitment/sale/seeker Draft -> Approved contract is supported')
         return NailHubConfig(db, profile, tuple(ids), mode, interval, batch, url,
-                             ollama.rstrip("/"), "qwen3.5:9b", timeout, verified, reference,
+                             (base_url if provider == "ollama" else ollama).rstrip("/"), model_name, timeout, verified, reference,
                              selectors, fields, options, contract.get("draft_status", "Draft"),
                              contract.get("approved_status", "Approved"), contract.get("category", "JobPosting"),
-                             salary_range, places, headless, credential_file, api_origin.rstrip('/'), pages, range_policy, username, num_predict, telegram_session=session)
+                             salary_range, places, headless, credential_file, api_origin.rstrip('/'), pages, range_policy, username, num_predict, telegram_session=session, provider=provider, base_url=base_url, cloud_consent=consent, key_file=key_file, console_revision=str(data.get("console", {}).get("revision", "")))
     except ConfigError:
         raise
     except (OSError, ValueError, TypeError, KeyError):

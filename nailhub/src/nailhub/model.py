@@ -140,13 +140,30 @@ class NailHubModel:
         serialized = json.dumps(data, ensure_ascii=False)
         if len(serialized) > 12000:
             raise NeedsHuman('model input exceeds bounded context')
-        body = {'model': 'qwen3.5:9b', 'think': False, 'stream': False,
+        if self.config.provider != 'ollama':
+            from .ai_transport import complete, read_key, ProviderError
+            if not self.config.cloud_consent:
+                raise NeedsHuman('cloud consent required')
+            try:
+                key = read_key(self.config.key_file, self.config.provider+'|'+self.config.base_url, group_name='tgnailhub')
+                with MODEL_LOCK.enter(background=True, stop=self.stop):
+                    return complete(self.config.provider, self.config.base_url, self.config.model,
+                        [{'role':'system','content':prompt},{'role':'user','content':serialized}], schema,
+                        key=key, timeout=self.config.timeout_seconds, max_output=self.config.num_predict)
+            except ProviderError:
+                raise NeedsHuman('model provider unavailable or invalid JSON') from None
+        body = {'model': self.config.model, 'think': False, 'stream': False,
                 'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': self.config.num_predict}, 'format': schema,
                 'messages': [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': serialized}]}
         request = Request(self.config.ollama_url + '/api/chat', data=json.dumps(body).encode(),
                           headers={'Content-Type': 'application/json'}, method='POST')
         try:
             with MODEL_LOCK.enter(background=True, stop=self.stop):
+                if self.opener is urlopen:
+                    from .ai_transport import complete
+                    return complete('ollama', self.config.ollama_url, self.config.model,
+                        body['messages'], schema, timeout=self.config.timeout_seconds,
+                        max_output=self.config.num_predict, think=False, context=8192)
                 with self.opener(request, timeout=self.config.timeout_seconds) as response:
                     raw = response.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:

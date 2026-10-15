@@ -8,6 +8,7 @@ StartLimitBurst=5
 [Service]
 User=tgnailhub
 Group=agentfleet
+SupplementaryGroups=tgnailhub
 WorkingDirectory=/opt/agentfleet/nailhub
 Environment=NAILHUB_CONFIG=/etc/nailhub/nailhub.toml
 Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailhub/browsers

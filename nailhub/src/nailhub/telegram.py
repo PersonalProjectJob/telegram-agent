@@ -207,6 +207,8 @@ async def _run_locked(config):
             if task.done():
                 task.result()
                 raise RuntimeError('NailHub worker stopped during startup')
+        from .receipt import ready
+        ready(config)
         LOG.info('NailHub ready owner_verified=1')
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         if stopper in done:

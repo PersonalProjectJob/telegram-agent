@@ -1,0 +1,56 @@
+/* Hallmark · macrostructure: Workbench · tone: technical · anchor hue: 256
+ * genre: modern-minimal · theme: Cobalt · nav: N3 side rail · footer: Ft2
+ * audience: Owner · use: configure two services · enrichment: none
+ * Hallmark · pre-emit critique: P4 H4 E4 S5 R5 V4 */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+:root {
+  --color-paper: oklch(98.5% 0.004 250);
+  --color-surface: oklch(99% 0.003 250);
+  --color-paper-2: oklch(96.5% 0.005 252);
+  --color-paper-3: oklch(94% 0.006 254);
+  --color-rule: oklch(89% 0.008 255);
+  --color-rule-2: oklch(65% 0.011 255);
+  --color-ink: oklch(24% 0.02 258);
+  --color-ink-2: oklch(34% 0.018 257);
+  --color-muted: oklch(46% 0.015 255);
+  --color-accent: oklch(48% 0.20 256);
+  --color-accent-ink: oklch(99% 0.003 250);
+  --color-accent-soft: oklch(94% 0.025 256);
+  --color-focus: oklch(12% 0.02 256);
+  --color-error: oklch(42% 0.16 25);
+  --color-error-soft: oklch(96% 0.018 25);
+  --color-success: oklch(37% 0.09 155);
+  --color-success-soft: oklch(96% 0.018 155);
+  --color-warning: oklch(41% 0.08 70);
+  --color-warning-soft: oklch(96% 0.024 80);
+  --color-overlay: oklch(24% 0.02 258 / 0.32);
+  --color-transparent: transparent;
+  --font-display: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
+  --font-body: 'IBM Plex Sans', sans-serif;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.25rem;
+  --text-lg: 1.5625rem;
+  --text-display: clamp(1.65rem, 2vw + 1rem, 2.25rem);
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --rule-width: 1px;
+  --control-height: 44px;
+  --ease-out: cubic-bezier(0.16,1,0.3,1);
+  --ease-in: cubic-bezier(0.7,0,0.84,0);
+  --ease-in-out: cubic-bezier(0.65,0,0.35,1);
+  --dur-micro: 120ms;
+  --dur-short: 220ms;
+  --dur-long: 420ms;
+  --z-base: 1;
+  --z-sticky: 200;
+  --z-modal: 400;
+}
