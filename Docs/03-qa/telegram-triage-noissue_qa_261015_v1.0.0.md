@@ -1,6 +1,6 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.0.0 · **Updated** 2026-10-15 21:39 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.0.2 · **Updated** 2026-10-15 22:26 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
@@ -98,6 +98,30 @@ Test the production Pipeline, Store and provider entry paths with fake GitHub/Te
 
 **Expected Result**: no invented authority, hidden third request or duplicate POST; confirmed anchors survive; ambiguous outcome requires reconciliation. Unknown profile uses Anh/Chị.
 
+### TC-08: Existing DeepSeek think=false reaches the wire
+
+| Property | Value |
+|---|---|
+| Priority | P0 |
+| Type | Error handling / Provider contract |
+| Precondition | Configured hosted thinking false; fake HTTP connections |
+
+**Steps**: call bounded transport for DeepSeek, OpenAI, compatible, Anthropic and Ollama; capture serialized request bodies.
+
+**Expected Result**: DeepSeek has exactly `thinking: {type: disabled}` and `temperature: 0`; the other four have no new top-level `thinking`/`temperature` field. Provider/model/consent and production20/40 budgets stay unchanged. No reasoning_content is read or persisted. Run default20/40 configured-model smoke with the original fixed labels; diagnostic30/60 experiments must never be reported as production behavior.
+
+### TC-09: Intake essentials versus debugging extras
+
+| Property | Value |
+|---|---|
+| Priority | P0 |
+| Type | Happy path / Missing information |
+| Precondition | Known module/setting, observed contrary behavior and desired correction supplied |
+
+**Steps**: run the unchanged fully specified three-request model fixture; compare with a genuinely vague “nút này lỗi” request.
+
+**Expected Result**: the clear existing-setting bug is actionable without demanding platform/logs/full reproduction; vague object/behavior gets a focused question. Do not change confidence thresholds, fixture labels or source partition assertions. Do not invent any unknown debugging facts.
+
 ## Performance Benchmarks
 
 Semantic model work has a shared 40-second deadline including model-lock queue, bounded DNS, TCP/TLS and response reading; each attempted model request gets at most 20 seconds of remaining time. Two attempts total, three logical scoped retrieval batches and conservative 8000 UTF-8 text bytes per request. Source-role decisions cap 512 output tokens; complete topic/followup drafts retain configured output limits. Images have provider-specific token costs outside the text bound. Attachment/GitHub/Telegram operations keep their existing timeouts: **40 seconds is not an end-to-end ticket/reply SLA**. Assert budgets with deterministic clocks plus real queue/DNS stop tests; small live-model smoke is not p95 or accuracy measurement.
@@ -147,4 +171,6 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.0.2 | 2026-10-15 22:26 Asia/Saigon | Codex / AlexChu owner | Intake essentials and DeepSeek sampling wire regression; fixed-label smoke remains required. |
+| v1.0.1 | 2026-10-15 22:19 Asia/Saigon | Codex / AlexChu owner | Wire-level existing think=false contract and fixed-label default-budget verification. |
 | v1.0.0 | 2026-10-15 21:39 Asia/Saigon | Codex / AlexChu owner | Capture production-path acceptance, model-smoke isolation and honest budget limits. |

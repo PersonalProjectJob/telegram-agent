@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.1.0 · **Updated**: 2026-10-15 21:42 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.1.2 · **Updated**: 2026-10-15 22:26 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -62,6 +62,8 @@ Model đề xuất bug/task/feedback/chat; feature được chuẩn hóa thành 
 ### TG-08 — Yêu cầu không cần tag
 
 Công việc đủ rõ/actionable và confidence đạt ngưỡng tạo issue dù không tag. Yêu cầu thiếu/không chắc hoặc output không dùng được chuyển needs_human, tạo ticket theo dõi và hỏi trong group. Chat vẫn là chat; ngoại lệ ảnh đơn lẻ xem TG-15.
+
+Ghi nhận bug không cần specification/debug report hoàn chỉnh. Module/control/setting đã xác định, hành vi thực tế trái mong đợi và hướng sửa mong muốn đủ nhận diện công việc; device/platform/logs hay recipe tái hiện đầy đủ không tự thành blocker. Chỉ hỏi essential thật sự thiếu để nhận diện phạm vi, không hỏi lại dữ kiện đã có và không bịa môi trường/nguyên nhân/bước tái hiện. “Nút này lỗi” chưa xác định đối tượng/hành vi vẫn cần hỏi rõ.
 
 ### TG-09 — Câu hỏi thông tin
 
@@ -152,6 +154,10 @@ Chỉ đổi prose do assistant tạo. Giữ nguyên source quote, URL và nội
 ### TG-30 — Provider và privacy reasoning
 
 Provider local/hosted theo cấu hình. Cloud text cần consent và redact; cloud ảnh cần thêm image consent và provider hỗ trợ. Lỗi/unusable theo fallback cấu hình. Chỉ parse content, strip think block; private thinking không được lưu/log/đưa issue. Local think không hứa parity với hosted.
+
+Đường THINKING bounded transport gửi `thinking: {type: disabled}` cho DeepSeek để thực thi `model.think=false` đã cấu hình: bỏ tham số này sẽ dùng chế độ reasoning mặc định của nhà cung cấp. Không đổi model/consent, không thêm hỗ trợ hosted `think=true`, không đọc/lưu reasoning_content. Đây là sửa wire request riêng listener; rollback semantic path cũ vẫn dùng shared transport cũ. [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/), [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
+
+DeepSeek non-thinking request gửi `temperature: 0` để giữ ý định sampling tập trung đã đặt ở classifier; trước đó hosted adapter bỏ sót nên server dùng mặc định riêng. Không đổi threshold hay tự coi sampling bằng không là đảm bảo đúng. Các provider khác giữ wire contract cũ; giới hạn semantics vẫn theo code validation. [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 Khi THINKING bật, một lượt dùng chung tối đa hai model attempts thực sự, gồm retry/fallback; lock wait không tiêu attempt. Deadline ngữ nghĩa 40 giây tính cả queue/DNS/TCP/TLS/response, mỗi request tối đa 20 giây còn lại. Tối đa ba batch đọc context có scope; text envelope tối đa 8000 byte UTF-8 bảo thủ cho cả prompt, không hứa đếm token ảnh. Source-role hẹp tối đa 512 output tokens; draft topic/followup giữ output cấu hình. Hết budget giữ xác nhận và fallback hỏi rõ; không cấp quyền retry POST. Attachment/GitHub/Telegram vẫn có timeout riêng: 40 giây không phải SLA kết thúc toàn bộ ticket/reply.
 
@@ -844,6 +850,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking.py",
           "symbol": "Turn.attempt"
+        },
+        {
+          "path": "listener/src/tg_triage/thinking_transport.py",
+          "symbol": "complete"
         }
       ],
       "tests": [
@@ -862,6 +872,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking.py",
           "symbol": "ThinkingTests.test_cloud_invalid_retries_share_budget_and_cannot_fallback_third_attempt"
+        },
+        {
+          "path": "listener/tests/test_thinking.py",
+          "symbol": "ThinkingTests.test_deepseek_false_is_explicitly_disabled_on_wire_only_for_deepseek"
         }
       ]
     },
@@ -944,12 +958,12 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/store.py": "92165e328d94468019bd12a2ed4c17fe519d6b17399f445fcf9c60498b5af470",
     "listener/src/tg_triage/telegram_io.py": "fdc4233f77571589b0ab551ff577acba58e2c9556bbdcfc7522e277aadef1b76",
     "listener/src/tg_triage/thinking.py": "638e6b5d0931aa87653582ac413ff081819847b4dc8ef636a65a9f5ac09b5aef",
-    "listener/src/tg_triage/thinking_transport.py": "caab6f67b86622183d547b731e3b3c5bbc85a3f215d2ccc0dcbcd35984f28e8d",
+    "listener/src/tg_triage/thinking_transport.py": "6a8921188e21c8424c445c03b2ff903f941885b5d4b6930306bbffd3842a6d56",
     "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
     "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
     "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
     "listener/prompts/followup.md": "94731feaaa1fff33b938b90ad643bb31adc77f71913bcc593bfd5f92ded4c417",
-    "listener/prompts/thinking-topics.md": "b02bc33877023a2b4eafd8c630f482ec155aead653fafd74b55b02913acf1ab0",
+    "listener/prompts/thinking-topics.md": "e4220bf1b1ae73141838792e1875767093f561912e03633f0439c3b3daa53d3d",
     "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8"
   },
   "legacy_documents": [
@@ -966,7 +980,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "27401159f118bcd74e97d62e1991a39973b11e68eeccaabe91d34381832c83e0"
+  "runtime_fingerprint": "7dd972cc4280bc58a51056d39ee5dd5d6096302bd7d6e62a2026f27d106f733f"
 }
 ```
 
@@ -974,5 +988,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Phân biệt essentials ghi nhận bug với debugging extras; thực thi temperature0 classifier trên DeepSeek wire. |
+| v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Thực thi DeepSeek model.think=false ở bounded wire transport; giữ budget, đồng bộ regression/API references. |
 | v1.1.0 | 2026-10-15 21:42 | Codex / owner AlexChu | Đồng bộ controller THINKING, budget, journal/CAS, rollback và QA acceptance; rollout cần evidence riêng. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Chuẩn hóa 32 quy tắc, truy vết và giới hạn baseline. |

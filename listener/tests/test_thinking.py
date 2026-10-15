@@ -229,6 +229,36 @@ class ThinkingTests(unittest.TestCase):
                 conn.connect()
             raw.settimeout.assert_called_once_with(1)
 
+    def test_deepseek_false_is_explicitly_disabled_on_wire_only_for_deepseek(self):
+        from types import SimpleNamespace
+        from tg_triage.thinking_transport import complete
+        from unittest.mock import Mock
+        for provider,url in [('deepseek','https://api.deepseek.com'),('openai','https://api.openai.com/v1'),
+                             ('compatible','https://example.com'),('anthropic','https://api.anthropic.com'),
+                             ('ollama','http://127.0.0.1:11434')]:
+            with self.subTest(provider=provider):
+                content=({'content':[{'type':'tool_use','name':'result','input':{}}]} if provider=='anthropic'
+                    else {'message':{'content':'{}'}} if provider=='ollama'
+                    else {'choices':[{'message':{'content':'{}','reasoning_content':'PRIVATE_NOT_READ'}}]})
+                response=Mock(status=200)
+                response.fp=SimpleNamespace(raw=SimpleNamespace(_sock=Mock()))
+                response.isclosed.side_effect=[False,True]
+                response.read1.return_value=json.dumps(content).encode()
+                connection=Mock(); connection.getresponse.return_value=response
+                with patch('tg_triage.thinking_transport._addresses',return_value=['93.184.216.34']), \
+                     patch('tg_triage.thinking_transport.DeadlineHTTPS',return_value=connection), \
+                     patch('tg_triage.thinking_transport.http.client.HTTPConnection',return_value=connection), \
+                     patch('tg_triage.thinking_transport.threading.Timer'):
+                    result=complete(provider,url,'test',[],{},key='fake',think=False)
+                self.assertEqual(result,{})
+                body=json.loads(connection.request.call_args.args[2])
+                if provider=='deepseek':
+                    self.assertEqual(body['thinking'],{'type':'disabled'})
+                    self.assertEqual(body['temperature'],0)
+                else:
+                    self.assertNotIn('thinking',body)
+                    self.assertNotIn('temperature',body)
+
     def test_screenshot_confirmed_context_survives_restart_and_history_trim(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'test.sqlite'

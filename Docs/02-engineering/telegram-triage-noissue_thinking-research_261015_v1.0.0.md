@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.1.0 · **Updated**: 2026-10-15 21:47 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.1.2 · **Updated**: 2026-10-15 22:26 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -25,6 +25,18 @@ User explicitly authorized implementation, tests, PR update and THINKPAD deploym
 - `[thinking] enabled=true` defaults on when absent; explicit false restores legacy semantic prompt/context/budget path after restart. Rollback leaves both journal tables and all external-effect reservations intact. Provider/model/consent/auth stay configured as before. Journal retention is operator-managed; no automatic deletion added.
 
 The original inventory and proposals below describe the inspected preimplementation baseline. They are retained as research history; the implementation delta above and canonical TG rules define current code. Deployment status requires independent installed-byte/service evidence.
+
+### Provider-default correction after deployment diagnosis
+
+The installed synthetic short-three-request smoke timed out at20.004seconds on DeepSeek then19.994seconds on local fallback, returning no JSON; this was transport latency, not a demonstrated schema failure. An isolated30/60experiment succeeded at16.093seconds, below the original20second request bound, so it did **not** causally prove a larger budget was required. Keep production20/40 and the fixed acceptance labels.
+
+Primary API research then identified a concrete request bug: [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/) documents thinking enabled/high by default and the explicit `thinking.type=disabled` toggle; [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) defines that request field. The bounded listener transport previously omitted it despite configured `model.think=false`. It now explicitly disables DeepSeek server thinking, honoring the existing setting rather than changing provider/model/consent. This application THINKING controller remains enabled: durable context/validation is independent of vendor private reasoning. Other providers, shared transport/model-lock and NailHub bytes are unchanged. The legacy semantic rollback path still uses the old shared transport.
+
+Five-provider wire-body regression verifies the exact DeepSeek field and its absence for the other providers, without network or reading private reasoning. Content-free diagnostic smoke records outcome/timing/token/JSON-shape metadata; experiments are explicit and confined to the fake-tool process. Fresh default20/40 model smoke and installed-byte verification must establish the corrected package's observed behavior. No latency/accuracy guarantee follows from a small sample.
+
+With explicit DeepSeek disable, preview calls returned in about1.5–3.8seconds and preserved all partitions. One fully specified existing-setting bug was still marked needs_human because the model demanded extra debugging detail. The topic projection now distinguishes identifiable work from a completed debugging specification: named module/control/setting + observed contrary behavior + desired correction is sufficient; device/logs/full reproduction remain nonblocking extras. A different-domain mute/notification example and a genuinely vague-control counterexample illustrate this general rule. Fixture labels, confidence threshold, source partition gates and20/40 budgets remain unchanged. Real-model proof is still required; this prompt change is not a universal quality guarantee.
+
+The classifier already requests temperature0, but the hosted adapter previously omitted it. The bounded DeepSeek request now sends temperature0 explicitly in non-thinking mode. The [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/) documents temperature's default1 and its sampling effect outside thinking mode. This honors the existing classifier sampling intent; it does not change model/consent or prove deterministic model accuracy. Five-provider wire regression checks both DeepSeek-specific fields and keeps all other providers unchanged.
 
 Original research scope: inspected2026-10-15 before implementation authorization. No provider/consent/model/auth or canonical Harness changes follow from this implementation.
 
@@ -192,5 +204,7 @@ FE/UI: không thay đổi trong nghiên cứu này. API/DB mới: chưa triển 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Generic intake-essential principle and existing temperature0 intent; labels/threshold/budgets unchanged. |
+| v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Diagnose provider timeouts and explicit DeepSeek disable request; retain20/40, document experiment limits. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | Implement bounded controller/journal, separate historical pilot proposals and actual runtime limits; QA and isolated smoke. |
 | v1.0.0 | 2026-10-15 21:08 | Codex / owner AlexChu | Nghiên cứu Harness và nguồn chính thức; kiến trúc/budget/pilot đề xuất, không đổi runtime. |
