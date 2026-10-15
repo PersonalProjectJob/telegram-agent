@@ -239,6 +239,9 @@ def _plan(pipeline,job,root,originals,reply,history):
     expected_ids={m.message_id for m in originals}
     roles={r['message_id']:r for r in (value or {}).get('source_roles',[])}
     valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=expected_ids)
+    if value is not None and value.get('source_roles') and not valid_roles:
+        return dict(action='clarify',ack=ack,questions=_context_questions(state,originals) or [SCOPE_QUESTION],
+                    context_reason='invalid_source_roles'),[]
     role_clear=valid_roles and all(m.message_id in roles and roles[m.message_id]['role']=='ancillary'
         and roles[m.message_id]['confidence']>=pipeline.config.ollama.confidence_threshold for m in unassigned_text)
     if anchor_plan is not None and any(roles.get(m.message_id,{}).get('role') in ('request','unknown') for m in unassigned_text):

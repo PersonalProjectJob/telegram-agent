@@ -132,6 +132,17 @@ class ContextTests(unittest.TestCase):
         p.process(message(440,text='đây là ticket 2',reply_to_id=431,sender_id=OWNER))
         self.assertEqual(len(gh.calls),1); self.assertEqual(gh.comments,[])
 
+    def test_foreign_or_duplicate_source_role_ids_cannot_bypass_full_partition(self):
+        for roles in ([dict(message_id=999,role='ancillary',confidence=.99)],
+                      [dict(message_id=430,role='ancillary',confidence=.99)]*2):
+            with self.subTest(roles=roles):
+                store,gh,sent,p=self.setup_conversation(); self.import_old(store)
+                self.provider(p,answer('split',groups=[group([429,430]),group([431,432])],source_roles=roles))
+                p.process(message(440,text='đây là ticket 2',reply_to_id=431,sender_id=OWNER))
+                self.assertEqual(len(gh.calls),1); self.assertEqual(gh.comments,[])
+                plan=json.loads(store.connection.execute('SELECT plan FROM followup_jobs WHERE message_id=440').fetchone()[0])
+                self.assertEqual(plan['context_reason'],'invalid_source_roles')
+
     def test_restart_and_trimmed_model_history_retain_prior_binding(self):
         directory=self.enterContext(tempfile.TemporaryDirectory()); path=Path(directory)/'db'
         store,gh,sent,p=self.setup_conversation(path); self.import_old(store)
