@@ -532,6 +532,8 @@ async def run(config, pipeline):
             await asyncio.gather(startup, return_exceptions=True)
             return
         startup.result()
+        from .receipt import ready
+        ready(config)
         attach_downloader = getattr(pipeline, "set_media_downloader", None)
         if attach_downloader is not None:
             attach_downloader(make_media_downloader(client, asyncio.get_running_loop()))

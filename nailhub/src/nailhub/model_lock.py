@@ -197,10 +197,17 @@ class ModelLock:
                     counted = True
                 marker = directory / (FOREGROUND_PREFIX + str(os.getpid()) + '.' + uuid.uuid4().hex)
                 marker.touch(exist_ok=False)
-                _PROCESS_LOCK.acquire()
+                if stop is None:
+                    _PROCESS_LOCK.acquire()
+                else:
+                    while not _PROCESS_LOCK.acquire(timeout=0.05):
+                        _wait(stop, 0.05)
+                    if stop.is_set():
+                        _PROCESS_LOCK.release()
+                        raise LockStopped()
                 local = True
                 fd = _open_lock(directory)
-                while not _lock(fd, blocking=True):
+                while not _lock(fd, blocking=stop is None):
                     _wait(stop, 0.05)
                 locked = True
                 marker.unlink(missing_ok=True)
