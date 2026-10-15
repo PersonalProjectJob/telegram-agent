@@ -32,6 +32,8 @@ class FollowupStoreMixin:
         existing = {row[1] for row in self.connection.execute('PRAGMA table_info(followup_roots)')}
         if 'split_plan' not in existing:
             self.connection.execute('ALTER TABLE followup_roots ADD COLUMN split_plan TEXT')
+        if 'context_state' not in existing:
+            self.connection.execute("ALTER TABLE followup_roots ADD COLUMN context_state TEXT NOT NULL DEFAULT '{}'")
         if recover:
             self.connection.execute("UPDATE followup_operations SET status='ambiguous' WHERE status='reserved'")
             self.connection.execute("""UPDATE followup_jobs SET status='ambiguous'
@@ -47,7 +49,21 @@ class FollowupStoreMixin:
                 ORDER BY reserved_at DESC LIMIT 1""",
                 (message.chat_id, message.reply_to_id, message.reply_to_id)).fetchone()
             if notice is None:
-                return None
+                # A direct reply to ANY original member may resolve only through a sent
+                # notice on that exact stored topic and its proven issue association.
+                member=self.get(message.chat_id,message.reply_to_id)
+                if (member is None or member['decision']=='followup' or member['case_key'] is None
+                        or member['issue_number'] is None):
+                    return None
+                column='group_key' if member['group_key'] else 'case_key'
+                notice=self.connection.execute(f"""SELECT n.message_id FROM group_notices n
+                    JOIN messages m ON m.chat_id=n.chat_id AND m.message_id=n.message_id
+                    WHERE n.chat_id=? AND n.status='sent' AND m.{column}=?
+                    AND m.issue_number=? AND m.issue_url=? AND m.decision!='followup'
+                    ORDER BY n.reserved_at LIMIT 1""",
+                    (message.chat_id,member[column],member['issue_number'],member['issue_url'])).fetchone()
+                if notice is None:
+                    return None
             job = self.connection.execute("SELECT root_key FROM followup_jobs WHERE chat_id=? AND message_id=?",
                                           (message.chat_id, notice[0])).fetchone()
             if job:
@@ -88,9 +104,11 @@ class FollowupStoreMixin:
                 AND decision != 'followup' ORDER BY message_id""",
                 (root['chat_id'],root[column])).fetchall()
             reply = _to_message(self.get(job['chat_id'],job['message_id']))
-            history = [dict(r) for r in self.connection.execute("""SELECT m.text,j.plan,j.result
+            history = [dict(r) for r in self.connection.execute("""SELECT m.message_id,m.reply_to_id,m.sender_id,m.sender_name,m.received_at,
+                       m.has_image,m.has_document,m.text,j.plan,j.result
                 FROM followup_jobs j JOIN messages m ON m.chat_id=j.chat_id AND m.message_id=j.message_id
-                WHERE j.root_key=? AND j.id<? ORDER BY j.id DESC LIMIT 5""", (job['root_key'],job['id']))]
+                WHERE j.root_key=? AND j.id<? ORDER BY m.received_at DESC,m.message_id DESC LIMIT 5""", (job['root_key'],job['id']))]
+            history.reverse()
             return root, [_to_message(row) for row in rows], reply, history
 
     def save_followup_plan(self, job, plan, operations):
@@ -213,3 +231,16 @@ class FollowupStoreMixin:
                 return False
             self.enqueue_followup(message,source)
             return True
+
+    def save_followup_context_state(self, root_key, state):
+        with self._lock, self.connection:
+            self.connection.execute('UPDATE followup_roots SET context_state=? WHERE root_key=?',
+                                    (json.dumps(state,ensure_ascii=False),root_key))
+
+    @_locked
+    def followup_binding_history(self, job):
+        """Bounded legacy reconstruction, beyond the short model history, on this root only."""
+        return [dict(row) for row in self.connection.execute("""SELECT m.* FROM followup_jobs j
+            JOIN messages m ON m.chat_id=j.chat_id AND m.message_id=j.message_id
+            WHERE j.root_key=? AND j.id<? ORDER BY m.received_at,m.message_id LIMIT 100""",
+            (job['root_key'],job['id']))]

@@ -384,18 +384,39 @@ class Classifier:
     def analyze_followup(self, originals, reply, tickets, history, *, images=None):
         """Reuse provider consent/redaction/fallback through _ask, with bounded untrusted context."""
         from .followup_model import FOLLOWUP_SCHEMA, parse_followup
-        messages = self._messages(load_prompt("followup.md"), originals, images)
-        context = {"REPLY": build_transcript([reply]), "TRUSTED_TICKETS": tickets,
+        # This boundary has its own concise schema: do not append the large issue-details
+        # prompt or duplicate transcripts, which can exhaust the existing provider token cap.
+        messages = [{"role": "system", "content": load_prompt("followup.md")}]
+        if images:
+            for item in originals:
+                if item.message_id in images:
+                    messages.append({"role": "user", "content": f"Ảnh nguồn {item.message_id}",
+                                     "images": [base64.b64encode(images[item.message_id].read_bytes()).decode("ascii")]})
+        context = {"REPLY": {"text": reply.text[:1500], "message_id": reply.message_id,
+                              "reply_to_id": reply.reply_to_id, "sender_id": reply.sender_id,
+                              "sender_name": reply.sender_name[:60], "received_at": reply.received_at.isoformat(),
+                              "has_image": reply.has_image, "has_document": reply.has_document},
+                   "TRUSTED_TICKETS": tickets,
                    "ORIGINAL_METADATA": [{"message_id": m.message_id, "reply_to_id": m.reply_to_id,
-                                          "has_image": m.has_image, "has_document": m.has_document}
+                                          "has_image": m.has_image, "has_document": m.has_document,
+                                          "sender_id": m.sender_id, "sender_name": m.sender_name[:60],
+                                          "received_at": m.received_at.isoformat(), "text": m.text[:max(200,12000//max(1,len(originals)))]}
                                          for m in originals],
-                   "HISTORY": [{"text": str(h.get("text", ""))[:500],
+                   "HISTORY": [{"message_id": h.get("message_id"), "reply_to_id": h.get("reply_to_id"),
+                                "sender_id": h.get("sender_id"), "sender_name": str(h.get("sender_name", ""))[:60],
+                                "received_at": h.get("received_at"), "has_image": bool(h.get("has_image")),
+                                "has_document": bool(h.get("has_document")), "text": str(h.get("text", ""))[:500],
                                 "plan": str(h.get("plan", ""))[:1000],
                                 "result": str(h.get("result", ""))[:500]} for h in history[:5]]}
-        messages.append({"role": "user", "content": json.dumps(context, ensure_ascii=False)[:16000]})
+        messages.append({"role": "user", "content": json.dumps(context, ensure_ascii=False)})
         body = {"model": self.settings.model, "stream": False, "think": self.think,
                 "options": {"temperature": 0}, "messages": messages, "format": FOLLOWUP_SCHEMA}
-        return self._ask(body, parse_followup, attempts=1)
+        self.last_followup_outcome="provider_unavailable"
+        def parse(content):
+            result=parse_followup(content)
+            self.last_followup_outcome="ok" if result is not None else "invalid_output"
+            return result
+        return self._ask(body, parse, attempts=1)
 
     @staticmethod
     def _transcript(messages) -> str:

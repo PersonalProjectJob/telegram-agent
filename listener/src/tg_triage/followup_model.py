@@ -17,6 +17,16 @@ FOLLOWUP_SCHEMA={"type":"object","properties":{
     "required":["action","confidence","target_ordinal","summary","questions","groups"]}
 
 
+FOLLOWUP_SCHEMA['properties']['source_roles']={'type':'array','maxItems':40,'items':{'type':'object',
+    'properties':{'message_id':{'type':'integer'},'role':{'type':'string','enum':['ancillary','request','unknown']},
+                  'confidence':{'type':'number'}},'required':['message_id','role','confidence']}}
+FOLLOWUP_SCHEMA['properties']['unresolved_message_ids']={'type':'array','items':{'type':'integer'},'maxItems':40}
+FOLLOWUP_SCHEMA['properties']['desired_count']={"type":["integer","null"],"minimum":2,"maximum":MAX_SPLIT}
+FOLLOWUP_SCHEMA['properties']['bindings']={"type":"array","maxItems":MAX_SPLIT,"items":{
+    "type":"object","properties":{"ordinal":{"type":"integer","minimum":0,"maximum":MAX_SPLIT-1},
+    "message_ids":{"type":"array","items":{"type":"integer"}}},"required":["ordinal","message_ids"]}}
+
+
 def validate_followup(value):
     if not isinstance(value,dict) or value.get('action') not in ('update','split','clarify','chat'):
         return None
@@ -34,6 +44,35 @@ def validate_followup(value):
         return None
     result=dict(action=value['action'],confidence=confidence,target_ordinal=target,
                 summary=summary[:2000],questions=[q[:200] for q in questions[:3]],groups=[])
+    roles=value.get('source_roles',[])
+    if not isinstance(roles,list) or len(roles)>40:
+        return None
+    result['source_roles']=[]
+    for role in roles:
+        if (not isinstance(role,dict) or type(role.get('message_id')) is not int
+                or role.get('role') not in ('ancillary','request','unknown')
+                or type(role.get('confidence')) not in (int,float) or not 0<=role['confidence']<=1):
+            return None
+        result['source_roles'].append({k:role[k] for k in ('message_id','role','confidence')})
+    unresolved=value.get('unresolved_message_ids',[])
+    if not isinstance(unresolved,list) or len(unresolved)>40 or any(type(i) is not int for i in unresolved):
+        return None
+    result['unresolved_message_ids']=unresolved
+    count=value.get('desired_count')
+    bindings=value.get('bindings',[])
+    if count is not None and (type(count) is not int or not 2<=count<=MAX_SPLIT):
+        return None
+    if not isinstance(bindings,list) or len(bindings)>MAX_SPLIT:
+        return None
+    result['desired_count']=count
+    result['bindings']=[]
+    for binding in bindings:
+        if (not isinstance(binding,dict) or type(binding.get('ordinal')) is not int
+                or not 0<=binding['ordinal']<MAX_SPLIT or not isinstance(binding.get('message_ids'),list)
+                or not binding['message_ids'] or len(binding['message_ids'])>40
+                or any(type(i) is not int for i in binding['message_ids'])):
+            return None
+        result['bindings'].append(dict(ordinal=binding['ordinal'],message_ids=binding['message_ids']))
     for group in groups:
         if not isinstance(group,dict):
             return None
@@ -58,3 +97,10 @@ def parse_followup(content):
         return validate_followup(json.loads(strip_thinking(content)))
     except (ValueError,TypeError):
         return None
+
+# Keep final JSON comfortably inside the existing provider output budget.
+FOLLOWUP_SCHEMA['properties']['summary']['maxLength']=300
+FOLLOWUP_SCHEMA['properties']['questions'].update(maxItems=3)
+FOLLOWUP_SCHEMA['properties']['questions']['items']['maxLength']=180
+for field in ('title','summary'):
+    FOLLOWUP_SCHEMA['properties']['groups']['items']['properties'][field]['maxLength']=200 if field=='title' else 300

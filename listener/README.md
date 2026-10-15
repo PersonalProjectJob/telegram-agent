@@ -496,10 +496,27 @@ new reply and selects an update, split, clarification question or ordinary chat.
 is required. Updates append a sanitized GitHub comment; the original issue body, human edits,
 labels and history remain intact. A reliable split keeps the first request on the original ticket,
 creates only N−1 siblings (at most five total), and comments the corrected first-request scope and
-sibling links on the original ticket. Every original source ID must belong to exactly one group;
-new drafts quote only their assigned original messages and retain their existing uploaded media,
+sibling links on the original ticket. Every original source ID must be accounted for exactly once across request groups and an
+explicit unassigned-content bucket; new drafts quote only their assigned original messages and retain their existing uploaded media,
 Telegram source links and source-ticket reference. Scope planning uses text and media provenance,
 without re-reading image pixels; ambiguous image/message associations ask the sender to clarify.
+Direct replies to any stored original topic member resolve through that topic's same-chat sent
+notice and proven issue association. Current replies and chronological history carry their real
+reply edges, sender identity and media metadata. Explicit same-author ordinal confirmations
+are stored durably with their source evidence, and bounded old jobs reconstruct legacy labels.
+Conflicts remain blocking until the same author confirms the original anchor again; stored
+bindings are checked against their real message evidence before reuse.
+
+When the sender confirms the total request count and each request anchor, the bot acknowledges
+the known scopes. Captionless images can remain unassigned. Additional unassigned text requires
+a confident semantic ancillary role in the same provider call, or a confident full split;
+unknown/additional work requests ask targeted questions rather than disappearing in the bucket.
+The original ticket correction and reply visibly retain unassigned snippets/media and unconfirmed
+scope. Later confirmed media assignments append to the correct existing sibling. Analysis failure
+preserves confirmations and produces a specific support question; it is distinct from semantic
+uncertainty in the durable reason and content-free analysis logs. The concise final-JSON prompt
+avoids repeated transcripts and retains the configured provider/output limits.
+
 Missing business details can be asked per ticket after a reliable split. Each result replies to
 the new clarification message, and replies to that notice keep the same durable root conversation.
 After a split, uncertain updates ask which ticket is intended; repeated split requests never
