@@ -138,6 +138,7 @@ class Config:
     attachments: AttachmentsConfig = field(default_factory=AttachmentsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     console_revision: str = ""
+    thinking_enabled: bool = True
 
     def redacted(self) -> dict:
         result = asdict(self)
@@ -355,6 +356,9 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
                  "attachments.max_per_hour", 0),
         _integer(attachments_table.get("max_documents_per_case", default_attachments.max_documents_per_case),
                  "attachments.max_documents_per_case", 0))
+    thinking_enabled = _optional_table(data, 'thinking').get('enabled', True)
+    if type(thinking_enabled) is not bool:
+        raise ConfigError('thinking.enabled: expected boolean')
     return Config(
         mode=mode,
         telegram=TelegramConfig(
@@ -372,4 +376,5 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
         model=ModelConfig(provider, model_name, think, timeout, base_url, max_output, consent, key_file,
                          image_consent, fallback, fallback_model, fallback_think, pricing),
         console_revision=str(data.get("console", {}).get("revision", "")),
+        thinking_enabled=thinking_enabled,
     )

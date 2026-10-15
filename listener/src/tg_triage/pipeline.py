@@ -743,6 +743,9 @@ class Pipeline:
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)
             else:
                 number, url = self.github.create_issue(issue)
+                if type(number) is not int or number<=0:
+                    raise ValueError('Unverified created issue result')
+                url=f'https://github.com/{self.config.gh_repo}/issues/{number}'
                 result = replace(result, issue_number=number, issue_url=url,
                                  reaction_message_id=first.message_id,
                                  reaction_message_ids=(first.message_id,), images=len(found.images),
@@ -774,6 +777,12 @@ class Pipeline:
             reaction_message_id=targets[0] if targets else None, reaction_message_ids=targets)
 
     def _analyze_case(self, case_key, start, trigger=None, rule_cache=None):
+        from .thinking import decision_turn
+        with decision_turn(self, 'case:'+case_key, case_key,
+                           trigger.message_id if trigger else int(case_key.rsplit(':',1)[-1])):
+            return self._analyze_case_inner(case_key,start,trigger,rule_cache)
+
+    def _analyze_case_inner(self, case_key, start, trigger=None, rule_cache=None):
         if not self.store.begin_analysis(case_key):
             return None  # another caller owns this case; one case is analyzed once
         messages = self.store.case_messages(case_key)
@@ -790,6 +799,14 @@ class Pipeline:
                     and getattr(self.classifier, "supports_vision", False)):
                 self._prepared_images = self.attachments.prepare_images(case_key, messages)
             plans = self._plan(case_key, messages, first, rule_cache if rule_cache is not None else {})
+            from .thinking import CURRENT, preflight_initial
+            turn = CURRENT.get()
+            if turn:
+                preflight_initial(plans,messages)
+                turn.record('initial_partition',dict(source_ids=[m.message_id for m in messages],
+                    reply_edges=[dict(source_id=m.message_id,reply_to_id=m.reply_to_id,sender_id=m.sender_id) for m in messages]),
+                    proposed_plan=[dict(ids=[m.message_id for m in p.messages],reply_to=p.first.message_id,action=p.action) for p in plans],
+                    hypotheses=[dict(type=p.classification.type,confidence=p.classification.confidence) for p in plans if p.classification])
             # The whole partition is stored before anything is sent: a message belongs to one group.
             self.store.plan_groups(case_key, [(plan.key, [item.message_id for item in plan.messages])
                                               for plan in plans])
@@ -797,6 +814,11 @@ class Pipeline:
             result = self._combine(case_key, results)
             result = replace(result, latency_ms=max(0, int((self.timer() - start) * 1000)))
             tally = self.store.close_case(case_key, result, result.latency_ms)
+            if turn:
+                turn.record('initial_result',dict(source_ids=[m.message_id for m in messages],
+                    results=[dict(reply_to=p.first.message_id,issue_number=r.issue_number,decision=r.decision) for p,r in zip(plans,results)]),
+                    status=('verified' if tally.balanced and all(r.decision not in ('error','rate_limited') for r in results)
+                            else 'accounting_verified' if tally.balanced else 'unbalanced'))
         except Exception as error:
             # An unexpected failure must not leave the window `analyzing` with groups half done.
             try:

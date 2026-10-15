@@ -215,10 +215,21 @@ python scripts/test_telegram_triage_policy.py
 
 The checker reads the one trace block in the canonical policy, verifies source/test symbols and Git-LF-normalized runtime/prompt hashes, and flags `REVIEW_REQUIRED` for drift. It never loads policy into the daemon, calls a model or mutates a service. A hash match proves reviewed bytes, not semantic correctness.
 
-For isolated THINKPAD deployment and rollback, see [deploy guide](../deploy/README.md). The [THINKING research](../Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) is a proposal, not a new runtime capability.
+For isolated THINKPAD deployment and rollback, see [deploy guide](../deploy/README.md). The [THINKING engineering/research](../Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) distinguishes implemented controller behavior from future pilot targets; [QA acceptance](../Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md) documents proof criteria.
+
+`[thinking] enabled=true` is the default when absent. Set false and restart the listener to restore the legacy semantic path. Additive `thinking_decisions` and `thinking_decision_events` hold versioned decision metadata; preserve them and the existing external-operation ledger during code rollback. Do not reset reservations to retry uncertain POSTs. The daemon loads packaged `thinking-topics.md`, not the canonical Markdown policy. Model/consent/auth settings remain unchanged.
+
+To run a small synthetic check against the configured model while using memory SQLite and fake GitHub/Telegram tools:
+
+```text
+python scripts/telegram-thinking-model-smoke.py --config /etc/tg-triage/listener.toml
+```
+
+Run from repository root with the listener venv/user and the reviewed installed wheel or source on PYTHONPATH. This opt-in command uses model resources under existing consent. It does not open the live database or Telegram session, and prints only outcome metadata. It is not a model-accuracy benchmark. Semantic deadlines and current limitations are defined in TG-19/TG-30/TG-32, avoiding a second policy source here.
 
 ## Changelog
 
 | Version | Date/time (Asia/Saigon) | Author | Change |
 |---|---|---|---|
+| v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | THINKING feature switch, additive journal operations and isolated configured-model smoke. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Keep technical operations; replace evolving duplicated business descriptions with canonical rule links. |

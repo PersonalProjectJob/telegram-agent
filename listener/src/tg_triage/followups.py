@@ -130,6 +130,10 @@ def _apply_context(state, entry, originals):
 
 
 def _context(pipeline,job,root,originals,reply):
+    from .thinking import CURRENT
+    turn = CURRENT.get()
+    if turn:
+        turn.lookup()  # root-scoped provenance/evidence batch, never whole-group retrieval
     state=json.loads(root.get('context_state') or '{}')
     state.setdefault('bindings',{}); state.setdefault('evidence',{}); state.setdefault('conflicts',{})
     lookup={m.message_id:m for m in originals}
@@ -374,6 +378,29 @@ def _plan(pipeline,job,root,originals,reply,history):
 
 
 def _run(pipeline,job):
+    from .thinking import decision_turn
+    with decision_turn(pipeline,'followup:'+str(job['id']),job['root_key'],job['message_id']) as turn:
+        _run_inner(pipeline,job)
+        if turn:
+            with pipeline.store._lock:
+                current = pipeline.store.connection.execute('SELECT status FROM followup_jobs WHERE id=?',(job['id'],)).fetchone()
+                root = pipeline.store.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',(job['root_key'],)).fetchone()
+                operations = pipeline.store.followup_operations(job)
+            state = json.loads(root[0]) if root else {}
+            turn.record('followup_result',_confirmed_evidence(state),state.get('unresolved_message_ids',[]),
+                        state.get('conflicts'),operations=[dict(ordinal=o['ordinal'],kind=o['kind'],status=o['status'],result=o['result']) for o in operations],
+                        status=current[0] if current else 'missing')
+
+
+def _confirmed_evidence(state):
+    return {k:state[k] for k in ('bindings','evidence','desired_count','count_evidence','author_id') if k in state}
+
+
+def _run_inner(pipeline,job):
+    from .thinking import CURRENT
+    turn = CURRENT.get()
+    if turn:
+        turn.lookup()
     store=pipeline.store
     root,originals,reply,history=store.followup_context(job)
     # A stored URL is only proof that the original issue belongs to the CURRENT configured
@@ -407,6 +434,12 @@ def _run(pipeline,job):
     else:
         plan,ops=json.loads(job['plan']),None
     if job['plan'] is None:
+        if turn:
+            state=json.loads(root.get('context_state') or '{}')
+            turn.reason=turn.reason or plan.get('context_reason')
+            turn.record(plan['action'],_confirmed_evidence(state),state.get('unresolved_message_ids',[]),state.get('conflicts'),
+                        hypotheses=[dict(message_id=r['message_id'],role=r['role'],confidence=r['confidence']) for r in plan.get('source_roles',[])],
+                        operations=[dict(ordinal=i,kind=k) for i,(k,_) in enumerate(ops)])
         store.save_followup_plan(job,plan,ops)
     if pipeline.config.mode=='dry-run':
         store.finish_followup(job,'dryrun','Simulated '+plan['action'])

@@ -217,6 +217,8 @@ class Store(FollowupStoreMixin):
                     WHERE decision IN ('issue', 'needs_human', 'error', 'pending')
                 """)
             self.init_followups(recover_pending)
+            from .thinking import init_store
+            init_store(self)
             if recover_pending:
                 self._recover_cases()
                 self.connection.execute("""

@@ -15,7 +15,7 @@
 - **Status**: Draft
 - **Approved By**: — (chờ duyệt)
 
-## Bổ sung phạm vi 2026-10-15 — Telegram triage hiện hành
+## Bổ sung phạm vi 2026-10-15 — chuẩn hóa/nghiên cứu trước triển khai
 
 User đã yêu cầu chuẩn hóa nghiệp vụ và nghiên cứu Harness THINKING trong phiên này. Đây là quyền thực hiện phần chuẩn hóa/nghiên cứu; **không phải phê duyệt toàn bộ Fleet Master**, các sign-off Draft phía dưới được giữ nguyên.
 
@@ -25,6 +25,12 @@ User đã yêu cầu chuẩn hóa nghiệp vụ và nghiên cứu Harness THINKI
 - Chỉ thay tài liệu và công cụ kiểm tra drift tài liệu; không đổi runtime, prompt, DB hay cấu hình đang chạy. Không có ticket mới cho việc này; `noissue` trong tên tài liệu là chủ đích. [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43) là liên kết thay đổi, không phải issue yêu cầu.
 
 ## 1. Feature Overview
+
+### Phạm vi THINKING được user yêu cầu triển khai — 2026-10-15
+
+User đã yêu cầu triển khai thiết kế THINKING, kiểm thử các hội thoại đã gửi, cập nhật PR #43 và deploy THINKPAD. Phạm vi gồm controller có ngân sách tổng, quyết định có version/bằng chứng, bảo toàn xác nhận và thao tác đã reserve, switch rollback và kiểm thử offline bằng tool giả. Tham khảo Harness AlexChu chỉ ở mô hình state/validate/verify; không import executor CLI hay sửa Harness canonical. Đây là quyền triển khai riêng cho triage, không thay sign-off Fleet Draft. Kết quả deploy/verification được báo bằng bằng chứng thực tế sau triển khai.
+
+Acceptance: [QA THINKING](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md). Phần chuẩn hóa/nghiên cứu trước triển khai ở trên giữ lịch sử; phạm vi mới thay giới hạn docs-only cho tính năng này.
 
 ### Problem Statement
 

@@ -90,3 +90,8 @@ max_documents_per_case = 5
 
 [storage]
 db_path = "/var/lib/agentfleet/tg/triage.sqlite3"
+
+# Bounded context controller; absence defaults true. Set false and restart to use the legacy
+# semantic path. Existing decisions/operation reservations remain in SQLite during rollback.
+[thinking]
+enabled = true

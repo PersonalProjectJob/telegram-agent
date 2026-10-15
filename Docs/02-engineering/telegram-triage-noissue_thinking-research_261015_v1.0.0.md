@@ -1,8 +1,8 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.0.0 · **Updated**: 2026-10-15 21:08 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.1.0 · **Updated**: 2026-10-15 21:47 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
-**Status**: Đề xuất nghiên cứu, chưa triển khai; user yêu cầu nghiên cứu không đồng nghĩa phê duyệt migration.
+**Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
 ## Related Documents
 
@@ -12,7 +12,21 @@
 
 ## Solution vs codebase
 
-Status: research/design proposal only, inspected 2026-10-15. No runtime migration, provider/consent/model/auth changes, or canonical Harness edits authorized by this artifact.
+### Implementation delta — 2026-10-15 21:42
+
+User explicitly authorized implementation, tests, PR update and THINKPAD deployment. This supersedes the original research-only scope for this feature; historical Fleet Draft approvals stay unchanged. [QA acceptance](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md) records production-path cases and proof criteria.
+
+- `thinking.py` provides a ContextVar-scoped turn, versioned `triage.decision/v1`, strict compare-and-swap journal and immutable revision events. Owner lineage stays AlexChu; no developer Harness CLI is imported.
+- Additive SQLite tables `thinking_decisions(turn_key,root_key,version,record)` and `thinking_decision_events(turn_key,version,record)` preserve existing data and operation ledgers. A resumed turn reads its expected version, does not silently adopt a concurrent writer. Existing root execution locks serialize conversational tools; this is not a new multi-host lease system.
+- Initial Pipeline persists validated partition/actual reply targets before existing tool reservation, then verified results/accounting. Followups retain grounded context_state/bindings and persist concise confirmed/hypotheses/unresolved/conflict metadata before operations, then operation outcomes. No private chain-of-thought, raw source prose, profile or credentials enter the journal. Short model category labels/confidence remain hypotheses, never confirmations.
+- Compact `thinking-topics.md` and `thinking.CASE_PROMPT` project initial topic/single-case policy while retaining supplied optional details. Followup context trims prose while preserving IDs, reply/sender/media flags and confirmed provenance. Oversize envelopes (including schema) fall back safely instead of silently dropping source IDs. Injected custom prompts remain honored.
+- Shared two-attempt budget spans cloud invalid-output retries and local fallback. Queue-only cancellation uses existing `MODEL_LOCK.enter(stop=...)` and consumes no HTTP attempt. Listener-only `thinking_transport.py` bounds DNS, TCP, TLS and response reading with remaining deadlines, preserving shared transport/lock bytes and NailHub. DNS resolver threads have no credentials or model/HTTP requests; platform DNS itself cannot be forcibly cancelled, but waiting is bounded.
+- Semantic deadline40s, request20s, three scoped read batches and8000UTF8 text bytes are conservative bounds. The timer starts before case retrieval/image preparation, so slow attachment preparation consumes the remaining semantic budget; existing attachment/tool timeouts still apply. **No40s end-to-end ticket/reply SLA**. Source-role512 output only; complete draft outputs retain configured limits. Images are outside the text-token approximation.
+- `[thinking] enabled=true` defaults on when absent; explicit false restores legacy semantic prompt/context/budget path after restart. Rollback leaves both journal tables and all external-effect reservations intact. Provider/model/consent/auth stay configured as before. Journal retention is operator-managed; no automatic deletion added.
+
+The original inventory and proposals below describe the inspected preimplementation baseline. They are retained as research history; the implementation delta above and canonical TG rules define current code. Deployment status requires independent installed-byte/service evidence.
+
+Original research scope: inspected2026-10-15 before implementation authorization. No provider/consent/model/auth or canonical Harness changes follow from this implementation.
 
 ## Conclusion
 
@@ -48,7 +62,7 @@ Root: `C:/Users/AD/Documents/GitHub/skill-repo-vlink/harness`.
 | `bin/harness-agent-adapter.mjs`: validateAction, validateTransitionCommands, assertReviewerSeparation, structuredResultSchema, applyTransitions | Validate actions and transition on acceptable verdict; actually invokes external executors, so do not embed into Telegram production. |
 | `bin/harness-verify.mjs`: repositoryIdentity, loadTask, main | Script verification with stable repo identity; Node package-script assumptions do not verify Python bot semantics. |
 
-## Current runtime inventory
+## Preimplementation runtime inventory (historical baseline)
 
 Root: `C:/Users/AD/.codex/worktrees/telegram-ticket-reply/AgentBuilder`. Baseline inspected before this documentation task: commit9746ef2.
 
@@ -160,7 +174,7 @@ Required crash/replay tests: before/after plan persistence; before/after reserve
 
 727 passing code tests are code regression evidence, not model accuracy. `.context/role-live-diagnostics.log` contains one successful targeted-role call1961ms, but also invalid JSON around23–25seconds and fallback timeout120seconds. n=1 cannot establish latency percentiles or model accuracy. CloudProvider currently can try invalid outputs twice then local fallback retries, multiplying per-call timeouts; future controller budget must cover the total chain, and telemetry must distinguish MODEL_LOCK queue time.
 
-No canonical Harness changes, no live operations, no provider/auth/model changes were made during this research.
+No canonical Harness/provider/auth/model changes were made. Synthetic fake-tool model smoke and deterministic regression are separate evidence; neither completes the proposed60human-labelled corpus or proves95% model accuracy.
 
 ## Quyết định đề xuất và quyền thực hiện
 
@@ -178,4 +192,5 @@ FE/UI: không thay đổi trong nghiên cứu này. API/DB mới: chưa triển 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | Implement bounded controller/journal, separate historical pilot proposals and actual runtime limits; QA and isolated smoke. |
 | v1.0.0 | 2026-10-15 21:08 | Codex / owner AlexChu | Nghiên cứu Harness và nguồn chính thức; kiến trúc/budget/pilot đề xuất, không đổi runtime. |

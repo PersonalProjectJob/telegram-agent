@@ -138,6 +138,11 @@ class CloudProvider(OllamaProvider):
     def _ask_cloud(self, body, parse, attempts):
         from .ai_transport import complete, read_key, ProviderError
         from .model_lock import MODEL_LOCK, LockUnavailable
+        from .model_lock import LockStopped
+        from .thinking import CURRENT, BudgetExhausted
+        turn = CURRENT.get()
+        if turn:
+            from .thinking_transport import complete
         c = self.model_config
         messages = self._cloud_messages(body["messages"])
         if messages is None:
@@ -149,18 +154,35 @@ class CloudProvider(OllamaProvider):
             self._record(error.code, {}, started)
             return None
         for _ in range(attempts):
+            try:
+                timeout = turn.attempt(body,consume=False) if turn else c.timeout_seconds
+            except BudgetExhausted:
+                return None
             usage, outcome, result = {}, "ok", None
             try:
-                with MODEL_LOCK.enter():
+                with MODEL_LOCK.enter(**({'stop': turn} if turn else {})):
+                    if turn:
+                        timeout = turn.attempt(body)
+                        if timeout <= 0:
+                            turn.reason = 'decision_deadline_exhausted'
+                            return None
                     started = time.monotonic()   # latency excludes the wait for the model lock
                     value = complete(c.provider, c.base_url, c.name, messages, body["format"], key=key,
-                                     timeout=c.timeout_seconds, max_output=c.max_output,
+                                     timeout=timeout, max_output=min(c.max_output,body.get('_narrow_output',8192) if turn else 8192),
                                      usage_sink=usage.update)
                 result = parse(json.dumps(value))
                 if result is None:
                     outcome = "invalid_output"
             except ProviderError as error:
                 outcome = error.code
+            except LockStopped:
+                if turn:
+                    turn.reason = 'decision_deadline_exhausted'
+                outcome = None
+                return None
+            except BudgetExhausted:
+                outcome = None
+                return None
             except LockUnavailable:
                 outcome = None   # no model call was made
                 return None
