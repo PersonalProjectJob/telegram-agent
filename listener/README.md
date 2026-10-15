@@ -469,8 +469,11 @@ Telegram message, asking the sender or Owner to confirm/add information in that 
 The reply includes up to three short, sanitized missing-information questions when available
 and a GitHub issue link built from the configured repository and positive issue number.
 GitHub creation failures (including an ambiguous result) ask Owner to check the repository
-before any manual retry. The issue hourly limit also produces a group notice. Normal successful
-issues, noise, chat and pending review produce no textual notice; dry-run never sends one.
+before any manual retry. The issue hourly limit also produces a group notice. Successful issues
+receive a friendly confirmation with their GitHub ticket link, replying to the first message of
+each topic: three messages grouped into one ticket get one reply to the first message; three
+messages split into three tickets each get a reply with their own ticket link. Noise, chat and
+pending review produce no textual notice; dry-run never sends one.
 
 Notices use the existing Telegram client and event loop, with a 15-second transport timeout.
 Private chats and broadcast channels are rejected by the notice sender. SQLite `group_notices`

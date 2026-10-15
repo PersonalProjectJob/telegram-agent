@@ -1,4 +1,4 @@
-"""Bounded, plain-text owner clarification notices; never general chat replies."""
+"""Bounded, plain-text ticket confirmations and owner clarification notices."""
 
 import logging
 import re
@@ -29,11 +29,19 @@ def clean_question(value):
 
 
 def notice_text(result, missing_info, repo):
-    if result.decision == "needs_human":
-        text = "Cần người xác nhận. Nhờ người gửi hoặc Owner bổ sung/xác nhận thông tin ngay trong group để Owner hỗ trợ."
-        if (isinstance(repo, str) and _REPO.fullmatch(repo)
-                and type(result.issue_number) is int and result.issue_number > 0):
-            text += f"\nIssue: https://github.com/{repo}/issues/{result.issue_number}"
+    issue_link = None
+    if (isinstance(repo, str) and _REPO.fullmatch(repo)
+            and type(result.issue_number) is int and result.issue_number > 0):
+        issue_link = f"https://github.com/{repo}/issues/{result.issue_number}"
+    if result.decision == "issue":
+        if issue_link is None:
+            return None
+        text = f"Em đã ghi nhận nội dung này và tạo ticket: {issue_link} rồi nhé 😊"
+    elif result.decision == "needs_human":
+        text = ("Em đã ghi nhận nội dung này rồi nhé. "
+                "Nhờ bạn hoặc Owner bổ sung/xác nhận thông tin ngay trong group để làm rõ yêu cầu.")
+        if issue_link:
+            text += f"\nEm đã tạo ticket để tiện theo dõi: {issue_link}"
         questions = []
         if isinstance(missing_info, (tuple, list)):
             for value in missing_info[:MAX_QUESTIONS]:

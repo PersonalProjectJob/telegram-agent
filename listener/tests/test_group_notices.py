@@ -1,4 +1,4 @@
-"""Offline group clarification and durable at-most-once transport tests."""
+"""Offline ticket replies, group clarification and durable at-most-once transport tests."""
 import asyncio
 import tempfile
 import threading
@@ -54,9 +54,54 @@ class NoticeTests(unittest.TestCase):
         model = FakeCaseModel(CaseAnalysis("needs_human", None, missing_info=("Bước tái hiện nào?",)))
         self.pipeline(model=model).process(message())
         self.assertIn("Bước tái hiện nào?", self.calls[0][2])
-    def test_success_dry_run_noise_chat_pending_do_not_send(self):
-        self.pipeline(model=FakeClassifier(classification())).process(message(1))
+    def test_success_replies_to_logged_message_once_with_trusted_link(self):
+        github = FakeGitHub()
+        github.create_issue = lambda issue: (42, "https://evil.test/leak?token=secret")
+        p = self.pipeline(model=FakeClassifier(classification()), github=github)
+        result = p.process(message(1))
+        self.assertEqual(result.decision, "issue")
+        self.assertEqual(len(self.calls), 1)
+        chat, target, text = self.calls[0]
+        self.assertEqual((chat, target), (message().chat_id, 1))
+        self.assertEqual(text, "Em đã ghi nhận nội dung này và tạo ticket: "
+                         "https://github.com/sandbox/triage/issues/42 rồi nhé 😊")
+        self.assertIn("https://github.com/sandbox/triage/issues/42", text)
+        self.assertNotIn("evil", text)
+        self.assertIsNone(p.process(message(1)))
+        group_notices.notify(self.store, self.send, message(1), result, (), "sandbox/triage")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_three_messages_one_ticket_replies_only_to_first(self):
+        self.store.clock = Clock()
+        github = NumberedGitHub()
+        p = self.pipeline(window=5, model=FakeTopicModel((topic([1, 2, 3]),)), github=github)
+        for index in (1, 2, 3):
+            p.process(message(index, sender_id=7))
+        self.store.clock.advance(6)
+        p.close_due_cases()
+        self.assertEqual(len(github.calls), 1)
+        self.assertEqual([call[1] for call in self.calls], [1])
+        self.assertIn("https://github.com/sandbox/triage/issues/101", self.calls[0][2])
+
+    def test_three_messages_three_tickets_reply_to_each_with_matching_link(self):
+        self.store.clock = Clock()
+        github = NumberedGitHub()
+        p = self.pipeline(window=5, model=FakeTopicModel(tuple(topic([i]) for i in (1, 2, 3))),
+                          github=github)
+        for index in (1, 2, 3):
+            p.process(message(index, sender_id=7))
+        self.store.clock.advance(6)
+        p.close_due_cases()
+        self.assertEqual(len(github.calls), 3)
+        self.assertEqual([call[1] for call in self.calls], [1, 2, 3])
+        for index, (_, _, text) in enumerate(self.calls, 101):
+            self.assertIn(f"https://github.com/sandbox/triage/issues/{index}", text)
+        self.assertEqual(p.close_due_cases(), [])
+        self.assertEqual(len(self.calls), 3)
+
+    def test_dry_run_noise_chat_pending_do_not_send(self):
         self.pipeline(mode="dry-run").process(message(2))
+        self.pipeline(mode="dry-run", model=FakeClassifier(classification())).process(message(6))
         self.pipeline().process(message(3, text="123"))
         self.pipeline(model=FakeTopicModel((topic([4], verdict="needs_human"),))).process(message(4, mentions_listener=False))
         self.pipeline(model=FakeTopicModel((topic([5], category="chat", type="chat"),))).process(
@@ -122,9 +167,11 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(result.issue_number, 42)
         self.assertEqual(self.calls, [])
     def test_url_requires_valid_repo_and_positive_integer(self):
-        for repo, number in (("../x", 1), ("sandbox/triage", True), ("sandbox/triage", -1)):
+        for repo, number in (("../x", 1), ("sandbox/triage", True), ("sandbox/triage", -1),
+                             ("sandbox/triage", None)):
             text = group_notices.notice_text(Decision("needs_human", "model", issue_number=number), (), repo)
             self.assertNotIn("https://", text)
+            self.assertIsNone(group_notices.notice_text(Decision("issue", "model", issue_number=number), (), repo))
 
 class NoticeTransportTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -177,7 +224,7 @@ class NoticeTransportTests(unittest.IsolatedAsyncioTestCase):
         await telegram_io.enqueue_event(event(id=900, out=True), queue, config().telegram.chat_ids, store)
         self.assertTrue(queue.empty())
     async def test_notice_reply_never_retries_full_error_or_limited_case(self):
-        for outcome in ("needs_human", "error", "rate_limited"):
+        for outcome in ("issue", "needs_human", "error", "rate_limited"):
             with self.subTest(outcome=outcome):
                 store = Store(":memory:")
                 try:
@@ -188,7 +235,8 @@ class NoticeTransportTests(unittest.IsolatedAsyncioTestCase):
                         return 900
                     cfg = config("live", limit=0 if outcome == "rate_limited" else 20,
                                  max_messages=1)
-                    p = Pipeline(cfg, store, FakeClassifier(None), github, notice_sender=send)
+                    model = FakeClassifier(classification() if outcome == "issue" else None)
+                    p = Pipeline(cfg, store, model, github, notice_sender=send)
                     first = p.process(message())
                     self.assertEqual(first.decision, outcome)
                     before_calls = len(github.calls)
