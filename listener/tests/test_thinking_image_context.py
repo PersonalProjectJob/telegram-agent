@@ -12,6 +12,7 @@ from tg_triage.pipeline import Pipeline
 from tg_triage.store import Store
 from tg_triage.thinking import pack_messages,request_text_bytes
 from tg_triage.provider import build_provider
+from tg_triage.ai_transport import ProviderError
 from tests.helpers import config,message,topic,FakeHTTP,FakeDownloader,FakeUploader,JPG,NOW
 from tests.test_followups import GitHub
 
@@ -25,6 +26,49 @@ def envelope(*groups):
 
 
 class ThinkingImageTests(unittest.TestCase):
+    def hosted_repair_pipeline(self, responses, *, enabled=True):
+        store=Store(':memory:',clock=lambda:NOW);self.addCleanup(store.close)
+        cfg=replace(config('live',window=2,max_messages=3),thinking_enabled=enabled)
+        cfg=replace(cfg,model=replace(cfg.model,provider='deepseek',name='deepseek-flash',think=False,
+            cloud_consent=True,cloud_image_consent=True,fallback='ollama',fallback_think=False))
+        provider=build_provider(cfg);gh=GitHub();sent=[]
+        p=Pipeline(cfg,store,provider,gh,notice_sender=lambda c,m,t:sent.append((m,t)) or 1000+m,
+            downloader=FakeDownloader({442:(JPG,'source.jpg')}),uploader=FakeUploader())
+        with patch('tg_triage.ai_transport.read_key',return_value='fake'), \
+             patch('tg_triage.thinking_transport.complete',side_effect=responses) as request:
+            self.feed(p)
+        return store,gh,sent,request
+
+    @staticmethod
+    def hosted_groups():
+        return {'groups':[asdict(g) for g in (
+            topic((442,),category='task',type='task',title='Thiết kế lại Salon information & visibility',summary='Thiết kế khi chọn Chat only'),
+            topic((443,),category='feedback',type='question'),topic((444,),category='chat',verdict='noise'))]}
+
+    def test_hosted_format_failure_retries_same_bundle_before_local(self):
+        for failure in (ProviderError('invalid_json'),{}):
+            with self.subTest(failure=type(failure).__name__):
+                store,gh,sent,request=self.hosted_repair_pipeline([failure,self.hosted_groups()])
+                self.assertEqual([c.args[0] for c in request.call_args_list],['deepseek','deepseek'])
+                self.assertEqual(request.call_args_list[0].args[3:5],request.call_args_list[1].args[3:5])
+                self.assertEqual(len(gh.calls),1);self.assertEqual([m for m,_ in sent],[442])
+                self.assertEqual(store.get(self.sources()[0].chat_id,443)['decision'],'chat')
+                record=json.loads(store.connection.execute('SELECT record FROM thinking_decisions').fetchone()[0])
+                self.assertEqual(record['budget']['model_calls_used'],2)
+
+    def test_hosted_network_failure_keeps_second_slot_for_local(self):
+        _,gh,sent,request=self.hosted_repair_pipeline([ProviderError('timeout'),self.hosted_groups()])
+        self.assertEqual([c.args[0] for c in request.call_args_list],['deepseek','ollama'])
+        self.assertEqual(len(gh.calls),1);self.assertEqual([m for m,_ in sent],[442])
+
+    def test_two_hosted_format_failures_stop_without_third_or_local_call(self):
+        store,gh,sent,request=self.hosted_repair_pipeline([ProviderError('invalid_json'),{}])
+        self.assertEqual([c.args[0] for c in request.call_args_list],['deepseek','deepseek'])
+        self.assertEqual(len(gh.calls),1);self.assertNotIn('ASP.NET',gh.calls[0].body)
+        self.assertEqual([m for m,_ in sent],[442,443,444])
+        self.assertEqual(store.get(self.sources()[0].chat_id,442)['decision'],'needs_human')
+        self.assertEqual(store.get(self.sources()[0].chat_id,443)['decision'],'pending_review')
+
     def make(self,*responses,downloader=None):
         store=Store(':memory:',clock=lambda:NOW);self.addCleanup(store.close)
         cfg=config('live',window=2,max_messages=3)

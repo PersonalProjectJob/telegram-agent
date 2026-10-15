@@ -10,6 +10,8 @@
 
 ## Test Strategy
 
+Hosted repair regression uses the real CloudProvider/Pipeline with fake network/tools: malformed JSON or parser-invalid output then valid partition must use two cloud calls with identical bundle/schema; network failure must use cloud then configured local; two malformed outputs must stop after two calls with honest scoped clarification. Legacy THINKING-off fallback remains covered. Installed malformed-image failure is retained; successful reruns do not erase it or establish model accuracy.
+
 Test the production Pipeline, Store and provider entry paths with fake GitHub/Telegram tools and temporary SQLite. The plan was recorded before implementation in the task's durable `.context/thinking-runtime-plan.md`; this artifact captures acceptance cases. Existing safety suites run with THINKING enabled by default. A separate opt-in smoke uses the configured real model, synthetic text and fake external tools; it never opens live SQLite or Telegram session. Independent reviewer/verifier and deployment controller report their own machine output; this document does not grant itself a release PASS.
 
 ## Test Cases

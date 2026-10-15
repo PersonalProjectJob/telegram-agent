@@ -28,6 +28,8 @@ User đã yêu cầu chuẩn hóa nghiệp vụ và nghiên cứu Harness THINKI
 
 ### Image-caption context correction — 2026-10-15
 
+Post-deploy verification found hosted malformed JSON followed by a slow local fallback despite the correct image bundle. Authorized correction: THINKING uses its remaining second attempt for same-host format validation retry, with identical context/schema; transport failures retain configured fallback. Two actual calls and20/40second limits remain unchanged. No parser relaxation or private-output repair prompt.
+
 User bổ sung: ảnh, caption và hội thoại/reply liên quan phải nằm trong cùng một gói context USER gửi model. Mapping thứ tự ảnh → source ID phải rõ khi nhiều ảnh; retry/fallback gửi lại nguyên gói, không đọc ảnh riêng rồi ghép suy luận.
 
 User yêu cầu xử lý caption thiết kế kèm screenshot và không trộn trao đổi backend/ack không liên quan vào ticket. Audit issue46 cho thấy zero model calls vì envelope vượt budget, rồi fallback gộp toàn case. Phạm vi sửa: renderer THINKING gọn có ID/reply/media provenance và truncation rõ; fallback chỉ theo scope có bằng chứng; image/model smoke dùng asset gốc với fake tools, không replay live DB/issue/notices. Giữ8000bytes,20/40seconds,hai attempts, provider/consent và shared service modules.

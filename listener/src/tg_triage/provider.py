@@ -131,6 +131,11 @@ class CloudProvider(OllamaProvider):
                 return result
         if self._fallback is None:
             return None
+        from .thinking import CURRENT
+        turn = CURRENT.get()
+        if turn and turn.calls >= 2:
+            turn.reason = 'model_call_budget_exhausted'
+            return None
         local = dict(body, model=c.fallback_model, think=c.fallback_think,
                      options=dict(body.get("options", {})))
         return self._fallback._ask(local, parse, attempts)
@@ -153,7 +158,9 @@ class CloudProvider(OllamaProvider):
         except ProviderError as error:
             self._record(error.code, {}, started)
             return None
-        for _ in range(attempts):
+        # Format failure gets one same-host validation retry before changing provider.
+        # The shared Turn remains the authority for actual calls and the deadline.
+        for _ in range(max(attempts, 2) if turn else attempts):
             try:
                 timeout = turn.attempt(body,consume=False) if turn else c.timeout_seconds
             except BudgetExhausted:
@@ -191,6 +198,6 @@ class CloudProvider(OllamaProvider):
                     self._record(outcome, usage, started)
             if result is not None:
                 return result
-            if outcome != "invalid_output":
+            if outcome not in (("invalid_output", "invalid_json") if turn else ("invalid_output",)):
                 return None
         return None

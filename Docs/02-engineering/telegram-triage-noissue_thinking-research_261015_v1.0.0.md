@@ -12,6 +12,10 @@
 
 ## Solution vs codebase
 
+### Hosted format validation repair — post-deploy finding
+
+Installed image smoke at e4de1d5 preserved the correct one-USER bundle and pixels but returned malformed JSON, then exhausted the second slot on local timeout. Earlier malformed responses are retained as failures. The controller now spends the remaining slot on identical same-host validation retry only for invalid_json/invalid_output; transport errors still use configured fallback. Both calls share existing20/40second deadlines and max2 actual attempts. No raw response/private reasoning is fed back or logged, no parser is weakened, and repeated format failure still produces scoped questions. A small real-model replay is a release check, not an accuracy/stability guarantee.
+
 ### Implementation delta — 2026-10-15 21:42
 
 User explicitly authorized implementation, tests, PR update and THINKPAD deployment. This supersedes the original research-only scope for this feature; historical Fleet Draft approvals stay unchanged. [QA acceptance](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md) records production-path cases and proof criteria.

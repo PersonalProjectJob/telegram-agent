@@ -168,6 +168,8 @@ Chỉ đổi prose do assistant tạo. Giữ nguyên source quote, URL và nội
 
 Provider local/hosted theo cấu hình. Cloud text cần consent và redact; cloud ảnh cần thêm image consent và provider hỗ trợ. Lỗi/unusable theo fallback cấu hình. Chỉ parse content, strip think block; private thinking không được lưu/log/đưa issue. Local think không hứa parity với hosted.
 
+Khi THINKING bật, hosted trả `invalid_json` hoặc output không qua parser dùng slot còn lại để retry validation trên cùng host, nguyên context bundle/schema. Không gửi output lỗi vào repair prompt, không nới parser. Lỗi transport/auth/timeout chuyển fallback cấu hình ngay nếu còn slot. Hai format failures tiêu hết hai actual attempts: dừng, không gọi local lần thứ ba; fallback hỏi rõ theo scope hiện có. THINKING tắt giữ hành vi legacy.
+
 Đường THINKING bounded transport gửi `thinking: {type: disabled}` cho DeepSeek để thực thi `model.think=false` đã cấu hình: bỏ tham số này sẽ dùng chế độ reasoning mặc định của nhà cung cấp. Không đổi model/consent, không thêm hỗ trợ hosted `think=true`, không đọc/lưu reasoning_content. Đây là sửa wire request riêng listener; rollback semantic path cũ vẫn dùng shared transport cũ. [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/), [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 DeepSeek non-thinking request gửi `temperature: 0` để giữ ý định sampling tập trung đã đặt ở classifier; trước đó hosted adapter bỏ sót nên server dùng mặc định riêng. Không đổi threshold hay tự coi sampling bằng không là đảm bảo đúng. Các provider khác giữ wire contract cũ; giới hạn semantics vẫn theo code validation. [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
@@ -205,7 +207,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 {
   "schema": "telegram-triage-policy/v1",
   "owner": "AlexChu",
-  "baseline_commit": "73371c0",
+  "baseline_commit": "e4de1d5",
   "rules": [
     {
       "id": "TG-01",
@@ -925,6 +927,18 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking.py",
           "symbol": "ThinkingTests.test_deepseek_false_is_explicitly_disabled_on_wire_only_for_deepseek"
+        },
+        {
+          "path": "listener/tests/test_thinking_image_context.py",
+          "symbol": "ThinkingImageTests.test_hosted_format_failure_retries_same_bundle_before_local"
+        },
+        {
+          "path": "listener/tests/test_thinking_image_context.py",
+          "symbol": "ThinkingImageTests.test_hosted_network_failure_keeps_second_slot_for_local"
+        },
+        {
+          "path": "listener/tests/test_thinking_image_context.py",
+          "symbol": "ThinkingImageTests.test_two_hosted_format_failures_stop_without_third_or_local_call"
         }
       ]
     },
@@ -999,7 +1013,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
     "listener/src/tg_triage/pipeline.py": "aafff8a1dec1ec82eb5575c9f3fa3f0d130a6cef049e5fb4f65aab9404f1fdd7",
-    "listener/src/tg_triage/provider.py": "6921fff885a17969c511037864288d328ac6188f6c0b69ed09bd3312a834615b",
+    "listener/src/tg_triage/provider.py": "3e59e6a19427510f66e11a798991188823ae9f699788e89f72af3b33b4768ad5",
     "listener/src/tg_triage/reactions.py": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
     "listener/src/tg_triage/receipt.py": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
     "listener/src/tg_triage/rules.py": "93778eef5df2abe88ae4424179ec509595cd6dcf14d5d94ddb70d5852454bccd",
@@ -1029,7 +1043,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "33d1c21888222d063709eb7b7d733007b8c8acd965a903bdd9226b4f5c05d3cb"
+  "runtime_fingerprint": "d3113bf6449aedcb5fe9828d94a3d17d6778198ad7bcc4e80deaa5bfdfb9ad3b"
 }
 ```
 
