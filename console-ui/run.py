@@ -37,6 +37,7 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             self.boundary()
             if self.path=='/api/bootstrap':
                 result=self.server.store.bootstrap();result['csrfToken']=self.server.csrf;self.json(result);return
+            if self.path=='/api/usage':self.json(self.server.store.usage());return
             if self.path.split('?',1)[0] not in self.allowed:raise APIError('not_found','Resource not found.',404)
             super().do_GET()
         except APIError as e:self.error(e)

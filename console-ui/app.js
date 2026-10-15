@@ -8,7 +8,7 @@ const providers = {
   deepseek: { name: 'DeepSeek', note: 'DeepSeek API', url: 'https://api.deepseek.com', model: '' },
   compatible: { name: 'Custom API', note: 'OpenAI-compatible', url: '', model: '' }
 };
-const names = { triage: 'Telegram Triage', nailhub: 'NailHub Worker', overview: 'Tổng quan', history: 'Lịch sử thay đổi' };
+const names = { triage: 'Telegram Triage', nailhub: 'NailHub Worker', overview: 'Tổng quan', usage: 'Chi phí API', history: 'Lịch sử thay đổi' };
 const state = {};
 const history = [];
 let host = {mode:'local',label:'LOCAL',canApply:false};
@@ -58,6 +58,7 @@ async function bootstrap(resetId=null) {
     document.querySelector('#connection-banner').textContent=host.mode==='installed'?'Đã nối cấu hình service trên host. Lưu và áp dụng riêng từng service.':'Đã nối backend local · cấu hình được lưu trên đĩa. Áp dụng runtime cần chạy console trên host cài hai service.';
   } catch(error) { if(job!==bootstrapJob)return;bootstrapError=error.message;document.querySelector('#connection-banner').textContent=`Không kết nối được backend: ${error.message}`; }
   loading=false;render();
+  if(current==='usage'&&usageView.status==='idle')loadUsage();
 }
 function field(key, value, helper='', options={}) {
   const id = `field-${key}`;
@@ -68,7 +69,7 @@ const number = (key,data,helper,min,max,step) => field(key,data[key],helper,{typ
 const toggle = (key,value,title,help,disabled=false) => `<div class="toggle-row"><div><label class="field-label" for="field-${key}">${esc(title)}</label><p id="help-${key}">${esc(help)}</p></div><label class="switch-label"><input id="field-${key}" name="${key}" type="checkbox" class="switch" ${value?'checked':''} ${disabled?'disabled':''} aria-describedby="help-${key}"></label></div>`;
 const section = (title,subtitle,body) => `<section class="section"><div class="section-heading"><h2>${title}</h2><p>${subtitle}</p></div>${body}</section>`;
 function heading(page) {
-  const descriptions = { triage:'Theo dõi tin nhắn, phân loại nội dung và tạo GitHub issue.', nailhub:'Cấu hình chu kỳ quét, xử lý và kiểm tra bài đăng NailHub.', overview:'Hai service độc lập, một nơi quản lý cấu hình.', history:'Theo dõi các lần lưu và áp dụng được backend ghi nhận.' };
+  const descriptions = { triage:'Theo dõi tin nhắn, phân loại nội dung và tạo GitHub issue.', nailhub:'Cấu hình chu kỳ quét, xử lý và kiểm tra bài đăng NailHub.', overview:'Hai service độc lập, một nơi quản lý cấu hình.', usage:'Chi phí gọi API của Telegram Triage, đọc từ tệp tổng hợp runtime ghi cạnh database.', history:'Theo dõi các lần lưu và áp dụng được backend ghi nhận.' };
   return `<div class="page-heading"><div><h1>${names[page]}</h1><p>${descriptions[page]}</p></div><div class="heading-actions"><span class="status">${esc(state[page]?.status.state||'Backend đã nối')}</span>${state[page]?`<span class="badge">${esc(state[page].saved.mode)} · đã lưu</span>`:''}</div></div>`;
 }
 function tabs(id) {
@@ -110,9 +111,81 @@ function render() {
     wireForm(id);
   } else if(current==='overview') {
     main.innerHTML=heading(current)+`<div class="notice">${esc(host.label)} · ${host.mode==='installed'?'Đã nối cấu hình host':'Lưu cấu hình local'} · chạy bằng <strong>python console-ui/run.py</strong>.</div><div class="overview-list">${['triage','nailhub'].map(id=>`<section class="service-block"><div class="service-block-header"><h2>${names[id]}</h2><span class="status">${esc(state[id].status.state)}</span><span class="badge">${esc(state[id].saved.mode)} · đã lưu</span></div><div class="overview-data"><div><span>Provider đã lưu</span><strong>${providers[state[id].saved.provider].name}</strong></div><div><span>Model đã lưu</span><strong>${esc(state[id].saved.model)}</strong></div><div><span>PID đã xác nhận</span><strong>${esc(state[id].status.mainPid||'—')}</strong></div><div><span>Revision runtime</span><strong>${esc(state[id].appliedRevision??'Chưa xác nhận')}</strong></div></div><div><a class="button" href="#${id}">Mở cấu hình <span aria-hidden="true">→</span></a></div></section>`).join('')}</div>`;
+  } else if(current==='usage') {
+    main.innerHTML=heading(current)+usageHTML();wireUsage();
   } else {
     main.innerHTML=heading(current)+(history.length?history.map(item=>`<article class="history-row"><div><strong>${esc(item.action)} · ${esc(names[item.service]||item.service)}</strong><span class="badge">${esc(item.revision)}</span></div><time datetime="${esc(item.time)}">${new Date(item.time).toLocaleString('vi-VN',{timeZone:'Asia/Saigon'})}</time><p>${esc(Array.isArray(item.fields)?item.fields.map(k=>labels[k]||k).join(', '):item.fields)}</p></article>`).join(''):`<div class="empty-state"><h2>Chưa có thay đổi</h2><p class="muted">Các lần lưu và áp dụng sẽ xuất hiện ở đây. API key không được ghi vào lịch sử.</p><a class="button" href="#triage">Mở Telegram Triage →</a></div>`);
   }
+}
+/* Chi phí API: chỉ đọc tệp tổng hợp mà runtime Triage ghi; console không mở database của runtime. */
+const usageRanges = [['today','Hôm nay'],['7d','7 ngày'],['30d','30 ngày']];
+const usageStorageKey = 'agentfleet.usageRange';
+const usageView = { status:'idle', data:null, error:'', range:'today', job:0 };
+try { const saved=localStorage.getItem(usageStorageKey); if(usageRanges.some(([key])=>key===saved))usageView.range=saved; } catch {}
+const numberFormat = new Intl.NumberFormat('vi-VN');
+const fmtInt = value => numberFormat.format(Number.isFinite(value)?value:0);
+function fmtMoney(value, currency) {
+  const amount=Number.isFinite(value)?value:0;
+  try { return new Intl.NumberFormat('vi-VN',{style:'currency',currency,minimumFractionDigits:2,maximumFractionDigits:4}).format(amount); }
+  catch { return `${amount.toFixed(4)} ${currency}`; }
+}
+const fmtTime = seconds => new Date(seconds*1000).toLocaleString('vi-VN',{timeZone:'Asia/Saigon'});
+const fmtDay = date => `${date.slice(8,10)}/${date.slice(5,7)}`;
+function usageNotice() {
+  const {status,error,data}=usageView;
+  if(status==='error')return `<div class="test-result" data-state="error" role="alert">${esc(error||'Không đọc được dữ liệu chi phí từ backend.')}</div>`;
+  if(status==='missing')return '<div class="notice" role="status"><strong>Runtime chưa ghi dữ liệu chi phí.</strong> Tệp tổng hợp sẽ xuất hiện sau khi Telegram Triage gọi API lần đầu. Nếu Triage đã chạy, kiểm tra runtime đã được cập nhật bản có ghi chi phí.</div>';
+  if(status==='invalid')return '<div class="test-result" data-state="error" role="alert"><strong>Dữ liệu chi phí không hợp lệ hoặc không đọc được.</strong> Console không hiển thị nội dung tệp. Kiểm tra runtime Triage và quyền đọc của tài khoản chạy console.</div>';
+  if(status==='stale')return `<div class="test-result" data-state="stale" role="status"><strong>Dữ liệu chi phí đã cũ.</strong> Cập nhật lần cuối ${esc(fmtTime(data.generatedAt))}; runtime có thể đang dừng. Số liệu bên dưới là lần ghi cuối cùng.</div>`;
+  return '';
+}
+function usageChart(daily, currency) {
+  const days=daily.slice(-30);
+  if(!days.length)return '<p class="muted">Chưa có dữ liệu theo ngày.</p>';
+  const max=Math.max(...days.map(day=>day.cost)),label=value=>fmtMoney(value,currency);
+  const total=days.reduce((sum,day)=>sum+day.cost,0);
+  const bars=days.map(day=>{
+    const percent=max>0&&day.cost>0?Math.max(2,day.cost/max*100):0;
+    const title=`${day.date}: ${label(day.cost)} · ${fmtInt(day.calls)} lượt gọi · ${fmtInt(day.errors)} lỗi · ${fmtInt(day.fallbacks)} fallback`;
+    return `<div class="chart-col" title="${esc(title)}"><div class="chart-bar${percent?'':' is-zero'}" data-height="${percent.toFixed(2)}"></div></div>`;
+  }).join('');
+  const mid=days[Math.floor((days.length-1)/2)];
+  return `<div class="chart" role="img" aria-label="Biểu đồ cột chi phí theo ngày, ${days.length} ngày gần nhất, tổng ${esc(label(total))}"><div class="chart-y" aria-hidden="true"><span>${esc(label(max))}</span><span>${esc(label(max/2))}</span><span>${esc(label(0))}</span></div><div class="chart-plot">${bars}</div><div class="chart-x" aria-hidden="true"><span>${esc(fmtDay(days[0].date))}</span><span>${esc(fmtDay(mid.date))}</span><span>${esc(fmtDay(days[days.length-1].date))}</span></div></div>`+
+    `<details class="demo-options"><summary>Xem số liệu từng ngày</summary><div class="table-scroll"><table class="data-table"><thead><tr><th scope="col">Ngày</th><th scope="col">Lượt gọi</th><th scope="col">Lỗi</th><th scope="col">Fallback</th><th scope="col">Chi phí</th></tr></thead><tbody>${[...days].reverse().map(day=>`<tr><th scope="row">${esc(day.date)}</th><td>${fmtInt(day.calls)}</td><td>${fmtInt(day.errors)}</td><td>${fmtInt(day.fallbacks)}</td><td>${esc(label(day.cost))}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+function usageHTML() {
+  const {status,data,range}=usageView,busy=status==='loading',window_=data?.windows?.[range],currency=data?.currency||'USD';
+  const toolbar=`<div class="usage-toolbar"><div class="segmented" role="group" aria-label="Khoảng thời gian">${usageRanges.map(([key,title])=>`<button type="button" data-range="${key}" aria-pressed="${range===key}">${title}</button>`).join('')}</div><div class="usage-meta">${data?`<small>Cập nhật lúc ${esc(fmtTime(data.generatedAt))}</small>`:''}<button class="button" type="button" id="usage-refresh" ${busy?'disabled data-state="loading"':''}>${busy?'Đang làm mới…':'Làm mới'}</button></div></div>`;
+  if(busy&&!data)return toolbar+'<div class="empty-state" role="status"><h2>Đang đọc dữ liệu chi phí…</h2></div>';
+  const notice=usageNotice();
+  if(!window_)return toolbar+notice;
+  const metrics=[
+    ['Số lần gọi',fmtInt(window_.calls),`${fmtInt(window_.ok)} thành công`],
+    ['Token vào',fmtInt(window_.promptTokens),`${fmtInt(window_.cacheHitTokens)} cache hit`],
+    ['Token ra',fmtInt(window_.completionTokens),''],
+    ['Chi phí',fmtMoney(window_.cost,currency),currency],
+    ['Số lần lỗi',fmtInt(window_.errors),''],
+    ['Fallback sang local',fmtInt(window_.fallbacks),'']
+  ].map(([title,value,note])=>`<div class="usage-metric"><span>${esc(title)}</span><strong>${esc(value)}</strong><small>${esc(note)||'&nbsp;'}</small></div>`).join('');
+  const rows=window_.byModel.length?`<div class="table-scroll"><table class="data-table data-table-models"><thead><tr><th scope="col">Provider</th><th scope="col">Model</th><th scope="col">Lượt gọi</th><th scope="col">Lỗi</th><th scope="col">Fallback</th><th scope="col">Token vào</th><th scope="col">Cache hit</th><th scope="col">Token ra</th><th scope="col">Chi phí</th></tr></thead><tbody>${window_.byModel.map(row=>`<tr><th scope="row">${esc(row.provider)||'—'}</th><td>${esc(row.model)||'—'}</td><td>${fmtInt(row.calls)}</td><td>${fmtInt(row.errors)}</td><td>${fmtInt(row.fallbacks)}</td><td>${fmtInt(row.promptTokens)}</td><td>${fmtInt(row.cacheHitTokens)}</td><td>${fmtInt(row.completionTokens)}</td><td>${esc(fmtMoney(row.cost,currency))}</td></tr>`).join('')}</tbody></table></div>`:'<p class="muted">Không có lượt gọi trong khoảng này.</p>';
+  return toolbar+notice+`<section class="section"><div class="usage-grid">${metrics}</div></section>`+
+    section('Theo provider và model','Tách theo nơi xử lý trong khoảng đã chọn.',rows)+
+    section('Chi phí theo ngày','30 ngày gần nhất, không phụ thuộc khoảng đã chọn. Rê chuột lên cột để xem chi tiết.',usageChart(data.daily,currency));
+}
+async function loadUsage(focusRefresh=false) {
+  const job=++usageView.job;usageView.status='loading';usageView.error='';
+  if(current==='usage'&&!loading&&!bootstrapError)render();
+  try { const result=await window.AgentFleetAPI.usage();if(job!==usageView.job)return;
+    if(!['ok','missing','stale','invalid'].includes(result.status))throw new Error('Phản hồi chi phí không hợp lệ.');
+    usageView.status=result.status;usageView.data=result.usage; }
+  catch(error) { if(job!==usageView.job)return;usageView.status='error';usageView.data=null;usageView.error=error.message; }
+  if(current==='usage'&&!loading&&!bootstrapError){render();if(focusRefresh)document.querySelector('#usage-refresh')?.focus({preventScroll:true});announce(usageView.status==='ok'?'Đã cập nhật dữ liệu chi phí.':'Trạng thái dữ liệu chi phí: '+usageView.status+'.');}
+}
+function wireUsage() {
+  // CSP forbids inline style attributes; CSSOM assignment is allowed.
+  document.querySelectorAll('.chart-bar[data-height]').forEach(bar=>{bar.style.height=`${bar.dataset.height}%`;});
+  document.querySelector('#usage-refresh').onclick=()=>loadUsage(true);
+  document.querySelectorAll('[data-range]').forEach(button=>button.onclick=()=>{usageView.range=button.dataset.range;try{localStorage.setItem(usageStorageKey,usageView.range);}catch{}render();document.querySelector(`[data-range="${usageView.range}"]`)?.focus({preventScroll:true});});
 }
 function setTest(id,status,message) { const s=state[id]; s.test={status,message}; if(current!==id)return; const el=document.querySelector('#test-result'); if(el){el.dataset.state=status;el.textContent=message;} updateSummary(id); }
 function invalidate(id) { if(state[id].test.status!=='idle')setTest(id,'stale','Bản nháp đã đổi. Test lại trước khi áp dụng.'); }
@@ -210,7 +283,7 @@ document.querySelector('#confirm-save').onclick=async()=>{
     const el=document.querySelector('#save-error');el.textContent=error.status===409?`${error.message} Đóng hộp thoại rồi dùng “Bỏ nháp, đọc lại từ backend” để tải bản mới.`:error.message;el.hidden=false;announce(el.textContent);
   } finally {saveBusy=false;button.disabled=false;button.textContent='Lưu cấu hình';}
 };
-function navigate(page) { current=page;historyReplace(page);document.querySelector('#sidebar').classList.remove('is-open');document.querySelector('#menu-toggle').setAttribute('aria-expanded','false');render(); }
+function navigate(page) { current=page;historyReplace(page);document.querySelector('#sidebar').classList.remove('is-open');document.querySelector('#menu-toggle').setAttribute('aria-expanded','false');render();if(page==='usage')loadUsage(); }
 function historyReplace(page){window.history.replaceState(null,'',`#${page}`);}
 function requestNavigation(page) { if(!names[page]||page===current)return;if(state[current]&&isDirty(current)){pendingPage=page;openDialog('leave-dialog');}else navigate(page); }
 document.addEventListener('click',event=>{const link=event.target.closest('a[href^="#"]');if(link&&link.getAttribute('href')!=='#main'){event.preventDefault();requestNavigation(link.hash.slice(1));}});

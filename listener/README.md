@@ -82,7 +82,7 @@ url = "http://127.0.0.1:11434"
 confidence_threshold = 0.7
 
 [model]
-provider = "ollama"        # the only provider today
+provider = "ollama"        # or a hosted provider, see below
 model = "qwen3.5:9b"
 think = true               # turn the model's reasoning on (Ollama "think": true)
 timeout_seconds = 600      # reasoning is slow on CPU; measure on the real host before fixing the value
@@ -97,6 +97,34 @@ timeout_seconds = 600      # reasoning is slow on CPU; measure on the real host 
   before text leaves the machine.
 - **Old layout:** `model` and `timeout_seconds` under `[ollama]` are still read when `[model]` does not set
   them; `[model]` wins. Without any timeout the default is 600 seconds. No new dependency.
+- **Hosted provider, images, backup, usage and price** (`provider = "deepseek" | "openai" | "anthropic" |
+  "compatible"`, see `config/listener.example.toml`). Hosted calls need `cloud_consent = true`; e-mail and phone
+  numbers in the text are redacted before it leaves the host.
+  - **Images:** a hosted OpenAI-compatible provider (deepseek / openai / compatible) receives images only when
+    `cloud_consent` AND `cloud_image_consent` are both `true` (default `false`). They are sent as
+    `data:<mime>;base64,...` parts of a user message (mime sniffed from the bytes: jpeg, png or webp; any other
+    type, or an `anthropic` provider, never leaves the host). A request with images may be up to 20 MiB; a text-only
+    request stays limited to 128 KiB. Without the second consent the case is judged by local Ollama vision.
+  - **Backup:** `[model] fallback = "ollama"` (default for a hosted provider; `"none"` keeps the old refusal),
+    `fallback_model` (default `qwen3.5:9b`), `fallback_think` (default `true`); the Ollama address and timeout come
+    from `[ollama]` / `[model] timeout_seconds`. When the hosted call fails (any provider error, broken JSON, an
+    unusable answer after the usual retry, missing key or consent) the very same request runs on local Ollama with
+    its local vision. If that fails too the answer is "none" as before (needs-human). The pipeline never sees the
+    switch.
+  - **Usage:** every model call, errors and fallbacks included, adds one row to the SQLite table `model_usage`
+    (`ts`, `provider`, `model`, `role` = `primary` | `fallback`, `outcome` = `ok` or an error code such as
+    `rate_limited`, `timeout`, `invalid_json`, `invalid_output`, token counts, `cache_hit_tokens`, `latency_ms`,
+    `cost`). Rows are kept 90 days. Message text, images, prompts and keys are never stored or logged.
+  - **Price:** `[model.pricing]` (per 1M tokens at peak): `currency` (`USD`), `input_cache_hit` (`0.006`),
+    `input_cache_miss` (`0.3`), `output` (`1.2`), `offpeak_factor` (`0.5`), `peak_hours_utc`
+    (`["01:00-04:00", "06:00-10:00"]`, Monday-Friday UTC; everything else is off-peak). The defaults are
+    deepseek-flash (api-docs.deepseek.com/quick_start/pricing, measured 2026-10-15); openai / anthropic / compatible
+    have no built-in price and cost 0 until set. `cost = (cache_hit * hit + (prompt - cache_hit) * miss +
+    completion * output) / 1e6`, times `offpeak_factor` off-peak. Local Ollama costs 0.
+  - **Console summary:** `agentfleet-usage.json` (schema 1, camelCase) is written next to the database, atomically
+    (temp, fsync, replace; mode 0640 and group `tglistener` off Windows) at startup and after a model call, at most
+    once per 30 seconds. It holds `today` / `7d` / `30d` windows (local calendar days of the server, with a
+    per-model breakdown) and 30 `daily` lines (oldest first, empty days as zero lines).
 - **Reasoning stays private:** with `think = true` Ollama returns the reasoning in `message.thinking` next to
   the JSON in `message.content`. Only `content` is parsed (a leading `<think>...</think>` block left in
   `content` is stripped first). The reasoning is never read, logged, stored in SQLite or put in an issue.

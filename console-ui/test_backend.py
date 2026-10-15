@@ -4,6 +4,7 @@ import contextlib
 import http.client
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -196,6 +197,117 @@ except APIError as e:print(e.code)
         self.assertEqual(req('POST','/api/services/triage/test','{}',{'Content-Type':'application/json','X-CSRF-Token':token,'Content-Length':'65537'})[0],413)
         status,body=req('POST','/api/services/triage/test',json.dumps({'settings':self.draft()}),{'Content-Type':'application/json','X-CSRF-Token':token});self.assertEqual(status,200);self.assertEqual(json.loads(body)['status'],'success')
 
+class UsageTests(unittest.TestCase):
+    """Cost summary panel: read-only file next to the triage DB, schema-validated, no path or OS error to the browser."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.store=Store(self.temp.name);self.file=Path(self.temp.name)/'agentfleet-usage.json'
+    def model_row(self,**over):
+        row={'provider':'openai','model':'gpt-test','calls':3,'errors':1,'fallbacks':1,'promptTokens':1200,'completionTokens':300,'cacheHitTokens':400,'cost':0.0123};row.update(over);return row
+    def window(self,**over):
+        w={'calls':3,'ok':2,'errors':1,'fallbacks':1,'promptTokens':1200,'completionTokens':300,'cacheHitTokens':400,'cost':0.0123,'byModel':[self.model_row()]};w.update(over);return w
+    def payload(self,**over):
+        today=time.strftime('%Y-%m-%d')
+        data={'schema':1,'generatedAt':time.time(),'currency':'USD','windows':{'today':self.window(),'7d':self.window(calls=9),'30d':self.window(calls=30,byModel=[])},'daily':[{'date':today,'calls':3,'errors':1,'fallbacks':1,'cost':0.0123}]};data.update(over);return data
+    def write(self,data):self.file.write_text(data if isinstance(data,str) else json.dumps(data),encoding='utf-8')
+    def test_valid_file_is_ok_and_rebuilt_from_whitelisted_fields(self):
+        data=self.payload();data['unexpected']='x';data['windows']['today']['unexpected']='y';self.write(data)
+        result=self.store.usage()
+        self.assertEqual(result['status'],'ok');usage=result['usage']
+        self.assertEqual(usage['currency'],'USD');self.assertEqual(usage['windows']['7d']['calls'],9);self.assertEqual(usage['windows']['today']['byModel'][0]['model'],'gpt-test')
+        self.assertEqual(len(usage['daily']),1);self.assertNotIn('unexpected',json.dumps(result));self.assertNotIn(self.temp.name,json.dumps(result))
+    def test_missing_file_and_unavailable_config_report_missing(self):
+        self.assertEqual(self.store.usage(),{'status':'missing','usage':None})
+        self.write(self.payload());self.store.paths['triage'].unlink()
+        self.assertEqual(self.store.usage(),{'status':'missing','usage':None})
+    def test_oversize_file_is_invalid_without_parsing(self):
+        body=json.dumps(self.payload());self.write(body+' '*(512*1024+1-len(body)))
+        self.assertEqual(self.store.usage(),{'status':'invalid','usage':None})
+        self.write(body+' '*(512*1024-len(body)))
+        self.assertEqual(self.store.usage()['status'],'ok')
+    def test_schema_violations_are_invalid(self):
+        for name,mutate in {
+            'schema version':lambda d:d.update(schema=2),
+            'schema string':lambda d:d.update(schema='1'),
+            'missing window':lambda d:d['windows'].pop('7d'),
+            'negative count':lambda d:d['windows']['today'].update(calls=-1),
+            'float count':lambda d:d['windows']['today'].update(calls=1.5),
+            'bool count':lambda d:d['windows']['today'].update(errors=True),
+            'string cost':lambda d:d['windows']['today'].update(cost='0.1'),
+            'negative cost':lambda d:d['windows']['today'].update(cost=-0.01),
+            'huge cost':lambda d:d['windows']['today'].update(cost=1e30),
+            'missing field':lambda d:d['windows']['30d'].pop('cacheHitTokens'),
+            'long model':lambda d:d['windows']['today']['byModel'][0].update(model='m'*201),
+            'control char':lambda d:d['windows']['today']['byModel'][0].update(provider='open\x00ai'),
+            'model not text':lambda d:d['windows']['today']['byModel'][0].update(model=7),
+            'too many models':lambda d:d['windows']['today'].update(byModel=[self.model_row() for _ in range(201)]),
+            'models not list':lambda d:d['windows']['today'].update(byModel={}),
+            'empty currency':lambda d:d.update(currency=''),
+            'long currency':lambda d:d.update(currency='U'*17),
+            'bad date':lambda d:d['daily'][0].update(date='2026-13-40'),
+            'date shape':lambda d:d['daily'][0].update(date='2026-1-1'),
+            'too many days':lambda d:d.update(daily=[dict(d['daily'][0]) for _ in range(61)]),
+            'daily not list':lambda d:d.update(daily={}),
+            'generatedAt text':lambda d:d.update(generatedAt='now'),
+            'generatedAt negative':lambda d:d.update(generatedAt=-1),
+            'generatedAt future':lambda d:d.update(generatedAt=time.time()+3*86400),
+            'top level list':lambda d:d.clear(),
+        }.items():
+            data=self.payload();mutate(data)
+            with self.subTest(name):
+                self.write(data if name!='top level list' else [data]);self.assertEqual(self.store.usage(),{'status':'invalid','usage':None})
+    def test_non_json_and_non_finite_numbers_are_invalid(self):
+        for text in ('not json','{"schema":1',json.dumps(self.payload()).replace('0.0123','NaN',1),json.dumps(self.payload()).replace('0.0123','Infinity',1),'[' * 5000):
+            with self.subTest(text=text[:20]):
+                self.write(text);self.assertEqual(self.store.usage(),{'status':'invalid','usage':None})
+        self.file.write_bytes(b'\xff\xfe\x00{');self.assertEqual(self.store.usage(),{'status':'invalid','usage':None})
+    def test_directory_in_place_of_file_is_invalid_without_leaking_path(self):
+        self.file.mkdir();result=self.store.usage()
+        self.assertEqual(result,{'status':'invalid','usage':None});self.assertNotIn(self.temp.name,json.dumps(result))
+    def test_old_summary_is_stale_but_still_returned(self):
+        self.write(self.payload(generatedAt=time.time()-86400-60));result=self.store.usage()
+        self.assertEqual(result['status'],'stale');self.assertEqual(result['usage']['windows']['today']['calls'],3)
+        self.write(self.payload(generatedAt=time.time()-86400+600));self.assertEqual(self.store.usage()['status'],'ok')
+    def test_usage_never_opens_the_runtime_database(self):
+        (Path(self.temp.name)/'triage.sqlite3').write_bytes(b'not a database');self.write(self.payload());opened=[]
+        original=os.open
+        def spy(path,*a,**k):
+            opened.append(str(path));return original(path,*a,**k)
+        with patch('backend.os.open',side_effect=spy):self.store.usage()
+        self.assertEqual([Path(x).name for x in opened],['agentfleet-usage.json'])
+    def test_huge_integers_are_invalid_not_server_errors(self):
+        huge=10**400
+        for name,mutate in {
+            'window cost':lambda d:d['windows']['today'].update(cost=huge),
+            'model cost':lambda d:d['windows']['7d']['byModel'][0].update(cost=huge),
+            'daily cost':lambda d:d['daily'][0].update(cost=huge),
+            'generatedAt':lambda d:d.update(generatedAt=huge),
+            'negative cost':lambda d:d['windows']['today'].update(cost=-huge),
+            'count':lambda d:d['windows']['today'].update(calls=huge),
+        }.items():
+            data=self.payload();mutate(data)
+            with self.subTest(name):
+                self.write(json.dumps(data));self.assertEqual(self.store.usage(),{'status':'invalid','usage':None})
+        server=ConsoleServer(('127.0.0.1',0),self.store);threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        data=self.payload();data['windows']['today']['cost']=huge;self.write(json.dumps(data))
+        connection=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=5);connection.request('GET','/api/usage');response=connection.getresponse();body=response.read();connection.close()
+        self.assertEqual(response.status,200);self.assertEqual(json.loads(body),{'status':'invalid','usage':None})
+    def test_http_route_checks_boundary_and_returns_validated_summary(self):
+        self.write(self.payload());server=ConsoleServer(('127.0.0.1',0),self.store);threading.Thread(target=server.serve_forever,daemon=True).start()
+        self.addCleanup(server.server_close);self.addCleanup(server.shutdown)
+        def req(method,path,headers=None):
+            connection=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=5);connection.request(method,path,None,headers or {});response=connection.getresponse();result=(response.status,response.read(),response.getheader('Content-Type'));connection.close();return result
+        status,body,kind=req('GET','/api/usage');self.assertEqual(status,200);self.assertIn('application/json',kind)
+        result=json.loads(body);self.assertEqual(set(result),{'status','usage'});self.assertEqual(result['status'],'ok');self.assertEqual(result['usage']['windows']['7d']['calls'],9);self.assertNotIn(self.temp.name.encode(),body)
+        self.assertEqual(req('GET','/api/usage',{'Host':'attacker.invalid'})[0],403)
+        self.assertEqual(req('GET','/api/usage',{'Origin':'https://attacker.invalid'})[0],403)
+        self.assertEqual(req('GET','/api/usage',{'Origin':'http://127.0.0.1:1'})[0],403)
+        self.assertEqual(req('GET','/api/usage',{'Sec-Fetch-Site':'cross-site'})[0],403)
+        self.write('{broken');status,body,_=req('GET','/api/usage');self.assertEqual(status,200);self.assertEqual(json.loads(body),{'status':'invalid','usage':None})
+        self.file.unlink();self.assertEqual(json.loads(req('GET','/api/usage')[1]),{'status':'missing','usage':None})
+        self.assertEqual(req('POST','/api/usage')[0],403)
+
 class ProviderTests(unittest.TestCase):
     def test_real_http_failures_are_bounded_and_redacted(self):
         from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
@@ -307,7 +419,14 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             s=Store(directory);d=s.public('triage')['settings'];d.update(provider='openai',baseUrl='https://api.openai.com/v1',think=False)
             s.save('triage',{'settings':d,'apiKey':'test-key','expectedRevision':0})
-            config=load_config(s.paths['triage'],{'TG_API_ID':'1','TG_API_HASH':'0'*32});provider=build_provider(config)
+            env={'TG_API_ID':'1','TG_API_HASH':'0'*32}
+            # Default cloud config keeps a local Ollama backup: images without cloud_image_consent are judged locally.
+            # Only attributes are read here; nothing is classified, so no request can reach a real Ollama.
+            default=build_provider(load_config(s.paths['triage'],env))
+            self.assertTrue(default.supports_vision);self.assertFalse(default.rejects_images)
+            # fallback = "none" restores the fail-closed boundary: no consent means no model call and no images.
+            path=s.paths['triage'];path.write_text(patch_toml(path.read_text(),{('model','fallback'):'none',('model','cloud_image_consent'):False}))
+            provider=build_provider(load_config(path,env))
             self.assertIsNone(provider.classify('test@example.com +1 555 123 4567'))
             self.assertFalse(provider.supports_vision);self.assertTrue(provider.rejects_images)
         from nailhub.config import NailHubConfig

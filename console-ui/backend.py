@@ -1,6 +1,7 @@
 """Scoped configuration storage and API operations. No secret appears in public state."""
 import copy
 import base64
+import datetime
 import hashlib
 import json
 import math
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import tempfile
@@ -163,6 +165,59 @@ class ServiceLock:
         finally:self.thread.release()
 
 
+USAGE_FILE='agentfleet-usage.json'
+USAGE_MAX_BYTES=512*1024
+USAGE_STALE_SECONDS=86400
+USAGE_MAX_MODELS=200
+USAGE_MAX_DAILY=60
+USAGE_MAX_COUNT=10**15
+USAGE_WINDOWS=('today','7d','30d')
+USAGE_COUNTS=('calls','errors','fallbacks','promptTokens','completionTokens','cacheHitTokens')
+
+class UsageInvalid(Exception):
+    """Internal marker: the usage summary does not match the schema. Never shown to the browser."""
+
+def _usage_count(v):
+    if type(v) is not int or not 0<=v<=USAGE_MAX_COUNT:raise UsageInvalid()
+    return v
+def _usage_money(v):
+    if type(v) not in (int,float) or not 0<=v<=1e12 or not math.isfinite(v):raise UsageInvalid()  # compare first: isfinite(10**400) overflows
+    return float(v)
+def _usage_text(v,limit,minimum=0):
+    if not isinstance(v,str) or not minimum<=len(v)<=limit or any(ord(c)<32 or ord(c)==127 for c in v):raise UsageInvalid()
+    return v
+def _usage_object(v):
+    if not isinstance(v,dict):raise UsageInvalid()
+    return v
+def _usage_window(raw):
+    raw=_usage_object(raw);out={k:_usage_count(raw.get(k)) for k in (*USAGE_COUNTS,'ok')};out['cost']=_usage_money(raw.get('cost'))
+    models=raw.get('byModel')
+    if not isinstance(models,list) or len(models)>USAGE_MAX_MODELS:raise UsageInvalid()
+    out['byModel']=[]
+    for item in models:
+        item=_usage_object(item);row={'provider':_usage_text(item.get('provider'),100),'model':_usage_text(item.get('model'),200)}
+        row.update({k:_usage_count(item.get(k)) for k in USAGE_COUNTS});row['cost']=_usage_money(item.get('cost'));out['byModel'].append(row)
+    return out
+def validate_usage(raw,now):
+    """Rebuild the runtime usage summary from whitelisted, bounded fields; raise UsageInvalid on any deviation."""
+    raw=_usage_object(raw)
+    if type(raw.get('schema')) is not int or raw['schema']!=1:raise UsageInvalid()
+    generated=raw.get('generatedAt')
+    if type(generated) not in (int,float) or not 0<=generated<=now+USAGE_STALE_SECONDS or not math.isfinite(generated):raise UsageInvalid()
+    windows=_usage_object(raw.get('windows'))
+    daily=raw.get('daily')
+    if not isinstance(daily,list) or len(daily)>USAGE_MAX_DAILY:raise UsageInvalid()
+    out={'schema':1,'generatedAt':float(generated),'currency':_usage_text(raw.get('currency'),16,1),'windows':{k:_usage_window(windows.get(k)) for k in USAGE_WINDOWS},'daily':[]}
+    for item in daily:
+        item=_usage_object(item);date=_usage_text(item.get('date'),10,10)
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}',date):raise UsageInvalid()
+        try:datetime.date.fromisoformat(date)
+        except ValueError:raise UsageInvalid() from None
+        out['daily'].append({'date':date,'calls':_usage_count(item.get('calls')),'errors':_usage_count(item.get('errors')),'fallbacks':_usage_count(item.get('fallbacks')),'cost':_usage_money(item.get('cost'))})
+    return out
+
+def _reject_json_constant(name):raise UsageInvalid()
+
 class Store:
     def __init__(self, state_dir, installed=False, runner=subprocess.run, transport=None):
         self.directory=Path(state_dir).resolve();secure_state_directory(self.directory)
@@ -248,6 +303,28 @@ class Store:
         return sorted(entries,key=lambda h:h['timestamp'],reverse=True)[:100]
     def bootstrap(self):
         return {'services':{id:self.public(id) for id in MAPS},'history':self.history(),'host':{'mode':'installed' if self.installed else 'local','label':'Installed host' if self.installed else 'Local files','platform':sys.platform,'canApply':any(self.capability(id) for id in MAPS)}}
+    def usage(self):
+        """Read-only view of the triage runtime's cost summary file next to its DB. Never opens the DB itself."""
+        try:
+            _,data=self.load('triage');db_path=value(data,'storage','db_path')
+            if not isinstance(db_path,str) or not db_path:return {'status':'missing','usage':None}
+            path=Path(db_path).parent/USAGE_FILE
+        except (APIError,ValueError,OSError,AttributeError):return {'status':'missing','usage':None}
+        try:
+            flags=os.O_RDONLY|getattr(os,'O_BINARY',0)|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_CLOEXEC',0)
+            fd=os.open(path,flags)
+        except FileNotFoundError:return {'status':'missing','usage':None}
+        except OSError:return {'status':'invalid','usage':None}
+        try:
+            with os.fdopen(fd,'rb') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):return {'status':'invalid','usage':None}
+                raw=stream.read(USAGE_MAX_BYTES+1)
+        except OSError:return {'status':'invalid','usage':None}
+        if len(raw)>USAGE_MAX_BYTES:return {'status':'invalid','usage':None}
+        try:
+            now=time.time();usage=validate_usage(json.loads(raw.decode('utf-8'),parse_constant=_reject_json_constant),now)
+        except (UsageInvalid,ValueError,RecursionError,OverflowError):return {'status':'invalid','usage':None}
+        return {'status':'stale' if now-usage['generatedAt']>USAGE_STALE_SECONDS else 'ok','usage':usage}
     def validate(self,id,settings):
         if not isinstance(settings,dict) or set(settings)!=set(MAPS[id]):raise APIError('invalid_settings','Expected complete service settings.')
         for key,v in settings.items():

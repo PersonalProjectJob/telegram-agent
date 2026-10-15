@@ -11,6 +11,7 @@ from pathlib import Path
 from .models import IncomingMessage
 from .config import ConfigError
 
+USAGE_RETENTION_DAYS = 90
 GITHUB_AMBIGUOUS_ERROR = "GitHub có thể đã tạo issue — kiểm tra repo trước khi tạo lại"
 
 COLUMNS = (
@@ -101,6 +102,7 @@ class Store:
     def __init__(self, path, *, clock=utc_now, recover_pending=True, read_only=False):
         self.clock = clock
         self._lock = threading.RLock()
+        self._usage_pruned_at = 0.0
         if read_only:
             try:
                 uri = Path(path).resolve().as_uri() + "?mode=ro"
@@ -194,6 +196,18 @@ class Store:
                     PRIMARY KEY (chat_id, message_id)
                 )
             """)
+            # Model-call accounting: counts, cost and timing only, never message text, images or keys.
+            self.connection.execute("""
+                CREATE TABLE IF NOT EXISTS model_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+                    role TEXT NOT NULL, outcome TEXT NOT NULL,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_hit_tokens INTEGER NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0,
+                    cost REAL NOT NULL DEFAULT 0
+                )
+            """)
+            self.connection.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_ts ON model_usage(ts)")
             if "github_called_at" not in existing:
                 # Old ambiguous errors may already have created issues. Reserve
                 # conservatively during the migration rather than reset quota.
@@ -245,6 +259,30 @@ class Store:
                 WHERE chat_id=? AND notice_message_id=? AND status='sent'
             """, (chat_id, reply_to_id)).fetchone()
             return row[0] if row else reply_to_id
+
+    def record_model_usage(self, ts, provider, model, role, outcome, prompt_tokens=0,
+                           completion_tokens=0, cache_hit_tokens=0, latency_ms=0, cost=0.0):
+        """One row per model call (errors and fallbacks included). Old rows are pruned after 90 days."""
+        def count(value):
+            return value if type(value) is int and value >= 0 else 0
+        with self._lock, self.connection:
+            self.connection.execute(
+                "INSERT INTO model_usage (ts, provider, model, role, outcome, prompt_tokens,"
+                " completion_tokens, cache_hit_tokens, latency_ms, cost) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (float(ts), str(provider)[:200], str(model)[:200], str(role)[:20], str(outcome)[:60],
+                 count(prompt_tokens), count(completion_tokens), count(cache_hit_tokens),
+                 count(latency_ms), float(cost)))
+            if float(ts) - self._usage_pruned_at >= 3600:
+                self._usage_pruned_at = float(ts)
+                self.connection.execute("DELETE FROM model_usage WHERE ts < ?",
+                                        (float(ts) - USAGE_RETENTION_DAYS * 86400,))
+
+    def model_usage_since(self, since):
+        """Rows with ts >= since, oldest first, as plain tuples (no message content exists here)."""
+        with self._lock:
+            return [tuple(row) for row in self.connection.execute(
+                "SELECT ts, provider, model, role, outcome, prompt_tokens, completion_tokens,"
+                " cache_hit_tokens, cost FROM model_usage WHERE ts >= ? ORDER BY ts, id", (float(since),))]
 
     def close(self):
         with self._lock:

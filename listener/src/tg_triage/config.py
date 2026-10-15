@@ -45,6 +45,34 @@ SUPPORTED_PROVIDERS = ("ollama", "anthropic", "openai", "deepseek", "compatible"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 600.0
 
 
+DEFAULT_PEAK_HOURS_UTC = ("01:00-04:00", "06:00-10:00")
+_PEAK_WINDOW = re.compile(r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)")
+
+
+def parse_peak_window(value):
+    """"HH:MM-HH:MM" (UTC, start < end) -> (start_minute, end_minute); None when malformed."""
+    match = _PEAK_WINDOW.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        return None
+    start = int(match[1]) * 60 + int(match[2])
+    end = int(match[3]) * 60 + int(match[4])
+    return (start, end) if start < end else None
+
+
+@dataclass(frozen=True)
+class PricingConfig:
+    """Cost of a hosted model call, per 1M tokens at peak hours (defaults: deepseek-flash, USD,
+    api-docs.deepseek.com/quick_start/pricing, measured 2026-10-15). Outside `peak_hours_utc`
+    (and all weekend) the price is multiplied by `offpeak_factor`. Local Ollama always costs 0."""
+
+    currency: str = "USD"
+    input_cache_hit: float = 0.006
+    input_cache_miss: float = 0.3
+    output: float = 1.2
+    offpeak_factor: float = 0.5
+    peak_hours_utc: tuple[str, ...] = DEFAULT_PEAK_HOURS_UTC
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Which model judges chat / bug / task / feedback (12.12), behind a provider layer.
@@ -61,6 +89,13 @@ class ModelConfig:
     max_output: int = 2048
     cloud_consent: bool = False
     key_file: str = ""
+    # A hosted provider may receive images only when both consents are true (OpenAI-compatible only).
+    cloud_image_consent: bool = False
+    # Backup when the hosted provider fails or may not receive the request: "ollama" | "none".
+    fallback: str = "ollama"
+    fallback_model: str = "qwen3.5:9b"
+    fallback_think: bool = True
+    pricing: PricingConfig = field(default_factory=PricingConfig)
 
 
 @dataclass(frozen=True)
@@ -160,6 +195,26 @@ def check_provider(provider):
     if provider not in SUPPORTED_PROVIDERS:
         raise ConfigError("model.provider: unsupported provider")
     return provider
+
+
+def _pricing(model_table, provider):
+    """`[model.pricing]`. Built-in prices are deepseek's; openai / anthropic / compatible have none, so
+    their cost stays 0 until the table sets prices (ollama is always free, whatever the table says)."""
+    table = _optional_table(model_table, "pricing")
+    base = PricingConfig() if provider in ("deepseek", "ollama") else PricingConfig(input_cache_hit=0.0, input_cache_miss=0.0, output=0.0)
+    currency = _string(table, "currency", "model.pricing.currency", default=base.currency)
+    if not re.fullmatch(r"[A-Za-z]{3}", currency):
+        raise ConfigError("model.pricing.currency: expected a 3-letter code")
+    hours = table.get("peak_hours_utc", list(base.peak_hours_utc))
+    if (not isinstance(hours, list) or len(hours) > 8
+            or any(parse_peak_window(item) is None for item in hours)):
+        raise ConfigError("model.pricing.peak_hours_utc: expected HH:MM-HH:MM windows (UTC, start before end)")
+    return PricingConfig(
+        currency.upper(),
+        *(_number(table.get(key, getattr(base, key)), f"model.pricing.{key}", 0, 100000)
+          for key in ("input_cache_hit", "input_cache_miss", "output")),
+        _number(table.get("offpeak_factor", base.offpeak_factor), "model.pricing.offpeak_factor", 0, 1),
+        tuple(hours))
 
 
 def _read_toml(path):
@@ -273,6 +328,14 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
     key_file = model_table.get("key_file", "")
     if max_output > 8192 or type(consent) is not bool or not isinstance(key_file, str) or (key_file and not Path(key_file).is_absolute()) or (provider != "ollama" and think):
         raise ConfigError("model: invalid capability or limits")
+    image_consent = model_table.get("cloud_image_consent", False)
+    fallback = model_table.get("fallback", "ollama")
+    fallback_think = model_table.get("fallback_think", True)
+    if (type(image_consent) is not bool or type(fallback_think) is not bool
+            or fallback not in ("ollama", "none")):
+        raise ConfigError("model: invalid fallback or image consent")
+    fallback_model = _string(model_table, "fallback_model", "model.fallback_model", default="qwen3.5:9b")
+    pricing = _pricing(model_table, provider)
     aggregation_table = _optional_table(data, "aggregation")
     attachments_table = _optional_table(data, "attachments")
     default_aggregation, default_attachments = AggregationConfig(), AttachmentsConfig()
@@ -306,6 +369,7 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
         db_path=_string(_table(data, "storage"), "db_path", "storage.db_path"),
         api_id=api_id, api_hash=api_hash_value, gh_token=gh_token, gh_repo=gh_repo,
         aggregation=aggregation, attachments=attachments,
-        model=ModelConfig(provider, model_name, think, timeout, base_url, max_output, consent, key_file),
+        model=ModelConfig(provider, model_name, think, timeout, base_url, max_output, consent, key_file,
+                         image_consent, fallback, fallback_model, fallback_think, pricing),
         console_revision=str(data.get("console", {}).get("revision", "")),
     )

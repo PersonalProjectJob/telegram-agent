@@ -7,8 +7,14 @@ local Ollama today, a hosted API later) without touching the pipeline. A provide
 * `analyze_case(messages, forced_type=None)` -> CaseAnalysis, or None.
 
 Both return untrusted records validated by existing parsers. Ollama supports local image input;
-cloud providers require explicit consent, redact contact text and fail closed on images.
+cloud providers require explicit consent, redact contact text and receive images only with a second
+(image) consent; otherwise, or when the hosted call fails, the same request runs on local Ollama.
 """
+
+import base64
+import json
+import time
+from dataclasses import replace
 
 from .classifier import Classifier
 from .config import check_provider
@@ -47,34 +53,122 @@ def build_provider(config, **options):
     return CloudProvider(config, **options)
 
 
+OPENAI_COMPATIBLE = ("deepseek", "openai", "compatible")
+
+
+def _image_mime(encoded):
+    """jpeg / png / webp from the first bytes of a base64 image; None for anything else."""
+    try:
+        head = base64.b64decode(encoded[:24], validate=True)
+    except (ValueError, TypeError):
+        return None
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 class CloudProvider(OllamaProvider):
-    """Reuse existing untrusted parsers; cloud data requires explicit consent."""
-    supports_vision = False
-    rejects_images = True
+    """Hosted model with a local Ollama backup.
+
+    Reuses the existing untrusted parsers. Hosted data needs `cloud_consent`; images additionally need
+    `cloud_image_consent` (OpenAI-compatible providers only). Whenever the hosted call fails, returns
+    nothing usable, or may not receive the request, the very same request is run on local Ollama
+    (`[model] fallback = "ollama"`), so the pipeline never needs to know a fallback happened.
+    """
+
     def __init__(self, config, **options):
         super().__init__(config.ollama, think=False, **options)
-        self.model_config = config.model
-        self.name = config.model.provider
-    def _messages(self, system, messages, images):
-        if images:
-            return [{'role':'user','content':'','images':True}]
-        return super()._messages(system, messages, images)
+        self.model_config = c = config.model
+        self.name = c.provider
+        self.cloud_images = bool(c.cloud_consent and c.cloud_image_consent
+                                 and c.provider in OPENAI_COMPATIBLE)
+        # Images are judged either by the hosted model (both consents) or by local vision (fallback).
+        self.supports_vision = c.fallback == "ollama" or self.cloud_images
+        self.rejects_images = not self.supports_vision
+        self._fallback = None
+        if c.fallback == "ollama":
+            self._fallback = Classifier(replace(config.ollama, model=c.fallback_model), opener=self.opener,
+                                        prompt=self.prompt, think=c.fallback_think, usage=self.usage)
+            self._fallback.usage_role = "fallback"
+            self._fallback.max_output = c.max_output
+
+    def _cloud_messages(self, messages):
+        """OpenAI-style messages: contact text redacted, images as inline data: parts; None when an
+        image cannot be sent as a known type."""
+        from .ai_transport import redact
+        result = []
+        for message in messages:
+            images = message.get("images")
+            if not images:
+                result.append(dict(message, content=redact(message["content"])))
+                continue
+            parts = [{"type": "text", "text": redact(message["content"])}]
+            for encoded in images:
+                mime = _image_mime(encoded)
+                if mime is None:
+                    return None
+                parts.append({"type": "image_url",
+                              "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+            result.append({"role": message["role"], "content": parts})
+        return result
+
+    def _record(self, outcome, usage, started):
+        if self.usage is not None:
+            c = self.model_config
+            self.usage.record(c.provider, c.name, "primary", outcome, usage,
+                              (time.monotonic() - started) * 1000)
+
     def _ask(self, body, parse, attempts=2):
-        from .ai_transport import complete, read_key, redact, ProviderError
+        c = self.model_config
+        has_images = any("images" in m for m in body["messages"])
+        if c.cloud_consent and (not has_images or self.cloud_images):
+            result = self._ask_cloud(body, parse, attempts)
+            if result is not None:
+                return result
+        if self._fallback is None:
+            return None
+        local = dict(body, model=c.fallback_model, think=c.fallback_think,
+                     options=dict(body.get("options", {})))
+        return self._fallback._ask(local, parse, attempts)
+
+    def _ask_cloud(self, body, parse, attempts):
+        from .ai_transport import complete, read_key, ProviderError
         from .model_lock import MODEL_LOCK, LockUnavailable
         c = self.model_config
-        if not c.cloud_consent or any('images' in m for m in body['messages']):
+        messages = self._cloud_messages(body["messages"])
+        if messages is None:
             return None
-        messages = [dict(m, content=redact(m['content'])) for m in body['messages']]
+        started = time.monotonic()
         try:
-            key = read_key(c.key_file, c.provider+'|'+c.base_url, group_name='tglistener')
-            for _ in range(attempts):
-                with MODEL_LOCK.enter():
-                    value = complete(c.provider, c.base_url, c.name, messages, body['format'], key=key,
-                                     timeout=c.timeout_seconds, max_output=c.max_output)
-                result = parse(__import__('json').dumps(value))
-                if result is not None:
-                    return result
-        except (ProviderError, LockUnavailable):
+            key = read_key(c.key_file, c.provider + "|" + c.base_url, group_name="tglistener")
+        except ProviderError as error:
+            self._record(error.code, {}, started)
             return None
+        for _ in range(attempts):
+            usage, outcome, result = {}, "ok", None
+            try:
+                with MODEL_LOCK.enter():
+                    started = time.monotonic()   # latency excludes the wait for the model lock
+                    value = complete(c.provider, c.base_url, c.name, messages, body["format"], key=key,
+                                     timeout=c.timeout_seconds, max_output=c.max_output,
+                                     usage_sink=usage.update)
+                result = parse(json.dumps(value))
+                if result is None:
+                    outcome = "invalid_output"
+            except ProviderError as error:
+                outcome = error.code
+            except LockUnavailable:
+                outcome = None   # no model call was made
+                return None
+            finally:
+                if outcome is not None:
+                    self._record(outcome, usage, started)
+            if result is not None:
+                return result
+            if outcome != "invalid_output":
+                return None
         return None
