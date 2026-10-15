@@ -13,4 +13,4 @@ dependencies = ["telethon>=1.45,<2"]
 where = ["src"]
 
 [tool.setuptools.data-files]
-"share/tg-triage/prompts" = ["prompts/classify.md", "prompts/case.md", "prompts/topics.md"]
+"share/tg-triage/prompts" = ["prompts/classify.md", "prompts/case.md", "prompts/topics.md", "prompts/followup.md"]

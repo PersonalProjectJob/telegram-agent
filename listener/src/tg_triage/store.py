@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import IncomingMessage
+from .followup_store import FollowupStoreMixin
 from .config import ConfigError
 
 USAGE_RETENTION_DAYS = 90
@@ -96,7 +97,7 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
-class Store:
+class Store(FollowupStoreMixin):
     """One service owns a database; a lock allows sequential thread offloading."""
 
     def __init__(self, path, *, clock=utc_now, recover_pending=True, read_only=False):
@@ -215,6 +216,7 @@ class Store:
                     UPDATE messages SET github_called_at = COALESCE(processed_at, received_at)
                     WHERE decision IN ('issue', 'needs_human', 'error', 'pending')
                 """)
+            self.init_followups(recover_pending)
             if recover_pending:
                 self._recover_cases()
                 self.connection.execute("""
@@ -849,7 +851,7 @@ class Store:
                 SELECT COUNT(*) FROM messages WHERE github_called_at IS NOT NULL
                 AND julianday(github_called_at) >= julianday(?)
             """, ((now - timedelta(minutes=60)).isoformat(),)).fetchone()
-            return row[0]
+            return row[0] + self.followup_create_count(now)
 
     def export_csv(self, out):
         with self._lock:

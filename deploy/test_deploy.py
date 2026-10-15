@@ -613,6 +613,16 @@ class WheelTests(unittest.TestCase):
             original=subprocess.run(['git','show','48bb761:listener/src/tg_triage/classifier.py'],cwd=ROOT,check=True,capture_output=True).stdout
             self.assertEqual((a/'source/listener/src/tg_triage/classifier.py').read_bytes(),original)
 
+    def test_current_listener_wheel_packages_followup_prompt(self):
+        from deploy.build_wheel import wheel_bytes
+        name, data = wheel_bytes(ROOT/'listener', 'listener', COMMIT)
+        self.assertTrue(verify_record(data))
+        with zipfile.ZipFile(io.BytesIO(data)) as wheel:
+            prompts = [n for n in wheel.namelist() if '.data/data/share/tg-triage/prompts/' in n]
+            self.assertEqual(len(prompts), 4)
+            followup = next(n for n in prompts if n.endswith('/followup.md'))
+            self.assertEqual(wheel.read(followup), (ROOT/'listener/prompts/followup.md').read_bytes())
+
     def test_real_suites_from_real_staged_layout(self):
         # Pre-commit integration: archive actual worktree bytes, never smoke-test shapes.
         # Production build_stage obtains these same paths from one real git archive.

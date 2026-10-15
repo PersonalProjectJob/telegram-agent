@@ -47,7 +47,7 @@ schema changes. A missing database exits with code 2 without creating paths.
 On the ThinkPad, the provisioned environment must have the declared Telegram
 dependency and the package (or `listener/src` on PYTHONPATH). The supplied systemd
 unit assumes `/opt/agentfleet/listener/.venv/bin/python` can import `tg_triage`.
-The prompts (`classify.md`, `case.md`, `topics.md`) are loaded from `listener/prompts/` in a
+The prompts (`classify.md`, `case.md`, `topics.md`, `followup.md`) are loaded from `listener/prompts/` in a
 source checkout or from `share/tg-triage/prompts/` under the installed Python prefix.
 `run` loads `topics.md` at startup and exits if it is missing, so a bad install is not
 discovered window by window. Keep the prompts fixed while processing messages.
@@ -487,8 +487,39 @@ notice missing. This intentionally favors avoiding duplicate replies.
 Reply directly to the clarification message to associate your answer with the original group:
 ingress maps that outgoing message id back to the original first message in the same chat.
 Replies backed by a sent clarification always remain followups of their original topic, even
-when the case is full or ended in an error/rate limit. Other replies retain existing case rules. Owner answers
-are stored for review; they do not approve an issue, retry GitHub, change `needs_human`, or post
-a GitHub comment automatically. Outgoing messages remain excluded from listener ingress.
+when the case is full or ended in an error/rate limit. Other replies retain existing case rules.
+The original stored issue URL must canonically match the currently configured repository and
+trusted issue number before model calls or resuming a plan. Missing/mismatched proof asks Owner
+to verify, without GitHub writes or guessed links; API routing always uses configuration.
+For a notice with a proven existing ticket, the model reads the original topic messages and the
+new reply and selects an update, split, clarification question or ordinary chat. No tag or command
+is required. Updates append a sanitized GitHub comment; the original issue body, human edits,
+labels and history remain intact. A reliable split keeps the first request on the original ticket,
+creates only N−1 siblings (at most five total), and comments the corrected first-request scope and
+sibling links on the original ticket. Every original source ID must belong to exactly one group;
+new drafts quote only their assigned original messages and retain their existing uploaded media,
+Telegram source links and source-ticket reference. Scope planning uses text and media provenance,
+without re-reading image pixels; ambiguous image/message associations ask the sender to clarify.
+Missing business details can be asked per ticket after a reliable split. Each result replies to
+the new clarification message, and replies to that notice keep the same durable root conversation.
+After a split, uncertain updates ask which ticket is intended; repeated split requests never
+blindly create another set of issues. Chat/thanks produce no GitHub writes.
+
+Additive `followup_roots`, `followup_jobs` and `followup_operations` tables preserve original case,
+topic and reconciliation records. Validated plans are stored before external writes. Each create
+or comment is committed as reserved before its single POST attempt; interrupted or unknown
+outcomes require an Owner check, with confirmed created links retained after partial failure.
+Only planned operations and proven completed operations resume during the periodic sweep after
+restart, without waiting for another incoming message. Conversation execution uses a separate
+lock so Telegram ingress can persist while model/transport calls run. Sibling create attempts
+consume the existing hourly issue quota; comments do not. Dry-run sends neither GitHub writes
+nor Telegram replies. Notices still reserve before send and never blindly retry uncertain delivery.
+An error/rate-limit notice without a proven ticket only asks for support; it never retries the
+original create call. Outgoing messages remain excluded from listener ingress.
+
+For a specifically reviewed legacy reply already stored as `followup`, an operator may call
+`store.ensure_followup_job(chat_id, message_id)` to seed that one message once, then run the normal
+sweep. This requires a stored same-chat sent-notice association and does not rearm the original
+case or globally backfill past replies.
 
 For isolated THINKPAD deployment and rollback, see [deploy/README.md](../deploy/README.md).

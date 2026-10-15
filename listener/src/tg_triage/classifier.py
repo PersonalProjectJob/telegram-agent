@@ -381,6 +381,22 @@ class Classifier:
         }
         return self._ask(body, parse_topic_groups, attempts=1)
 
+    def analyze_followup(self, originals, reply, tickets, history, *, images=None):
+        """Reuse provider consent/redaction/fallback through _ask, with bounded untrusted context."""
+        from .followup_model import FOLLOWUP_SCHEMA, parse_followup
+        messages = self._messages(load_prompt("followup.md"), originals, images)
+        context = {"REPLY": build_transcript([reply]), "TRUSTED_TICKETS": tickets,
+                   "ORIGINAL_METADATA": [{"message_id": m.message_id, "reply_to_id": m.reply_to_id,
+                                          "has_image": m.has_image, "has_document": m.has_document}
+                                         for m in originals],
+                   "HISTORY": [{"text": str(h.get("text", ""))[:500],
+                                "plan": str(h.get("plan", ""))[:1000],
+                                "result": str(h.get("result", ""))[:500]} for h in history[:5]]}
+        messages.append({"role": "user", "content": json.dumps(context, ensure_ascii=False)[:16000]})
+        body = {"model": self.settings.model, "stream": False, "think": self.think,
+                "options": {"temperature": 0}, "messages": messages, "format": FOLLOWUP_SCHEMA}
+        return self._ask(body, parse_followup, attempts=1)
+
     @staticmethod
     def _transcript(messages) -> str:
         return messages if isinstance(messages, str) else build_transcript(messages)

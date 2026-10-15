@@ -266,6 +266,8 @@ class Pipeline:
         results = []
         aggregation = self.config.aggregation
         with self._lock:
+            from .followups import sweep
+            sweep(self)
             due = self.store.due_cases(self.store.clock(), aggregation.window_minutes,
                                        aggregation.max_messages_per_case)
             for case_key in due:
@@ -291,6 +293,12 @@ class Pipeline:
                      "decision=duplicate issue_number=None latency_ms=0",
                      message.chat_id, message.message_id)
             return None
+        source = self.store.followup_source(message)
+        if source is not None:
+            from .followups import sweep
+            self.store.enqueue_followup(message, source)
+            sweep(self)
+            return Decision("followup", "model", case_key=source["case_key"])
         # One rule evaluation per message; the result is reused by the case analysis.
         rule_cache = {message.message_id: rules.evaluate(message.text)}
         rule = rule_cache[message.message_id]

@@ -333,7 +333,9 @@ class NoticeTransportTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(store.get(reply.chat_id, 1)["decision"], outcome)
                     self.assertEqual(store.connection.execute("SELECT count(*) FROM cases").fetchone()[0], 1)
                     self.assertEqual(len(github.calls), before_calls)
-                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[-1][1], 2)
+                    self.assertIn("Em", calls[-1][2])
                     self.assertEqual(p.close_due_cases(), [])
                 finally:
                     store.close()

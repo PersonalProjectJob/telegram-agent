@@ -71,3 +71,26 @@ class GitHubIssues:
             raise GitHubError("GitHub connection failed") from None
         except (ValueError, TypeError, KeyError):
             raise GitHubError("GitHub returned an invalid response") from None
+
+    def add_comment(self, issue_number, body):
+        """Append once; the caller durably reserves this POST and never retries unknown outcomes."""
+        if type(issue_number) is not int or issue_number <= 0 or not isinstance(body, str) or not body.strip():
+            raise ValueError("Invalid issue comment")
+        request = Request(
+            f"https://api.github.com/repos/{self.repo}/issues/{issue_number}/comments",
+            data=json.dumps({"body": body}, ensure_ascii=False).encode("utf-8"), method="POST",
+            headers={"Authorization": f"Bearer {self._token}",
+                     "Accept": "application/vnd.github+json", "Content-Type": "application/json",
+                     "X-GitHub-Api-Version": "2022-11-28"})
+        try:
+            with self.opener(request, timeout=30) as response:
+                data = json.loads(response.read(1024 * 1024 + 1))
+            comment_id = data.get("id") if isinstance(data, dict) else None
+            if type(comment_id) is not int or comment_id <= 0:
+                raise ValueError
+            return comment_id
+        except HTTPError as error:
+            error.close()
+            raise GitHubError("GitHub comment HTTP failure") from None
+        except (URLError, OSError, ValueError, TypeError):
+            raise GitHubError("GitHub comment result is unknown") from None
