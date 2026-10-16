@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.6.0 · **Updated**: 2026-10-16 12:16 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.7.0 · **Updated**: 2026-10-16 15:23 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -52,7 +52,7 @@ Khi provider/schema/packet thất bại, chỉ một thông báo kỹ thuật �
 
 ### Ngân sách context và truy vết
 
-Tin mới và exact-reply context ưu tiên trong8KB. Lịch sử candidate tùy chọn có thể rút gọn/lược bỏ theo ngân sách; candidate IDs, reply edges, human bindings và pixel–source mapping của phần giữ lại phải đúng. Pixel thuộc candidate đã lược bỏ không gửi kèm. Model không được chọn candidate không được gửi. Context bị cắt phải có marker cùng metadata packing để debug; không coi phần bị bỏ là không tồn tại. Nếu riêng context bắt buộc cũng quá lớn, dùng fallback kỹ thuật có lưu vết thay vì đoán hoặc tăng ngân sách âm thầm.
+Tin mới và exact-reply context ưu tiên trong8KB. Chỉ candidate có Reply thật được đưa vào quyền định tuyến nội dung cũ; lịch sử retrieved khác không được dùng để CONTINUE, kể cả nội dung giống nhau. Candidate của Reply có thể rút gọn theo ngân sách; candidate IDs, reply edges, human bindings và pixel–source mapping của phần giữ lại phải đúng. Pixel thuộc candidate đã lược bỏ không gửi kèm. Model không được chọn candidate không được gửi. Context bị cắt phải có marker cùng metadata packing để debug; không coi phần bị bỏ là không tồn tại. Nếu riêng context bắt buộc cũng quá lớn, dùng fallback kỹ thuật có lưu vết thay vì đoán hoặc tăng ngân sách âm thầm.
 
 `autonomous_outages` lưu cycle/anchor/status/time của sự cố kỹ thuật theo chat, không phải quan hệ topic. `autonomous_clarifications` giữ câu hỏi/reservation theo pending case và source; truy hồi cả notice/plan legacy có câu hỏi rỗng bằng câu hỏi fallback canonical đã dùng. Trace mặc định chỉ xuất case/chat/message/time, không câu hỏi hoặc hash câu hỏi. Event `ingress_packing` cho operator xem số byte, text cap, opaque candidate giữ/bỏ và truncation; không dump nội dung hội thoại.
 
@@ -171,15 +171,19 @@ Nhận /bug, /feature, /question, /task, /feedback đầu câu, không phân bi�
 
 ### TG-05 — Gom và định tuyến chủ đề
 
-Khi `[thinking] autonomous_enabled=true` và THINKING bật, live worker gom theo quiet30s/cap60s trước khi Harness định tuyến theo ngữ nghĩa của các tin đang chờ cùng chat, không dùng giới hạn hai phút hoặc cùng sender làm ranh giới chủ đề. Một lượt đọc tối đa 20 tin mới và sáu candidate có nguồn do host xác minh. Reply thật/notice là candidate mạnh; nội dung mới khác phạm vi vẫn có thể thành ticket liên quan riêng. Khi tắt autonomous, giữ đường intake cửa sổ/case cũ để tương thích.
+Khi `[thinking] autonomous_enabled=true` và THINKING bật, live worker gom theo quiet30s/cap60s trước khi Harness định tuyến theo ngữ nghĩa của các tin đang chờ cùng chat, không dùng giới hạn hai phút hoặc cùng sender làm ranh giới chủ đề. Một lượt đọc tối đa 20 tin mới và sáu candidate được host xác minh từ Reply thật. Bổ sung ticket hoặc pending cũ chỉ khi nhóm nguồn mới có Reply trực tiếp tới nguồn cũ hoặc bot notice đã được ánh xạ tới nguồn đó. Không có Reply thì không tự lấy lịch sử gần đây làm target, không CONTINUE/update pending hoặc ticket cũ bằng similarity/sender/thời gian. Candidate được Reply trong nhóm khác không trao quyền cập nhật cho nhóm không chứa Reply đó; nội dung mới khác phạm vi vẫn có thể thành ticket liên quan riêng. Khi tắt autonomous, giữ đường intake cửa sổ/case cũ để tương thích.
+
+Một incident có thể có nhiều biểu hiện trong cùng hành trình: ảnh lỗi, câu cảm thán, chức năng không gửi link và tác động khách không hoàn tất booking có thể cùng một ticket. Không tách chỉ vì từng câu nhắc một control/kênh khác; cũng không gộp chỉ vì cùng người, thời gian hoặc từ khóa. Phải căn cứ quan hệ ngữ nghĩa giữa triệu chứng, bằng chứng và tác động; không khẳng định chúng có chung root cause khi chưa có dữ kiện. Câu cảm thán như “Kiểu nầy chết luôn” không tự chứng minh hệ thống treo và không được sinh bug độc lập; gắn vào incident khi có căn cứ, nếu đứng riêng thì không bịa công việc.
+
+Case user xác nhận ngày 2026-10-16: ảnh `COMMON_VALIDATION_ERROR` + “Kiểu nầy chết luôn” + “AI voice không gửi link booking” + “Khách vào web không book được luôn” là một incident booking. Tin login cũ là phạm vi khác; không lấy ảnh hoặc error text của nó để diễn giải ảnh booking mới. Reply xác nhận incident về tin ảnh đầu tiên. Ticket login/billing độc lập vẫn phải được giữ riêng nếu có yêu cầu mới tương ứng.
 
 ### TG-06 — Đóng và chia topic
 
-Ở đường legacy, đóng theo thời gian idle, command hoặc đầy case. Ở đường autonomous, model trả partition NEW/CONTINUE/CLARIFY/CHAT cùng readiness và canonical draft trong một lượt; host kiểm opaque candidate, confidence, repository và partition; mỗi source ID phải được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
+Ở đường legacy, đóng theo thời gian idle, command hoặc đầy case. Ở đường autonomous, model trả partition NEW/CONTINUE/CLARIFY/CHAT cùng readiness và canonical draft trong lượt ingress; khi ảnh mới không reply bị đề xuất chia nhiều nhóm, phải có bước kiểm lại ngữ nghĩa kể cả không có candidate lịch sử trước khi lưu plan hoặc tạo issue. Bước kiểm nằm trong cùng ngân sách tối đa hai model calls/40s, vẫn kiểm schema/partition/candidate; thất bại giữ pending và thông báo technical một lần, không dùng plan chưa kiểm để ghi. Host kiểm opaque candidate, quyền Reply của chính nhóm, confidence, repository và partition; cached plan/recovery cũng phải kiểm lại quyền Reply, không dùng plan cũ để vượt quy tắc mới; mỗi source ID phải được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
 
 Default THINKING dùng projection gọn và packing byte-aware: giữ mọi ID, reply edge, sender/media/pixel flags; chia đều ngân sách cho trích đoạn text, đánh dấu `text_truncated`. Full source vẫn ở SQLite và quote issue theo source scope. Model không được coi excerpt là toàn bộ phạm vi. Nếu mandatory metadata/schema không vừa, báo technical budget failure; không tự gộp thành topic thật. Custom prompt/legacy renderer được giữ.
 
-Default THINKING gửi một USER context packet duy nhất: text JSON chứa caption, mọi source/reply và `images_order` ánh xạ index ảnh bắt đầu từ0 tới source ID; cùng USER chứa toàn bộ pixel được phép gửi. Cloud dùng text + image_url parts trong một USER; local dùng content + images trong một USER. Retry/fallback giữ cùng gói, không phân tích ảnh bằng call riêng rồi ghép kết quả.
+Default THINKING gửi một USER context packet duy nhất: text JSON chứa caption, mọi source/reply và `images_order` ánh xạ index ảnh bắt đầu từ0 tới source ID; cùng USER chứa pixel được phép gửi của nguồn mới và candidate exact-reply cần thiết. Pixel mới được ưu tiên tải trước; candidate lịch sử không có Reply xác minh không được đưa vào packet có quyền cập nhật. Vẫn giữ source/ledger lịch sử trong database để debug; với nguồn giữ lại trong packet, bảo toàn text/ID/provenance và đánh dấu pixel không được cung cấp để model không suy diễn ảnh cũ thành ảnh mới. Cloud dùng text + image_url parts trong một USER; local dùng content + images trong một USER. Retry/fallback giữ cùng gói, không phân tích ảnh bằng call riêng rồi ghép kết quả.
 
 ### TG-07 — Nhóm nghiệp vụ
 
@@ -588,6 +592,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_chat_pacing.py",
           "symbol": "WorkerPacingTests.test_login_text_short_context_late_photo_joint_no_early_call"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_no_reply_cannot_promote_matching_pending_root"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_group_cannot_borrow_sibling_reply_authority"
         }
       ],
       "prompts": [
@@ -646,6 +658,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_chat_pacing.py",
           "symbol": "WorkerPacingTests.test_other_chat_collects_while_processing_and_next_boundary_is_not_stolen"
+        },
+        {
+          "path": "listener/tests/test_incident_context.py",
+          "symbol": "IncidentContextTests.test_review_replaces_wrong_four_way_split_before_any_tool_effect"
+        },
+        {
+          "path": "listener/tests/test_incident_context.py",
+          "symbol": "IncidentContextTests.test_invalid_review_fails_closed_before_plans_and_one_technical_notice"
         }
       ],
       "prompts": [
@@ -918,7 +938,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         },
         {
           "path": "listener/tests/test_autonomous.py",
-          "symbol": "AutonomousTests.test_recurrence_episode_candidate_exact_and_unthreaded_process"
+          "symbol": "AutonomousTests.test_recurrence_episode_requires_actual_reply_to_update"
         }
       ]
     },
@@ -1075,6 +1095,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_conversation_context.py",
           "symbol": "ConversationContextTests.test_upgrade_old_empty_plan_recovers_actual_canned_question"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_cached_implicit_pending_plan_cannot_execute_after_upgrade"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_queued_planned_ambiguous_followup_recovery_requires_original_reply"
         }
       ]
     },
@@ -1519,7 +1547,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     }
   ],
   "runtime_inventory": {
-    "listener/prompts/autonomous.md": "5549afb0e7e66a4484b5cee50ac8ec91e54df56308681b44129a6105da9034e6",
+    "listener/prompts/autonomous.md": "f855b093267dc41800a950af4633156117de48de58ea341cad76e31301f26543",
     "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
     "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
     "listener/prompts/followup.md": "136e9d24a0df2a50f7161db9176cb1fcf2e7d568973112548a799ff6697e40e3",
@@ -1529,13 +1557,13 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/__main__.py": "3b2d70fc3e169fb04be69227778441cafc9bc2dcb75cf6db2bacc88eda68759e",
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
     "listener/src/tg_triage/attachments.py": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
-    "listener/src/tg_triage/autonomous.py": "3d78fd52df62df16dc39d2588afcc3e9715908b4f97118f71b3908046a4eee55",
+    "listener/src/tg_triage/autonomous.py": "15b639e1936a16096f3db7b2dc93ea3ee13f67eba0124994daa47bc50a6b5448",
     "listener/src/tg_triage/autonomy_store.py": "6bfca3a6338c73018aecc4f0318a719de7d8f7a5341e03affac9b622cf4d601e",
-    "listener/src/tg_triage/classifier.py": "d182fd348915bc034171421f6e98f26f25ed2300ca963563332318051997ae63",
+    "listener/src/tg_triage/classifier.py": "8284a17be87f5dc883c1e870c80eebb156ec9f2913216bbbc4e086244f3feb0f",
     "listener/src/tg_triage/config.py": "42e3af7cdce5282937cd7b879e676f02cebba088062de24ada1f4e58224120ec",
     "listener/src/tg_triage/followup_model.py": "898ae428bc0e5101550665853ed66dbfa0a8324fcc2ba4df18f4ab33d513d934",
     "listener/src/tg_triage/followup_store.py": "77e071b67d596f9a32b64b4a844ab740c953bdcbaece31386233aeccab69bb50",
-    "listener/src/tg_triage/followups.py": "ce12feeefcae12aea182558ce9b0d9c1f903f5abf1f14349fd3e4e0715ed6c05",
+    "listener/src/tg_triage/followups.py": "f906e2b65dab07fcda3a44a24ec6fe477989f651588de52fb9cbe0aeefa5b4ea",
     "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
     "listener/src/tg_triage/group_notices.py": "9223144438704e49573a740bde8d85cbd76df755298fc8df60b8af0036a86f95",
     "listener/src/tg_triage/ingress_model.py": "15368c1c94839f782424df2281e552e3a574151fec648ca4e4e46773cc819634",
@@ -1555,7 +1583,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/thinking.py": "afde97097555430904f754331d23d752174ae732ee1c3fabca618c4b4f03f306",
     "listener/src/tg_triage/thinking_transport.py": "6a8921188e21c8424c445c03b2ff903f941885b5d4b6930306bbffd3842a6d56",
     "listener/src/tg_triage/topic_store.py": "495bd90150783df45463d86a66dd32927e69fec001f7406808f8496f2466f672",
-    "listener/src/tg_triage/trace.py": "9205e1391402c23a91db1f851010081ad8936e10c62e7306cf095c7176b01068",
+    "listener/src/tg_triage/trace.py": "3a887035a58bcede5027a94893a819fa5fd0ba1848fdf610f03d2ea848074307",
     "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e"
   },
   "legacy_documents": [
@@ -1572,7 +1600,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "8e4236ec78a733783b8e2935ad8cb1ad1f92ee98f7f4c8dff10db2ee045d779e"
+  "runtime_fingerprint": "0fad3b80bf3081101b17978e929e101bcda8aec4785b8d6119cd2c9396deb7c2"
 }
 ```
 
@@ -1580,6 +1608,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Chỉ cập nhật nội dung cũ bằng Reply đã xác minh của chính nhóm; incident nhiều biểu hiện, chống tạo bug từ cảm thán/nhầm ảnh lịch sử, kiểm lại partition rủi ro trước side effect; kiểm thử và rollout phải có bằng chứng riêng. |
 | v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Chat pacing30–60s, context đến muộn, durable chống hỏi lặp và packing ưu tiên đúng nguồn; rollout cần evidence riêng. |
 | v1.5.0 | 2026-10-16 11:20 | Codex / owner AlexChu | Autonomous nhiều chủ đề, context batch, current partition, vòng đời closed/recurrence và debug bền vững; rollout có evidence riêng. |
 | v1.4.0 | 2026-10-16 10:11 | Codex / owner AlexChu | Contract topic/trace foundation, tách quyền projection khỏi routing; ghi quy tắc closed-ticket user chốt và phạm vi chưa triển khai. |

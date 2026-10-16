@@ -245,7 +245,7 @@ class AutonomousTests(TestCase):
                 self.assertFalse(p.github.calls); self.assertFalse(p.classifier.calls)
                 self.assertIn('Repository đã thay đổi',notices[0]); store.close()
 
-    def test_recurrence_episode_candidate_exact_and_unthreaded_process(self):
+    def test_recurrence_episode_requires_actual_reply_to_update(self):
         from tests.test_lifecycle import LifecycleTests
         from tests.test_followups import answer
         helper=LifecycleTests('test_closed_historical_evidence_comments_without_refresh_or_reopen')
@@ -261,7 +261,7 @@ class AutonomousTests(TestCase):
         gh.lifecycle_snapshot=lambda n:dict(number=n,repo=p.config.gh_repo,state='open',observed_at=NOW.isoformat())
         model.value=answer('update',summary='Bổ sung cho lần lỗi mới')
         model.analyze_ingress=lambda sources,candidates,**kw:[route([12],'CONTINUE',next(c['candidate_id'] for c in candidates if c['source']['issue_number']==102))]
-        self.assertEqual('followup',p.process(message(12,text='Thêm chi tiết cho lỗi hôm nay',mentions_listener=False)).decision)
+        self.assertEqual('followup',p.process(message(12,text='Thêm chi tiết cho lỗi hôm nay',reply_to_id=911,mentions_listener=False)).decision)
         self.assertEqual(102,gh.comments[-1][0]); self.assertEqual(2,len(gh.calls))
 
     def test_followup_batch_commit_crash_resumes_one_durable_job(self):

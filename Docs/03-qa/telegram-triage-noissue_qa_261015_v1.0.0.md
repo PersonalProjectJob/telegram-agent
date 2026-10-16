@@ -1,6 +1,6 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.5.0 · **Updated** 2026-10-16 12:16 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.6.0 · **Updated** 2026-10-16 15:23 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
@@ -222,6 +222,7 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.6.0 | 2026-10-16 15:23 Asia/Saigon | Codex / owner AlexChu | Booking incident/historical pixel isolation and pre-side-effect semantic review acceptance. |
 | v1.5.0 | 2026-10-16 12:00 Asia/Saigon | Codex / owner AlexChu | Chat timing/late context/anti-spam and real-history packet pressure acceptance. |
 | v1.4.0 | 2026-10-16 11:31 Asia/Saigon | Codex / owner AlexChu | Autonomous/lifecycle business acceptance, actual-context/model regression và separate release proofs. |
 | v1.3.0 | 2026-10-16 10:11 Asia/Saigon | Codex / owner AlexChu | Acceptance topic/trace foundation: provenance, immutable history, readonly/legacy/privacy/bounds và scope lifecycle. |
@@ -262,3 +263,37 @@ Configured-model preview7/7 PASS using fake GitHub/Telegram and memory SQLite: f
 Recovery scope is checked when entering a sweep/batch. A model/tool call already in flight is allowed to finish; later typing cannot safely cancel an already reserved external operation. Quiet/cap and sealed-source guarantees apply to newly collected ingress. Full semantic merging of multiple old independent pending roots is not implemented; unclear membership remains explicit. Generic developer Harness gate remains Node-only/no package.json for this Python repo; no formal PASS is claimed.
 
 Independent deployment suite46 PASS168.530s; real staged listener904 PASS111.371s(skip1), NailHub227 PASS27.144s(skip5). Final frozen hash drift empty at12:19:58 Asia/Saigon. Evidence .context/chat-pacing-independent-final.json. Immutable commit/installed proof remains a separate release step.
+
+## Incident grouping correction — v1.6.0, 2026-10-16 15:23 Asia/Saigon
+
+### TC-11: Booking incident with competing old login history
+| Property | Value |
+|---|---|
+| Priority | P0 |
+| Type | Context/vision regression |
+| Precondition | Fake GitHub/Telegram and memory SQLite; actual configured model; reviewed booking image463, safe synthetic pending login/billing history; no credential-bearing login pixels |
+
+Steps: enqueue463 image COMMON_VALIDATION_ERROR,464 “Kiểu nầy chết luôn”,465 “AI voice không gửi link booking”,466 “Khách vào web không book được luôn”; process through real startup provider in one ingress.
+Expected: one booking ticket, all four sources, one confirmation replying463; no oldlogin457 membership or Invalid username or password claim; no standalone emotional/hung-system bug. Compare against the observed production failure, not a preselected mocked partition. Unit coverage alone does not prove model grouping.
+
+### TC-12: Historical pixel isolation and bounded review
+| Property | Value |
+|---|---|
+| Priority | P0 |
+| Type | Safety/error handling |
+| Precondition | Current image plus optional historical image candidates; exact-reply control case; injected provider outcomes |
+
+Steps: inspect preparation/download order and one context packet; exercise risky first partition then corrected/invalid second proposal; exercise deadline/call cap.
+Expected: current pixels remain available under image limits, nonreply historical candidates/pixels neither receive routing authority nor get sent, exact-reply context/pixels retained; no plans/issues before accepted review; invalid/timeout output stays pending with at most one technical notice. No budget expansion. Independently requested login/billing/three-topic cases stay separate; late evidence still uses original scope.
+
+Execution status: pending new source/model/release verification; results must be recorded separately with actual counts, model, timestamps and artifact identity.
+
+### TC-13: Reply ownership is required to change old content
+| Property | Value |
+|---|---|
+| Priority | P0 |
+| Type | Authority/recovery regression |
+| Precondition | Existing old pending/open/closed cases and proven bot notices; mixed new groups with and without real replies |
+
+Steps: send a similar new request with no Reply; then Reply to oldsource/notice; submit a partition whose nonreply group tries to borrow a sibling group's exact candidate; recover a cached pre-rule nonreply CONTINUE/CLARIFY plan.
+Expected: no-Reply inputs cannot update or promote old content. Exact source/notice Reply still authorizes semantic/lifecycle evaluation; no forced scope match. Each group must carry its own proven Reply authority, and cached/recovery cannot bypass it. Booking plus independent new login confirms463 and467, keeps old457/458/461 unchanged, and creates no standalone emotion bug. Current image multi-group review still runs with zero history candidates.

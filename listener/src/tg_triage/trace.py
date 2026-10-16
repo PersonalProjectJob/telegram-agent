@@ -12,10 +12,10 @@ REASON_CODES = frozenset('''context_budget_exhausted decision_deadline_exhausted
     conflicting_binding partial_binding invalid_accounting invalid_count invalid_output
     invalid_source_roles unproven_binding unproven_count provider_unavailable
     ambiguous_enrichment invalid_enrichment_sources vision_unavailable unresolved_role
-    ingress_scope_clarification ingress_packing ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat
+    ingress_scope_clarification ingress_packing ingress_review ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat
     ingress_pixels_unavailable invalid_ingress_output closed_episode_unclear recurrence_unproven
     lifecycle_unavailable lifecycle_lookup_failed lifecycle_target_unobserved lifecycle_foreign_sources related_create
-    cached_repo_changed cached_sources_missing batch_scope_correction_unclear'''.split())
+    cached_repo_changed cached_sources_missing cached_reply_authority_revoked reply_authority_required batch_scope_correction_unclear'''.split())
 FIELDS = {
     'followup_job_sources': 'job_id chat_id message_id',
     'triage_current_topics': 'topic_id root_key chat_id case_key ordinal issue_number scope_status active version',
@@ -223,7 +223,7 @@ class Reader:
             record = _json(row.get('record'))
             data = {k: row[k] for k in ('turn_key','root_key','version') if k in row}
             enums=dict(schema={'triage.decision/v1'},harness_owner={'AlexChu'},
-                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_packing','ingress_result'},
+                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_packing','ingress_review','ingress_result'},
                        status={'planned','done','blocked','ambiguous','dryrun','missing','queued','error','verified'})
             for field in ('schema','harness_owner','intent','status','policy_version','prompt_version'):
                 val=record.get(field)
@@ -250,6 +250,23 @@ class Reader:
                 for field in ('retained_candidate_ids','omitted_candidate_ids'):
                     if isinstance(packed.get(field),list):
                         data['packing'][field]=[v for v in packed[field][:6] if isinstance(v,str) and re.fullmatch(r'c[1-6]',v)]
+            if record.get('intent')=='ingress_review' and isinstance(record.get('confirmed'),dict):
+                review=record['confirmed']; safe={}
+                safe['source_ids']=[i for i in review.get('source_ids',[])[:20] if type(i) is int] if isinstance(review.get('source_ids'),list) else []
+                if review.get('outcome') in ('proposed','accepted','rejected'):
+                    safe['outcome']=review['outcome']
+                if isinstance(review.get('reason'),str) and review['reason'] in REASON_CODES|{'unlinked_image_competing_history','unlinked_image_partition','host_validated','invalid_output','provider_unavailable','invalid_ingress_output'}:
+                    safe['reason']=review['reason']
+                safe['groups']=[]
+                for group in review.get('groups',[])[:20] if isinstance(review.get('groups'),list) else []:
+                    if not isinstance(group,dict) or group.get('action') not in ('NEW','CONTINUE','CLARIFY','CHAT'):
+                        continue
+                    value=dict(action=group['action'],message_ids=[i for i in group.get('message_ids',[])[:20] if type(i) is int] if isinstance(group.get('message_ids'),list) else [])
+                    candidate=group.get('candidate_id')
+                    if candidate is None or isinstance(candidate,str) and re.fullmatch(r'c[1-6]',candidate):
+                        value['candidate_id']=candidate
+                    safe['groups'].append(value)
+                data['review']=safe
             if self.include_text:
                 data['private_content'] = _private(record)
             if self.bounded(table,data):

@@ -90,6 +90,9 @@ class AutonomousTraceTests(unittest.TestCase):
         turn.reason='semantic_new'
         turn.record('ingress_packing',dict(text_bytes=7999,new_text_cap=700,candidate_text_cap=55,
             candidate_context_truncated=True,retained_candidate_ids=['c1'],omitted_candidate_ids=['c2','PRIVATE_PACKING'],private='PRIVATE_PACKING'))
+        turn.record('ingress_review',dict(source_ids=[448,'PRIVATE_REVIEW'],outcome='accepted',reason='host_validated',
+            groups=[dict(message_ids=[448,'PRIVATE_REVIEW'],action='NEW',candidate_id=None,summary='PRIVATE_REVIEW'),
+                    dict(message_ids=[449],action='CONTINUE',candidate_id='PRIVATE_REVIEW')],private='PRIVATE_REVIEW'),status='verified')
         turn.record('ingress_result',{'source_ids':[448]},status='verified')
         self.store.enable_autonomy()
         self.store.connection.execute('INSERT INTO autonomous_routes VALUES(?,?,?,?,?,?,?,?)',
@@ -105,3 +108,7 @@ class AutonomousTraceTests(unittest.TestCase):
         self.assertEqual(packed['packing']['text_bytes'],7999)
         self.assertEqual(packed['packing']['omitted_candidate_ids'],['c2'])
         self.assertNotIn('PRIVATE_PACKING',json.dumps(result))
+        review=next(r for r in result['sections']['thinking_decision_events'] if r.get('intent')=='ingress_review')
+        self.assertEqual(review['review'],dict(source_ids=[448],outcome='accepted',reason='host_validated',
+            groups=[dict(message_ids=[448],action='NEW',candidate_id=None),dict(message_ids=[449],action='CONTINUE')]))
+        self.assertNotIn('PRIVATE_REVIEW',json.dumps(result))

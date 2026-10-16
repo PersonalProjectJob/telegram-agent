@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.6.0 · **Updated**: 2026-10-16 12:16 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.7.0 · **Updated**: 2026-10-16 15:23 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -240,6 +240,7 @@ No canonical Harness/provider/auth/model changes were made. Synthetic fake-tool 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Incident grounding, current-first/exact-reply vision and bounded semantic review before side effects. |
 | v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Per-chat pacing, sealed batch, durable clarification context and bounded candidate packing. |
 | v1.5.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous/lifecycle implementation, batch/provenance, current partition, bounded joint packing và verified episodes. |
 | v1.4.0 | 2026-10-16 10:11 | Codex / owner AlexChu | Thiết kế triển khai topic/trace foundation, additive/bounded/read-only contracts và ranh giới lifecycle/routing. |
@@ -263,3 +264,13 @@ Topic current projection không thay originals. Trace đọc các ledger routing
 Autonomous Telegram worker owns async per-chat collection deadlines (quiet30s, cap60s) and a single processing lane. A sealed released-source ContextVar bounds autonomous backlog claims; direct Pipeline calls retain immediate behavior. The event loop/collector must stay responsive while the processing thread performs model/tool calls. Durable enqueue precedes collection; stop/cancel acknowledgment must leave unprocessed database rows queued, not reserve side effects early.
 
 Pending clarification ledger stores normalized question reservation by proven case. Candidate packets include prior questions and delivery statuses; legacy empty-question plans derive the exact historical fallback. Technical provider failure sends one batch notice while individual case/routes remain independent. Classifier prioritizes current sources/exact replies, bounds optional history and filters omitted-candidate pixels. Packing metadata goes to the existing decision journal and safe trace output. No model/provider/consent change, no migration that deletes existing accounting. Operator settings and limits are canonical in the business source; this is implementation detail.
+
+## Incident grounding correction — v1.7.0, 2026-10-16 15:23 Asia/Saigon
+
+Read-only production audit confirmed installed `ad12cf4`, DeepSeek Flash, and one ingress for current sources463..466. The four sources were collected together; the model chose old pending login457 for current booking photo463, invented a standalone hung-system bug for emotion464, and split booking symptoms465/466. One model call produced issues49..52. This is semantic/source attribution failure after collection, not a missing deployment or quiet-window failure.
+
+Ingress must prioritize current-source pixels and allow historical context/pixels only for candidates proven by an actual Reply. Other history remains in its ledger for debugging and cannot authorize old-content updates. Preserve existing received_at/is_forward metadata as hints, not membership authority or fabricated original-author attribution. A multi-group proposal involving an unlinked current image receives a bounded second semantic check before saveplan/sideeffects, even when no historical candidates are present. Same schema/parsers, source coverage, opaque candidate authority and two-call/40s limit remain. Failure stays visible pending; never execute an unreviewed partition or increase budgets to force a pass. Positive incident/ancillary guidance supplements independent-topic rules.
+
+New isolated configured-model booking regression uses reviewed original463 pixels and synthetic old pending candidates. It must produce one booking issue on463, include COMMON_VALIDATION_ERROR, keep all four current sources, exclude oldlogin facts, and preserve independent-topic/late-context regressions. Prior frozen-runtime results do not prove this new behavior. Source review, configured-model preview, immutable release and installed proof remain separate. Already-created immutable routing/notice ledgers are not silently rewritten; retrospective issue/source repair requires a separately reviewed maintenance operation.
+
+User clarification 2026-10-16: old content may be updated only through an actual Reply to its original source or a proven linked bot notice. Candidate gathering must exclude unthreaded history from old-content authority; group validation must require that group's own source IDs contain the Reply bound to the chosen candidate. Another group's reply cannot be borrowed. Apply this boundary to fresh ingress, cached plan replay and recovery; never silently migrate bad old plans. Unlinked-current-image multi-group review remains active even with no history candidates. Current-message grouping is still semantic, and old reply age is not an expiry. Independent login467 must confirm467, not resurrect pending457.
