@@ -51,6 +51,21 @@ class PackagingTests(unittest.TestCase):
             self.assertFalse(any(b'PRIVATE-SENTINEL-NOT-PACKAGED' in bundle.read(name) for name in names))
         self.assertEqual(package.verify(archive)['schema'],package.SCHEMA)
 
+    def test_followup_prompt_and_runtime_modules_are_packaged(self):
+        archive=self.archive()
+        with zipfile.ZipFile(archive) as bundle:
+            prompt='listener/prompts/followup.md'
+            self.assertEqual(bundle.read(package.PREFIX+prompt),(self.source/prompt).read_bytes())
+            for module in ('followup_model','followup_store','followups'):
+                path='listener/src/tg_triage/'+module+'.py'
+                self.assertEqual(bundle.read(package.PREFIX+path),(self.source/path).read_bytes())
+            bundle.extractall(self.base/'followup import')
+        code="from tg_triage.store import Store; from tg_triage.classifier import load_prompt; from tg_triage import followups; s=Store(':memory:'); assert load_prompt('followup.md'); s.close()"
+        checkout=self.base/'followup import'/'agentfleet-console'
+        env=dict(os.environ,PYTHONPATH=str(checkout/'listener/src'))
+        result=subprocess.run([sys.executable,'-c',code],cwd=checkout,env=env,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+
     def test_uncommitted_bytes_and_reproducible_archive(self):
         asset=self.source/'console-ui/app.js'
         asset.write_bytes(asset.read_bytes()+b'\n// packaging-current-source-regression\n')

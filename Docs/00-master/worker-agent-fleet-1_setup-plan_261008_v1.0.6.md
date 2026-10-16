@@ -1,14 +1,18 @@
 # Setup Plan: Telegram Triage Agent (local) — nghe Telegram, phân loại, tạo GitHub issue
 
+<!-- telegram-triage-historical -->
+> **Telegram triage — phần lịch sử/đề xuất:** mô tả nghiệp vụ triage trong tài liệu này không còn là nguồn hiện hành. Xem [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) cho bản đã triển khai baseline `9746ef2`. Các kế hoạch Fleet/worker ngoài triage, sign-off, incident và số đo cũ được giữ nguyên; không coi đề xuất là chức năng đã chạy.
+
+
 > Kế hoạch từng bước cho **giai đoạn 1 (MVP)** của Worker Agent Fleet, trình CTO.
-> Nguồn sự thật: [Master Doc](./worker-agent-fleet-1_master_261007_v1.0.8.md) · Bức tranh toàn hệ thống: [Solution Brief](./worker-agent-fleet-1_brief_261007_v1.0.7.md).
+> Nguồn phạm vi Fleet: [Master Doc](./worker-agent-fleet-1_master_261007_v1.0.8.md) · Bức tranh toàn hệ thống: [Solution Brief](./worker-agent-fleet-1_brief_261007_v1.0.7.md).
 > Sau khi CTO duyệt, nội dung được tách vào Engineering Doc (`02-engineering/`) và Tasks Doc (`04-tasks/`).
 > Gặp thuật ngữ lạ: xem [Phụ lục A — Thuật ngữ](#phụ-lục-a--thuật-ngữ).
 
 | | |
 |---|---|
 | **Feature ID** | 1 (ticket nội bộ) |
-| **Phiên bản** | v1.0.6 — 2026-10-09 15:27 |
+| **Phiên bản** | v1.0.7 — 2026-10-15 21:15 (Asia/Saigon) |
 | **Người soạn** | AlexChu (Main Agent harness) |
 | **Trạng thái** | Chờ CTO duyệt |
 
@@ -194,6 +198,8 @@ AgentBuilder/
 
 ### B0 — Tài khoản và secret · Owner · ~2 giờ · ✅ Xong 2026-10-09
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 | # | Việc | Ghi chú |
 |---|---|---|
 | 0.1 | Tài khoản Telegram **riêng cho dự án** (SIM riêng), thêm vào group cần nghe | Bật 2FA cho tài khoản này |
@@ -208,12 +214,16 @@ AgentBuilder/
 
 ### B1 — (Hoãn) VPS + MTProxy
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 **Không làm ở giai đoạn 1.** Kiểm tra ngày 2026-10-08 cho thấy mạng của ThinkPad kết nối thẳng tới Telegram được. Thay vào đó:
 - Code listener (B6) vẫn có **ô cấu hình proxy**, để trống là kết nối thẳng.
 - `verify.sh` (B3) và giám sát (B9) **kiểm tra kết nối tới Telegram**, để phát hiện sớm nếu nhà mạng chặn về sau.
 - Khi cần: làm theo §14.
 
 ### B2 — Ubuntu chuẩn cho ThinkPad · Owner · ~1 giờ · ✅ Xong 2026-10-09
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 - Ubuntu **26.04 LTS** (máy đang chạy 26.04.1, kernel 7.0), hostname `gw-01`, cập nhật hệ thống, bật `openssh-server`.
 - **Gập máy không được ngủ:** file `/etc/systemd/logind.conf.d/10-lid.conf` đặt `HandleLidSwitch`, `HandleLidSwitchExternalPower`, `HandleLidSwitchDocked` = `ignore`, rồi:
@@ -228,6 +238,8 @@ AgentBuilder/
 > Thực tế: Owner báo đạt toàn bộ; ảnh kiểm tra bước 8–9 (sau khởi động lại, gập màn hình + ping) chưa được gửi để đối chiếu. Lỗi gặp khi làm: lấy IP bằng `hostname -i` (chữ i thường) ra `127.0.1.1` là địa chỉ của chính máy; phải dùng `hostname -I` (chữ I hoa).
 
 ### B3 — Bootstrap nền (`bootstrap/00-gateway-base.sh`) · Script · ~2 giờ viết + 10 phút chạy · ✅ Xong phần làm tay 2026-10-09
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 1. Gói nền: `git curl jq python3-venv sqlite3 unattended-upgrades`.
 2. User **`tglistener`**: không có sudo, không đăng nhập bằng mật khẩu. **Session Telegram có toàn quyền tài khoản**, nên tách hẳn khỏi mọi user khác.
@@ -262,6 +274,8 @@ AgentBuilder/
 | `systemctl is-enabled unattended-upgrades` | `enabled` | ✅ |
 
 ### B4 — Ollama + Qwen 3.5 9B (`bootstrap/10-ollama.sh`) · Script · ~3 giờ · ✅ Đã làm tay trên ThinkPad 2026-10-09
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 1. Cài Ollama bằng trình cài chính thức (`curl -fsSL https://ollama.com/install.sh | sh`). **Kiểm tra ngay sau khi cài** bằng `systemctl status ollama`: trình cài có thể báo "Install complete" dù chưa tạo được service (xem "Bài học khi cài" bên dưới).
 2. Cấu hình service (file `/etc/systemd/system/ollama.service.d/override.conf`):
@@ -312,6 +326,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 
 #### Bài học khi cài (script `10-ollama.sh` phải xử lý sẵn)
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 | Gặp phải | Nguyên nhân | Script cần làm |
 |---|---|---|
 | Trình cài in "Install complete" nhưng `ollama --version` báo không kết nối được, `ollama.service` không tồn tại | Tải lâu nên `sudo` hết giờ chờ mật khẩu (`sudo: timed out`) đúng lúc tạo user và service | Chạy cả script bằng `sudo` một lần; sau khi cài **kiểm tra service**, thiếu thì tự tạo user `ollama` + `ollama.service` |
@@ -320,6 +336,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 | Chế độ Performance không làm nhanh hơn | Tốc độ viết bị giới hạn bởi băng thông RAM (đã kênh đôi) | Không tối ưu thêm ở phía máy; muốn nhanh hơn thì đổi model nhỏ |
 
 ### B5 — GitHub: repo đích + nhãn · Script · ~1 giờ · ✅ Xong 2026-10-09 (repo thử nghiệm)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 1. File `/etc/agentfleet/tg-triage.env` (root, chmod 600) chứa 4 biến:
 
@@ -344,6 +362,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 
 ### B6 — Viết listener + test · Executor qua `/dispatch` · ~12 giờ
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 | Hạng mục | Yêu cầu |
 |---|---|
 | Kết nối | Telethon **kết nối thẳng**; có sẵn ô cấu hình proxy (MTProxy: `ConnectionTcpMTProxyRandomizedIntermediate`, `proxy=(host, port, secret)`), để trống là không dùng; tự kết nối lại khi rớt |
@@ -359,6 +379,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 
 ### B7 — Đăng nhập + chạy chỉ ghi log · Owner đăng nhập · 1 giờ + 3 ngày chạy
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 1. **Owner đăng nhập lần đầu** dưới user `tglistener`: nhập số điện thoại, OTP, mật khẩu 2FA. Tạo file session ở `/var/lib/agentfleet/tg/` (chmod 600).
 2. Bật `tg-triage.service` (`Restart=always`) với **`MODE=dry-run`**: phân loại và ghi kết quả ra SQLite/CSV, **không tạo issue**.
 3. Thử ngắt mạng: tắt Wi-Fi hoặc rút dây mạng 2 phút để xác nhận listener tự kết nối lại.
@@ -368,6 +390,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 
 ### B8 — Nghiệm thu rồi bật live · Owner + AlexChu · ~2 giờ
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 1. Owner chấm **50 tin** trong CSV (nhãn đúng/sai, có nên tạo issue không).
 2. **≥ 85% đúng** ⇒ trình CTO, đổi `MODE=live`. Mọi issue mang nhãn `triage`, Lead duyệt.
 3. **< 85%** ⇒ chỉnh luật / prompt / ngưỡng confidence, chạy lại dry-run.
@@ -375,6 +399,8 @@ Còn mở: dòng JSON của lần đo thời gian chưa được chụp lại; k
 **Đạt khi:** 24 giờ đầu ở chế độ live: 0 issue trùng, độ trễ từ tin nhắn đến issue ≤ 60 giây.
 
 ### B9 — Vận hành · Script + AlexChu · ~2 giờ
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 - **Theo dõi:** `journalctl -u tg-triage`; mỗi ngày gửi báo cáo ngắn (số tin, số issue, số `needs-human`) vào topic của team (cần bot ở 0.3), hoặc ghi ra file.
 - **Cảnh báo:** listener mất kết nối > 10 phút, hàng đợi > 20 tin, chạm giới hạn N issue/giờ.
@@ -634,3 +660,9 @@ Giai đoạn 1 chạy toàn bộ trên ThinkPad và kết nối Telegram trực 
 | v1.0.4 | 2026-10-09 | 11:52 | AlexChu (Claude Code) | B4 đã làm tay trên ThinkPad: ghi số đo thật (5,7 giây/tin, 4,7–5,0 tokens/s, RAM kênh đôi DDR4-3200); đổi tiêu chí B4 và §8 từ "≥ 8 token/giây" sang "≤ 20 giây/tin"; thêm cấu hình NUM_PARALLEL/MAX_LOADED_MODELS, lệnh đo giống agent, bảng "Bài học khi cài" |
 | v1.0.5 | 2026-10-09 | 15:09 | AlexChu (Claude Code) | Thêm bảng tiến độ; B0, B2, B5 xong (B5 trên repo thử nghiệm `tg-triage-sandbox`), B3 làm một phần; sửa Ubuntu 24.04 → 26.04; ghi lỗi thực tế khi làm B2, B5 |
 | v1.0.6 | 2026-10-09 | 15:27 | AlexChu (Claude Code) | B3 xong phần làm tay (user `tglistener`, thư mục dữ liệu, kiểm tra phân quyền, kết nối Telegram); ghi lệnh đã dùng để script B6 tái tạo; phần chuẩn bị máy giai đoạn 1 hoàn tất |
+
+## Changelog chuẩn hóa Telegram triage
+
+| Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
+|---|---|---|---|
+| v1.0.7 | 2026-10-15 21:15 | Codex / owner AlexChu | Gắn nhãn snapshot/đề xuất, thêm đối chiếu nguồn TG-01..TG-32; giữ lịch sử và sign-off. |

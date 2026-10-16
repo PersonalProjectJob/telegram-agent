@@ -95,6 +95,35 @@ class ImageContextTests(unittest.TestCase):
         self.assertIn("[2]", payload["messages"][-1]["content"])
         self.assertEqual(len(self.github.calls), 1)
 
+    def test_uncertain_pure_information_question_about_image_stays_silent(self):
+        p = self.pipeline(envelope(topic([1], verdict="needs_human", category="feedback",
+                                        type="question", actionable=False, confidence=0.3)))
+        p.process(replace(self.photo(), text="Màn hình này là phiên bản nào?"))
+        self.clock.advance(3)
+        result = p.close_due_cases()[0]
+        self.assertEqual((result.decision, result.reason), ("chat", "question_no_ticket"))
+        self.assertEqual((self.github.calls, self.notices), ([], []))
+
+    def test_image_information_question_does_not_swallow_independent_task(self):
+        p = self.pipeline(envelope(
+            topic([1], verdict="needs_human", category="feedback", type="question",
+                  actionable=False, confidence=0.3),
+            topic([2], category="task", type="task", title="Bổ sung hướng dẫn SMS")))
+        p.process(replace(self.photo(), text="Màn hình này là phiên bản nào?"))
+        p.process(self.request())
+        self.clock.advance(3)
+        result = p.close_due_cases()[0]
+        first = self.store.get(self.photo().chat_id, 1)
+        second = self.store.get(self.photo().chat_id, 2)
+        self.assertEqual((first["decision"], first["reason"], first["issue_number"]),
+                         ("chat", "question_no_ticket", None))
+        self.assertEqual((second["decision"], second["reason"]), ("issue", "auto_task"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertEqual(self.github.calls[0].labels, ("task", "triage", "source:telegram"))
+        self.assertNotIn("Màn hình này là phiên bản nào", self.github.calls[0].body)
+        self.assertEqual([notice[1] for notice in self.notices], [2])
+        self.assertTrue(self.store.reconcile(result.case_key).balanced)
+
     def test_after_120_seconds_different_sender_chat_and_forwards_are_separate(self):
         for second in (self.request(seconds=121), replace(self.request(), sender_id=8),
                        replace(self.request(), chat_id=-888),
@@ -117,31 +146,43 @@ class ImageContextTests(unittest.TestCase):
         self.assertEqual(self.store.get(second.chat_id, 1)["case_key"],
                          self.store.get(second.chat_id, 2)["case_key"])
 
-    def test_missing_download_cannot_create_confident_text_only_issue(self):
+    def test_missing_download_still_classifies_known_text_without_sending_pixels(self):
         p = self.pipeline(downloader=FakeDownloader())
         p.process(self.photo())
         p.process(self.request())
         self.clock.now = NOW + timedelta(seconds=150)
         result = p.close_due_cases()[0]
-        self.assertEqual(result.decision, "needs_human")
-        self.assertEqual(len(self.http.calls), 0)
+        self.assertEqual(result.decision, "issue")
+        self.assertEqual(len(self.http.calls), 1)
+        payload=json.loads(self.http.calls[0][0].data)
+        self.assertFalse(any('images' in m for m in payload['messages']))
+        self.assertIn('pixels unavailable',payload['messages'][0]['content'])
         self.assertEqual(len(self.notices), 1)
-        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual(self.upload.uploads,[])
 
     def test_model_timeout_and_ambiguous_partition_need_owner(self):
         for answers in ((TimeoutError(), TimeoutError()),
                         (envelope(topic([1], verdict="noise", category="chat"), topic([2])),)):
             with self.subTest(answers=answers):
+                self.clock=Clock()
+                self.store=Store(':memory:',clock=self.clock);self.addCleanup(self.store.close)
+                self.github=FakeGitHub();self.notices=[]
                 p = self.pipeline(*answers)
                 p.process(self.photo())
                 p.process(self.request())
                 self.clock.now = NOW + timedelta(seconds=150)
                 result = p.close_due_cases()[0]
-                self.assertEqual(result.decision, "needs_human")
+                if isinstance(answers[0],BaseException):
+                    self.assertEqual(result.decision,'pending_review')
+                    self.assertEqual(self.github.calls,[])
+                    self.assertEqual([n[1] for n in self.notices],[2])
+                    self.assertEqual(self.store.get(self.photo().chat_id,2)['reason'],'vision_partition_unresolved')
+                else:
+                    self.assertEqual(result.decision,'issue')
+                    self.assertEqual(len(self.github.calls),1)
+                    self.assertNotIn('(chỉ có ảnh)',self.github.calls[0].body)
+                    self.assertEqual([n[1] for n in self.notices],[2])
                 self.assertTrue(all(not d.exists() for d in self.download.directories))
-                # New isolated database for next scenario.
-                self.store = Store(":memory:", clock=self.clock)
-                self.addCleanup(self.store.close)
 
     def test_lone_photo_never_creates_spurious_issue(self):
         p = self.pipeline()
@@ -167,8 +208,11 @@ class ImageContextTests(unittest.TestCase):
                 p.process(photo)
                 p.process(self.request())
                 self.clock.now = NOW + timedelta(seconds=150)
-                self.assertEqual(p.close_due_cases()[0].decision, "needs_human")
-                self.assertEqual(self.http.calls, [])
+                self.assertEqual(p.close_due_cases()[0].decision, "issue")
+                self.assertEqual(len(self.http.calls),1)
+                payload=json.loads(self.http.calls[0][0].data)
+                self.assertFalse(any('images' in m for m in payload['messages']))
+                self.assertIn('pixels unavailable',payload['messages'][0]['content'])
                 self.assertIsNone(p._prepared_images)
 
     def test_case_api_has_real_image_and_id(self):
@@ -222,11 +266,13 @@ class ImageContextTests(unittest.TestCase):
         p.process(self.request(seconds=98))
         self.clock.now = NOW + timedelta(seconds=218)
         result = p.close_due_cases()[0]
-        self.assertEqual(result.decision, "needs_human")
+        self.assertEqual(result.decision, "pending_review")
         self.assertEqual(self.http.calls, [])
-        self.assertEqual(len(self.github.calls), 1)
-        self.assertEqual(len(self.upload.uploads), 1)
+        self.assertEqual(len(self.github.calls), 0)
+        self.assertEqual(len(self.upload.uploads), 0)
         self.assertEqual(len(self.notices), 1)
+        self.assertEqual(self.notices[0][1],2)
+        self.assertTrue(self.store.reconcile(result.case_key).balanced)
 
     def test_captioned_image_reply_cannot_be_dropped_as_chat_beside_ticket(self):
         p = self.pipeline(envelope(topic([1], verdict="noise", category="chat"), topic([2])))

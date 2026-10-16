@@ -138,6 +138,11 @@ class Config:
     attachments: AttachmentsConfig = field(default_factory=AttachmentsConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     console_revision: str = ""
+    thinking_enabled: bool = True
+    topic_memory_enabled: bool = False
+    autonomous_enabled: bool = False
+    context_quiet_seconds: int = 30
+    context_max_wait_seconds: int = 60
 
     def redacted(self) -> dict:
         result = asdict(self)
@@ -355,6 +360,22 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
                  "attachments.max_per_hour", 0),
         _integer(attachments_table.get("max_documents_per_case", default_attachments.max_documents_per_case),
                  "attachments.max_documents_per_case", 0))
+    topic_memory_enabled = _optional_table(data, 'thinking').get('topic_memory_enabled', False)
+    if type(topic_memory_enabled) is not bool:
+        raise ConfigError('thinking.topic_memory_enabled: expected boolean')
+    thinking_enabled = _optional_table(data, 'thinking').get('enabled', True)
+    if type(thinking_enabled) is not bool:
+        raise ConfigError('thinking.enabled: expected boolean')
+    autonomous_enabled = _optional_table(data, 'thinking').get('autonomous_enabled', False)
+    if type(autonomous_enabled) is not bool:
+        raise ConfigError('thinking.autonomous_enabled: expected boolean')
+    if autonomous_enabled and not thinking_enabled:
+        raise ConfigError('thinking.autonomous_enabled requires thinking.enabled')
+    thinking_table=_optional_table(data,'thinking')
+    context_quiet_seconds=_integer(thinking_table.get('context_quiet_seconds',30),'thinking.context_quiet_seconds',30)
+    context_max_wait_seconds=_integer(thinking_table.get('context_max_wait_seconds',60),'thinking.context_max_wait_seconds',30)
+    if not context_quiet_seconds<=context_max_wait_seconds<=60:
+        raise ConfigError('thinking: expected 30 <= context_quiet_seconds <= context_max_wait_seconds <= 60')
     return Config(
         mode=mode,
         telegram=TelegramConfig(
@@ -372,4 +393,9 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
         model=ModelConfig(provider, model_name, think, timeout, base_url, max_output, consent, key_file,
                          image_consent, fallback, fallback_model, fallback_think, pricing),
         console_revision=str(data.get("console", {}).get("revision", "")),
+        thinking_enabled=thinking_enabled,
+        topic_memory_enabled=topic_memory_enabled,
+        autonomous_enabled=autonomous_enabled,
+        context_quiet_seconds=context_quiet_seconds,
+        context_max_wait_seconds=context_max_wait_seconds,
     )

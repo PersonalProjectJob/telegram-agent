@@ -12,10 +12,9 @@ Assistant definition 12.13 (replaces the "must be tagged" gate of 12.11): a grou
   - it has a /command with content, or a message that tags the listener (forced, whatever the model said:
     a model "chat" or "unsure" gives a needs-human issue), or
   - the model calls it bug, task or feedback (feature included) with enough confidence (automatic).
-Everything else is kept in SQLite without calling GitHub or reacting: `chat` (talk with no work for the
-team; a question, even tagged or /question, is `chat`), `pending_review` (the model was not sure and
-nobody tagged or used a command) or `noise` (no letter at all, an empty command, or the safety block:
-a group that is only contact data or an acknowledgement).
+Uncertain work requests and model failures become needs-human issues and receive clarification replies
+in the source group without requiring a tag or command. Chat (including pure information questions)
+and noise stay in SQLite. A standalone photo without a request still waits as pending_review.
 
 Assistant definition 12.12: the model (with reasoning) judges chat / bug / task / feedback, and no
 keyword list decides it. Code keeps only the safety locks, in `_safety`: a structural block for groups
@@ -41,15 +40,17 @@ LOG = logging.getLogger(__name__)
 CASE_STATUS = {"noise": "noise", "chat": "chat", "pending_review": "pending_review",
                "rate_limited": "error", "error": "error", "case_open": "open", "followup": "done"}
 # Written by code (never by the model) into the "Cần làm rõ" section of a fallback ticket.
-FALLBACK_NOTE = "Agent không tách được chủ đề cho các tin này, cần người đọc và tách thủ công"
-VISION_NOTE = "Agent chưa đọc hoặc chưa xác định được ảnh thuộc yêu cầu nào. Owner vui lòng xác nhận ảnh liên quan và nội dung cần xử lý."
+FALLBACK_NOTE = ("Em không tách được chủ đề cho các tin này. "
+                 "Bạn muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?")
+VISION_NOTE = ("Em chưa đọc hoặc chưa xác định được ảnh thuộc yêu cầu nào. "
+               "Bạn muốn team xử lý phần nào trong ảnh và kết quả mong muốn là gì?")
 # When one window yields several outcomes, the most urgent one is reported as the window's.
 _RANK = {"error": 0, "rate_limited": 1, "issue": 2, "dry_run_issue": 2,
          "needs_human": 3, "dry_run_needs_human": 3, "pending_review": 4, "chat": 5, "noise": 6}
 # 12.11: groups kept in SQLite only; no GitHub call, no reaction.
 NO_TICKET_ACTIONS = ("noise", "chat", "pending_review")
 # Why a group did not become a ticket (stored per message, exported in the CSV `reason` column).
-REASON_PENDING_UNTAGGED = "pending_untagged"  # the model was not sure, nobody tagged or used a command
+REASON_AUTO_NEEDS_HUMAN = "auto_needs_human"  # uncertain work request or model failure, no tag required
 REASON_MODEL_CHAT = "model_chat"              # model: plain talk, nothing for the team
 REASON_FORCED_COMMAND = "forced_command"      # a /command with content: always an issue (12.13)
 REASON_FORCED_MENTION = "forced_mention"      # a message tags the listener: always an issue (12.13)
@@ -87,6 +88,7 @@ class Plan:
     fallback: bool = False         # no usable model judgment at all (model down, partition or JSON unusable)
     model_reason: str | None = None   # 12.12: the model's short why; stored for the reviewer only
     details: object = None          # 12.15: optional model fields, only passed to the renderer
+    related_issue_number: int | None = None  # host-proven replied ticket; never a model target
 
 
 def _order(item):
@@ -209,19 +211,27 @@ def _legacy_analysis(value, messages):
 
 class Pipeline:
     def __init__(self, config, store, classifier, github=None, *, timer=time.monotonic,
-                 uploader=None, downloader=None, reactor=None, notice_sender=None):
+                 uploader=None, downloader=None, reactor=None, notice_sender=None, notice_editor=None):
         self.config = config
         self.reactor = reactor
         self.notice_sender = notice_sender
+        self.notice_editor = notice_editor
         self.store = store
         self.classifier = classifier
         self.github = github
         self.timer = timer
         self._lock = threading.Lock()
         self._prepared_images = None
+        if config.autonomous_enabled:
+            self.store.enable_topic_registry()
+            self.store.enable_autonomy()
         self.attachments = AttachmentProcessor(
             config.attachments, store, repo=config.gh_repo,
             downloader=downloader, uploader=uploader)
+
+    def set_notice_editor(self, editor):
+        """Bounded edit of an explicitly recovered analysis notice; never a new send."""
+        self.notice_editor = editor
 
     def set_notice_sender(self, sender):
         """Existing Telegram loop supplies a bounded blocking plain-text sender."""
@@ -260,14 +270,28 @@ class Pipeline:
         with self._lock:
             return self._process(message)
 
-    def close_due_cases(self) -> list:
+    def close_due_cases(self,exclude_chat_ids=()) -> list:
         """Analyze every case whose window expired; returns the decisions made."""
         results = []
+        exclude_chat_ids=frozenset(exclude_chat_ids)
         aggregation = self.config.aggregation
         with self._lock:
+            from .followups import sweep
+            sweep(self,exclude_chat_ids=exclude_chat_ids) if exclude_chat_ids else sweep(self)
+            if self.config.autonomous_enabled:
+                from .autonomous import resume_case
+                for row in self.store.connection.execute("SELECT case_key,chat_id FROM cases WHERE status='open' ORDER BY id").fetchall():
+                    if row['chat_id'] in exclude_chat_ids:
+                        continue
+                    result=resume_case(self,row['case_key'])
+                    if result is not None:
+                        results.append(result)
+                return results
             due = self.store.due_cases(self.store.clock(), aggregation.window_minutes,
                                        aggregation.max_messages_per_case)
             for case_key in due:
+                if self.store.get_case(case_key)['chat_id'] in exclude_chat_ids:
+                    continue
                 start = self.timer()
                 try:
                     result = self._analyze_case(case_key, start)
@@ -290,6 +314,16 @@ class Pipeline:
                      "decision=duplicate issue_number=None latency_ms=0",
                      message.chat_id, message.message_id)
             return None
+        if self.config.autonomous_enabled:
+            from .autonomous import process
+            return process(self, message, start)
+        pending_context=self.store.pending_context_source(message)
+        source = self.store.followup_source(message) if pending_context is None else None
+        if source is not None:
+            from .followups import sweep
+            self.store.enqueue_followup(message, source)
+            sweep(self)
+            return Decision("followup", "model", case_key=source["case_key"])
         # One rule evaluation per message; the result is reused by the case analysis.
         rule_cache = {message.message_id: rules.evaluate(message.text)}
         rule = rule_cache[message.message_id]
@@ -297,7 +331,8 @@ class Pipeline:
         aggregation = self.config.aggregation
         assignment = self.store.assign_case(
             message, window_minutes=aggregation.window_minutes,
-            max_messages=aggregation.max_messages_per_case, is_command=is_command)
+            max_messages=aggregation.max_messages_per_case, is_command=is_command,
+            fresh=pending_context is not None)
         if assignment.followup:
             # Late message of a finished case: recorded on the case, never a second issue.
             return self._waiting(message, assignment, "followup", start)
@@ -305,7 +340,7 @@ class Pipeline:
         # usually follows in the next message (12.8: the image must reach the issue).
         lone_noise = (assignment.created and rule is not None and rule.type == "noise"
                       and not message.has_attachment)
-        due = (is_command or lone_noise or aggregation.window_minutes == 0
+        due = (is_command or lone_noise or pending_context is not None or aggregation.window_minutes == 0
                or assignment.message_count >= aggregation.max_messages_per_case)
         if not due:
             return self._waiting(message, assignment, "case_open", start)
@@ -442,12 +477,51 @@ class Pipeline:
         has_request = any(m.text.strip() for m in messages)
         question = any(rules.COMMAND.match(m.text) and
                        rules.COMMAND.match(m.text)[1].lower() == "question" for m in messages)
+        question = question or (group is not None and group.type == "question"
+                                and group.category in (None, "feedback"))
         return Plan(f"{first.chat_id}:{first.message_id}", messages, first, "model",
                     "chat" if question else "needs_human" if has_request else "pending_review",
                     clarify=(group.missing_info or (VISION_NOTE,)) if group is not None else (VISION_NOTE,),
                     text=(group.title, group.summary) if group is not None else None,
-                    reason="vision_needs_human" if group is not None else "vision_context_missing",
+                    reason=REASON_QUESTION if question else (
+                        "vision_needs_human" if group is not None else "vision_context_missing"),
                     fallback=group is None, model_reason=group.reason if group is not None else None)
+
+    def _vision_failure_plans(self, messages, reason):
+        """Only explicit reply-connected components share failure scope, never adjacency."""
+        by_id={m.message_id:m for m in messages}; parents={i:i for i in by_id}
+        def find(i):
+            while parents[i]!=i:
+                i=parents[i]
+            return i
+        for m in messages:
+            if m.reply_to_id in by_id:
+                parents[find(m.message_id)]=find(m.reply_to_id)
+        components={}
+        for m in messages:
+            components.setdefault(find(m.message_id),[]).append(m)
+        plans=[]
+        for members in components.values():
+            first=min(members,key=lambda m:m.message_id)
+            explicit=next((m for m in members if rules.is_command(m.text)
+                           and rules.evaluate(m.text).type!='noise'),None)
+            if explicit is not None:
+                visual=any(m.has_image for m in members)
+                questions=((VISION_NOTE,) if reason=='vision_pixels_unavailable' else
+                    ('Em chưa nhận được phân tích hợp lệ cho ảnh/nhóm tin này. Anh/Chị xác nhận phần cần xử lý giúp Em nhé?',)) if visual else ()
+                plans.append(self._safety(Plan(f'{first.chat_id}:{first.message_id}',members,first,'rule',
+                    'needs_human' if visual else 'issue',rules.evaluate(explicit.text),typed=True,clarify=questions)))
+                continue
+            if any(m.has_image for m in members):
+                plan=self._vision_fallback(members)
+                if reason!='vision_pixels_unavailable':
+                    plan=replace(plan,clarify=('Em chưa nhận được phân tích hợp lệ cho nhóm tin này. '
+                        'Anh/Chị xác nhận yêu cầu cần xử lý và các tin/ảnh thuộc cùng yêu cầu giúp Em nhé?',))
+                plans.append(replace(plan,reason=reason))
+            else:
+                plans.append(Plan(f'{first.chat_id}:{first.message_id}',members,first,'model','pending_review',
+                    reason='vision_partition_unresolved',clarify=(),fallback=True))
+        return plans
 
     def _noise_plan(self, item, value, reason, tier="rule"):
         return Plan(f"{item.chat_id}:{item.message_id}", [item], item, tier, "noise", value,
@@ -476,7 +550,7 @@ class Pipeline:
         3. A /command with content, or a tag from Telegram, FORCES an issue (`forced_command`,
            `forced_mention`): a model "chat" / "unsure" gives a `needs-human` issue, never a drop.
         4. Otherwise the model decides: bug / task / feedback with enough confidence is an issue
-           (`auto_*`); chat is `chat`; anything unsure is `pending_review` (`pending_untagged`).
+           (`auto_*`); chat is `chat`; uncertain requests need clarification (`auto_needs_human`).
         5. Safety block: a group with no product content (only contact data or an acknowledgement) is
            never an issue, even forced, unless it holds an explicit command with content.
         Every outcome except an issue keeps all messages in SQLite and is reconciled.
@@ -491,6 +565,8 @@ class Pipeline:
             REASON_FORCED_MENTION if _tagged(plan.messages) else None)
         if plan.action == "noise":
             return plan
+        if plan.action == "chat" and plan.reason == REASON_QUESTION:
+            return plan
         if (isinstance(value, Classification) and value.type == "question"
                 and plan.action in ("issue", "needs_human")):
             return self._set_aside(plan, "chat", REASON_QUESTION, replace(value, type="chat"))
@@ -500,9 +576,9 @@ class Pipeline:
                 return self._set_aside(plan, "chat", REASON_MODEL_CHAT, plan.classification)
             reason = self._auto_reason(plan)
             if reason is None:
-                return self._set_aside(plan, "pending_review", REASON_PENDING_UNTAGGED,
-                                       plan.classification)
-            candidate = replace(plan, reason=reason)
+                candidate = replace(plan, action="needs_human", reason=REASON_AUTO_NEEDS_HUMAN)
+            else:
+                candidate = replace(plan, reason=reason)
         elif plan.action in ("issue", "needs_human") and (not model_chat or explicit):
             # An explicit command keeps its own type even when the model said chat.
             candidate = replace(plan, reason=forced, chat_hint=False)
@@ -518,7 +594,12 @@ class Pipeline:
 
     def _plan(self, case_key, messages, first, cache):
         ordered = sorted(messages, key=_order)
-        if self._vision_unavailable(ordered):
+        from .thinking import CURRENT
+        explicit_vision = (getattr(self.classifier, 'supports_vision', False)
+                           or (CURRENT.get() and getattr(self.classifier, 'rejects_images', False)))
+        if CURRENT.get() and explicit_vision and all(m.has_image for m in ordered) and not any(m.text.strip() for m in ordered):
+            return self._vision_failure_plans(ordered,'image_without_request')
+        if self._vision_unavailable(ordered) and CURRENT.get() is None:
             return [self._vision_fallback(ordered)]
         if self._topics_call() is None:
             plan = self._plan_single(case_key, ordered, first, cache)
@@ -543,15 +624,19 @@ class Pipeline:
         if (len(rest) > size and any(m.has_image for m in rest)
                 and getattr(self.classifier, "supports_vision", False)):
             # Do not sever an image/request pair at an arbitrary model chunk boundary.
-            return plans + [self._vision_fallback(rest)]
+            return plans + (self._vision_failure_plans(rest,'vision_window_exceeded') if CURRENT.get()
+                            else [self._vision_fallback(rest)])
         for start in range(0, len(rest), size):
             plans.extend(self._plan_chunk(rest[start:start + size], cache))
         plans.sort(key=lambda plan: plan.first.message_id)
         return plans
 
     def _plan_chunk(self, chunk, cache):
+        from .thinking import CURRENT
+        thinking=CURRENT.get() is not None
         has_images = any(m.has_image for m in chunk)
-        vision = has_images and getattr(self.classifier, "supports_vision", False)
+        vision = has_images and (getattr(self.classifier, "supports_vision", False)
+                                or (thinking and getattr(self.classifier,'rejects_images',False)))
         if vision and not any(m.text.strip() for m in chunk):
             return [self._vision_fallback(chunk)]
         if len(chunk) == 1:
@@ -566,6 +651,41 @@ class Pipeline:
                                               "issue", rule, typed=True, clarify=()))]
         by_id = {item.message_id: item for item in chunk}
         groups = self._split(chunk)
+        if vision and thinking:
+            if groups is None:
+                reason=CURRENT.get().reason or ('vision_pixels_unavailable' if self._vision_unavailable(chunk)
+                                               else 'vision_analysis_unavailable')
+                return self._vision_failure_plans(chunk,reason)
+            # Valid partition is semantic evidence. Uncertainty remains scoped to each
+            # affected group, preserving independent chat/task groups and their wording.
+            plans=[]
+            ownership={mid:i for i,g in enumerate(groups) for mid in g.message_ids}
+            affected=set()
+            for m in chunk:
+                if (m.reply_to_id in by_id and ownership[m.message_id]!=ownership[m.reply_to_id]
+                        and (m.has_image or by_id[m.reply_to_id].has_image)
+                        and any(groups[ownership[i]].verdict in ('ticket','needs_human')
+                                for i in (m.message_id,m.reply_to_id))):
+                    affected.update((ownership[m.message_id],ownership[m.reply_to_id]))
+            if affected:
+                selected=[m for m in chunk if ownership[m.message_id] in affected]
+                plans.extend(self._vision_failure_plans(selected,'vision_reply_scope_conflict'))
+            for index,group in enumerate(groups):
+                if index in affected:
+                    continue
+                selected=[by_id[i] for i in group.message_ids]
+                if any(m.has_image for m in selected) and not any(m.text.strip() for m in selected):
+                    plans.append(replace(self._vision_fallback(selected),reason='image_without_request'))
+                elif any(m.has_image for m in selected) and self._vision_unavailable(selected):
+                    # Provider received explicit unavailable-pixel markers; retain caption
+                    # semantics/known facts and pure-question intent, never invent a pixel read.
+                    plan=self._safety(self._plan_group(by_id,group,cache))
+                    plans.append(replace(plan,reason='vision_caption_only') if plan.action!='chat' else plan)
+                else:
+                    plan=self._safety(self._plan_group(by_id,group,cache))
+                    plans.append(replace(plan,reason='vision_needs_human') if plan.action=='needs_human'
+                                 and any(m.has_image for m in selected) else plan)
+            return plans
         if vision and groups is not None and len(groups) == 1 and groups[0].verdict == "needs_human":
             # A valid whole-case visual judgment is uncertainty, not a transport/partition
             # failure. Preserve its questions and wording, with normal output sanitization.
@@ -588,6 +708,7 @@ class Pipeline:
                 for g in groups) and any(g.verdict in ("ticket", "needs_human") for g in groups)
         if vision and (groups is None or any(
                 any(by_id[i].has_image for i in g.message_ids)
+                and not (g.type == "question" and g.category in (None, "feedback"))
                 and (g.verdict == "needs_human" or not any(by_id[i].text.strip() for i in g.message_ids))
                 for g in groups) or split_image_reply or dropped_image_beside_ticket):
             return [self._vision_fallback(chunk)]
@@ -617,8 +738,7 @@ class Pipeline:
                 value = Classification(rule.type, 1.0, source.title, source.summary,
                                        source.priority if usable else rule.priority)
                 needs = group.verdict == "needs_human" or bool(missing)
-                # 12.11 point 7: the command still goes through the category gate; a model that
-                # calls the group chat sends it to pending_review (never silently dropped).
+                # Explicit commands preserve their type; missing context needs clarification.
                 return Plan(key, messages, first, "rule", "needs_human" if needs else "issue", value,
                             typed=True, clarify=missing, text=(value.title, value.summary),
                             chat_hint=group.category == "chat", fallback=fallback,
@@ -634,6 +754,9 @@ class Pipeline:
         elif category is None and group.type in TICKET_TYPES and not question:
             group = replace(group, type=canonical_category(group.type))   # legacy answer: fold feature
         action, value = decide_group(group, self.config.ollama.confidence_threshold)
+        if question:
+            return Plan(key, messages, first, "model", "chat", _chat_value(wording),
+                        clarify=(), reason=REASON_QUESTION, model_reason=group.reason)
         if category == "chat" and group.verdict != "needs_human":
             # Plain talk with nothing for the team (12.11); a tag is judged later, by `_safety`.
             return Plan(key, messages, first, "model", "chat", _chat_value(wording), clarify=(),
@@ -656,6 +779,11 @@ class Pipeline:
         if reason == "rule_noise" and any(rules.is_command(item.text) for item in ordered):
             reason = REASON_SAFETY_BLOCK   # an empty command
         category = analysis.category if analysis is not None else None
+        wording = analysis.classification if analysis is not None else None
+        if (tier == "model" and isinstance(wording, Classification)
+                and wording.type == "question" and category in (None, "feedback")):
+            return Plan(case_key, ordered, first, tier, "chat", _chat_value(wording),
+                        clarify=(), reason=REASON_QUESTION, model_reason=analysis.reason)
         chat = category == "chat" and tier == "model"
         if chat and action == "noise":
             action, reason = "chat", REASON_MODEL_CHAT
@@ -667,6 +795,8 @@ class Pipeline:
         unusable = action == "needs_human" and classification is None and not unsure
         missing = analysis.missing_info if analysis is not None and tier == "model" else ()
         clarify, typed, text = (missing if missing else None), False, None
+        if action == "needs_human" and isinstance(wording, Classification):
+            text = (wording.title, wording.summary)
         if missing and action == "issue":
             # 12.9: a confident ticket that still lacks information is a needs-human ticket with questions.
             action, typed, clarify = "needs_human", True, missing
@@ -688,6 +818,9 @@ class Pipeline:
         if plan.action in NO_TICKET_ACTIONS:
             # noise / chat / pending_review: stored and reconciled, never sent, never reacted to.
             self.store.finish(first, result)
+            if plan.reason=='vision_partition_unresolved' and self.config.mode!='dry-run':
+                group_notices.notify(self.store,self.notice_sender,first,
+                    replace(result,decision='context_pending'),(),self.config.gh_repo)
             return result
         self._acknowledge(plan)   # ticket / needs_human, live or dry-run, before any issue
         if self.config.mode == "dry-run":
@@ -709,11 +842,16 @@ class Pipeline:
                 case_messages=plan.messages, key_message_ids=plan.key_ids, images=found.images,
                 documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
                 max_quoted=len(plan.messages), details=plan.details if plan.details is not None else {})
+            if type(plan.related_issue_number) is int and plan.related_issue_number>0:
+                issue=replace(issue,body=issue.body+f'\n\nTicket liên quan: https://github.com/{self.config.gh_repo}/issues/{plan.related_issue_number}\n')
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)
             else:
                 number, url = self.github.create_issue(issue)
+                if type(number) is not int or number<=0:
+                    raise ValueError('Unverified created issue result')
+                url=f'https://github.com/{self.config.gh_repo}/issues/{number}'
                 result = replace(result, issue_number=number, issue_url=url,
                                  reaction_message_id=first.message_id,
                                  reaction_message_ids=(first.message_id,), images=len(found.images),
@@ -725,6 +863,15 @@ class Pipeline:
             result = replace(result, decision="error", classification=None, error=diagnostic,
                              reaction_message_id=None, reaction_message_ids=())
         self.store.finish(first, result)
+        if result.issue_number is not None:
+            projection=None
+            if plan.classification is not None and plan.classification.is_valid():
+                c=plan.classification
+                projection=dict(type=c.type,confidence=c.confidence,title=c.title,summary=c.summary,priority=c.priority,
+                    category=c.type,actionable=plan.action=='issue',verdict='ticket' if plan.action=='issue' else 'needs_human',
+                    key_message_ids=list(plan.key_ids),missing_info=list(plan.clarify or ()),details=dict(plan.details or ()))
+            self.store.register_managed_issue(first,plan.key,case_key,result.issue_number,self.config.gh_repo,
+                                             issue,projection,[m.message_id for m in plan.messages],found.images,found.documents)
         group_notices.notify(self.store, self.notice_sender, first, result, plan.clarify,
                              self.config.gh_repo)
         return result
@@ -745,6 +892,12 @@ class Pipeline:
             reaction_message_id=targets[0] if targets else None, reaction_message_ids=targets)
 
     def _analyze_case(self, case_key, start, trigger=None, rule_cache=None):
+        from .thinking import decision_turn
+        with decision_turn(self, 'case:'+case_key, case_key,
+                           trigger.message_id if trigger else int(case_key.rsplit(':',1)[-1])):
+            return self._analyze_case_inner(case_key,start,trigger,rule_cache)
+
+    def _analyze_case_inner(self, case_key, start, trigger=None, rule_cache=None):
         if not self.store.begin_analysis(case_key):
             return None  # another caller owns this case; one case is analyzed once
         messages = self.store.case_messages(case_key)
@@ -761,6 +914,14 @@ class Pipeline:
                     and getattr(self.classifier, "supports_vision", False)):
                 self._prepared_images = self.attachments.prepare_images(case_key, messages)
             plans = self._plan(case_key, messages, first, rule_cache if rule_cache is not None else {})
+            from .thinking import CURRENT, preflight_initial
+            turn = CURRENT.get()
+            if turn:
+                preflight_initial(plans,messages)
+                turn.record('initial_partition',dict(source_ids=[m.message_id for m in messages],
+                    reply_edges=[dict(source_id=m.message_id,reply_to_id=m.reply_to_id,sender_id=m.sender_id) for m in messages]),
+                    proposed_plan=[dict(ids=[m.message_id for m in p.messages],reply_to=p.first.message_id,action=p.action) for p in plans],
+                    hypotheses=[dict(type=p.classification.type,confidence=p.classification.confidence) for p in plans if p.classification])
             # The whole partition is stored before anything is sent: a message belongs to one group.
             self.store.plan_groups(case_key, [(plan.key, [item.message_id for item in plan.messages])
                                               for plan in plans])
@@ -768,6 +929,11 @@ class Pipeline:
             result = self._combine(case_key, results)
             result = replace(result, latency_ms=max(0, int((self.timer() - start) * 1000)))
             tally = self.store.close_case(case_key, result, result.latency_ms)
+            if turn:
+                turn.record('initial_result',dict(source_ids=[m.message_id for m in messages],
+                    results=[dict(reply_to=p.first.message_id,issue_number=r.issue_number,decision=r.decision) for p,r in zip(plans,results)]),
+                    status=('verified' if tally.balanced and all(r.decision not in ('error','rate_limited') for r in results)
+                            else 'accounting_verified' if tally.balanced else 'unbalanced'))
         except Exception as error:
             # An unexpected failure must not leave the window `analyzing` with groups half done.
             try:

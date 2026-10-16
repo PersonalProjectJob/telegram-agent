@@ -1,9 +1,17 @@
 # Engineering: Tách tg-triage và NailHub thành 2 service độc lập
 
+<!-- telegram-triage-historical -->
+> **Trạng thái hiện hành riêng phần service split:** listener và NailHub đã được tách triển khai; quan sát chỉ đọc 2026-10-15 cho thấy cả hai service hoạt động độc lập. Draft/chưa code và chờ split phía dưới là trạng thái lịch sử. Xem [guarded deployment](../../deploy/README.md) và [listener operations](../../listener/README.md) cho đường dẫn/service hiện hành. Không coi ghi chú này là thay đổi nghiệp vụ NailHub.
+> **Telegram triage — phần lịch sử/đề xuất:** mô tả nghiệp vụ triage trong tài liệu này không còn là nguồn hiện hành. Xem [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) cho bản đã triển khai baseline `9746ef2`. Các kế hoạch Fleet/worker ngoài triage, sign-off, incident và số đo cũ được giữ nguyên; không coi đề xuất là chức năng đã chạy.
+
+
 ## Metadata
+- **Last Updated**: 2026-10-15 21:15 (Asia/Saigon)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 - **Feature ID**: 1 (ticket nội bộ)
 - **Created**: 2026-10-13
-- **Version**: v1.0.0
+- **Version**: v1.0.2
 - **Author**: AlexChu (Claude Code)
 - **Status**: Draft, chờ duyệt. Chưa code.
 - **Liên quan**: `worker-agent-fleet-1_assistant-definition_261012_v1.0.0.md` (§12.15), `nailhub-postings-noissue_engineering_261012_v1.0.0.md` (trong main checkout, chưa commit), quyết định `D-024`.
@@ -11,6 +19,8 @@
 ---
 
 ## 1. Bối cảnh và sự cố
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 Hai feat đang chạy chung trên THINKPAD trong cùng một package `tg_triage`, cùng venv `/opt/agentfleet/listener/.venv` và cùng service `tg-triage`:
 
@@ -29,6 +39,8 @@ Hai feat đang chạy chung trên THINKPAD trong cùng một package `tg_triage`
 
 ## 2. Mục tiêu
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 1. Hai service systemd độc lập: `tg-triage.service` (listener) và `tg-nailhub.service` (NailHub). Restart hay deploy một bên không đụng file, venv hay process của bên kia.
 2. Hai package Python, hai venv, hai script deploy. Mỗi script chỉ cài và kiểm package của nó, và **từ chối chạy** nếu venv đích chứa module không thuộc package đó.
 3. Mỗi bên có nhánh và lịch sử riêng, bản cài luôn ứng với đúng một commit.
@@ -37,7 +49,11 @@ Không thuộc phạm vi: đổi logic triage, đổi logic đăng bài NailHub.
 
 ## 3. Thiết kế
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 ### 3.1 Code trong repo
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 | Thành phần | Hiện tại | Sau khi tách |
 |---|---|---|
@@ -50,12 +66,16 @@ NailHub không import `tg_triage`, listener không import `nailhub`. Có test ki
 
 ### 3.2 Telegram: session thứ hai (đã chốt)
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 - NailHub chạy Telethon client riêng, session `/var/lib/agentfleet/nailhub/nailhub.session`, dùng cùng tài khoản và cùng `TG_API_ID`/`TG_API_HASH`.
 - Owner đăng nhập một lần bằng lệnh tương tác (nhập mã Telegram) khi cài lần đầu. Agent không nhập mã thay.
 - NailHub chỉ nhận **lệnh của Owner** (giữ nguyên `verify_owner`), không đọc tin nhóm để triage. Listener bỏ nhánh `route_command`.
 - File mẫu `systemd/tg-triage-nailhub.conf.example` đang ghi *"Do NOT run a second Telegram process/session"*. Quyết định này **được thay** bởi D-024. Phải sửa file mẫu cho khớp.
 
 ### 3.3 Chia CPU cho model giữa hai process
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 Hiện `MODEL_GATE` bảo đảm mỗi lúc chỉ một lời gọi Ollama, và triage được ưu tiên hơn NailHub. Khoá này chỉ có hiệu lực trong một process, nên khi tách phải thay bằng cơ chế khác:
 
@@ -66,6 +86,8 @@ Hiện `MODEL_GATE` bảo đảm mỗi lúc chỉ một lời gọi Ollama, và 
 Lý do bắt buộc: `think = true` đã bật từ 17:14. Một lời gọi triage có thể mất tới 600 giây. Không có khoá thì hai process gọi Qwen song song trên CPU và cả hai cùng chậm.
 
 ### 3.4 Trên THINKPAD
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 | | tg-triage | tg-nailhub |
 |---|---|---|
@@ -78,6 +100,8 @@ Lý do bắt buộc: `think = true` đã bật từ 17:14. Một lời gọi tri
 
 ### 3.5 Script deploy
 
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
+
 Mỗi bên có `deploy/<service>.py`, cùng một khuôn:
 1. Kiểm wheel khớp mã nguồn của **commit đang deploy** (ghi hash commit vào kết quả).
 2. Chạy test của package bằng venv đích.
@@ -86,6 +110,8 @@ Mỗi bên có `deploy/<service>.py`, cùng một khuôn:
 5. Kiểm service của mình **và** service kia vẫn active, NRestarts không đổi.
 
 ### 3.6 Bổ sung sau review (v1.0.1, Owner chốt 2026-10-13)
+
+> Phạm vi triage tại mục này là snapshot/đề xuất cũ: [quy tắc hiện hành](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md). Không áp lại gate phải tag, chỉ reaction, local-only, /question→issue, quota comment hoặc late-reply→comment từ snapshot này.
 
 Lý do bổ sung: `nx-reviewer` trả CHANGES_NEEDED và `nx-verifier` trả FAIL cho bản code đầu tiên.
 
@@ -135,3 +161,9 @@ Lý do bổ sung: `nx-reviewer` trả CHANGES_NEEDED và `nx-verifier` trả FAI
 |---------|------|------|--------|---------|
 | v1.0.0 | 2026-10-13 | 17:40 | AlexChu (Claude Code) | Bản đầu: sự cố 13/10, thiết kế 2 service, khoá model liên process, session Telethon thứ 2, thứ tự thực hiện |
 | v1.0.1 | 2026-10-13 | — | AlexChu (Claude Code) | §3.6 sau review: backup sau stop, rollback chỉ code+config, kiểm NRestarts=0 sau start, chốt chặn thêm file bị gỡ khỏi RECORD, NailHub exit 1 khi Owner chưa xác minh + dòng ready, `ignored_command_prefixes`, thứ tự cutover không làm sập triage |
+
+## Changelog chuẩn hóa Telegram triage
+
+| Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
+|---|---|---|---|
+| v1.0.2 | 2026-10-15 21:12 | Codex / owner AlexChu | Gắn nhãn snapshot/đề xuất, thêm đối chiếu nguồn TG-01..TG-32; giữ lịch sử và sign-off. |

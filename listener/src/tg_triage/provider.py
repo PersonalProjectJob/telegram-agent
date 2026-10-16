@@ -100,13 +100,33 @@ class CloudProvider(OllamaProvider):
         """OpenAI-style messages: contact text redacted, images as inline data: parts; None when an
         image cannot be sent as a known type."""
         from .ai_transport import redact
+        from .thinking import ContextJSON
+        def content_for_cloud(message):
+            content=message['content']
+            if message.get('role')=='user' and isinstance(content,ContextJSON):
+                try:
+                    packet=json.loads(content)
+                except (ValueError,TypeError):
+                    packet=None
+                if isinstance(packet,dict) and (
+                        ('source_ids' in packet and 'sources' in packet)
+                        or ('REPLY' in packet and 'ORIGINAL_METADATA' in packet)
+                        or ('confirmed_requests' in packet and 'unresolved' in packet)):
+                    def clean(value):
+                        if isinstance(value,str):return redact(value)
+                        if isinstance(value,list):return [clean(v) for v in value]
+                        if isinstance(value,dict):return {k:clean(v) for k,v in value.items()}
+                        return value
+                    return json.dumps(clean(packet),ensure_ascii=False,separators=(',',':'))
+            return redact(content)
         result = []
         for message in messages:
+            content=content_for_cloud(message)
             images = message.get("images")
             if not images:
-                result.append(dict(message, content=redact(message["content"])))
+                result.append(dict(message, content=content))
                 continue
-            parts = [{"type": "text", "text": redact(message["content"])}]
+            parts = [{"type": "text", "text": content}]
             for encoded in images:
                 mime = _image_mime(encoded)
                 if mime is None:
@@ -131,6 +151,11 @@ class CloudProvider(OllamaProvider):
                 return result
         if self._fallback is None:
             return None
+        from .thinking import CURRENT
+        turn = CURRENT.get()
+        if turn and turn.calls >= 2:
+            turn.reason = 'model_call_budget_exhausted'
+            return None
         local = dict(body, model=c.fallback_model, think=c.fallback_think,
                      options=dict(body.get("options", {})))
         return self._fallback._ask(local, parse, attempts)
@@ -138,6 +163,11 @@ class CloudProvider(OllamaProvider):
     def _ask_cloud(self, body, parse, attempts):
         from .ai_transport import complete, read_key, ProviderError
         from .model_lock import MODEL_LOCK, LockUnavailable
+        from .model_lock import LockStopped
+        from .thinking import CURRENT, BudgetExhausted
+        turn = CURRENT.get()
+        if turn:
+            from .thinking_transport import complete
         c = self.model_config
         messages = self._cloud_messages(body["messages"])
         if messages is None:
@@ -148,19 +178,38 @@ class CloudProvider(OllamaProvider):
         except ProviderError as error:
             self._record(error.code, {}, started)
             return None
-        for _ in range(attempts):
+        # Format failure gets one same-host validation retry before changing provider.
+        # The shared Turn remains the authority for actual calls and the deadline.
+        for _ in range(max(attempts, 2) if turn else attempts):
+            try:
+                timeout = turn.attempt(body,consume=False) if turn else c.timeout_seconds
+            except BudgetExhausted:
+                return None
             usage, outcome, result = {}, "ok", None
             try:
-                with MODEL_LOCK.enter():
+                with MODEL_LOCK.enter(**({'stop': turn} if turn else {})):
+                    if turn:
+                        timeout = turn.attempt(body)
+                        if timeout <= 0:
+                            turn.reason = 'decision_deadline_exhausted'
+                            return None
                     started = time.monotonic()   # latency excludes the wait for the model lock
                     value = complete(c.provider, c.base_url, c.name, messages, body["format"], key=key,
-                                     timeout=c.timeout_seconds, max_output=c.max_output,
+                                     timeout=timeout, max_output=min(c.max_output,body.get('_narrow_output',8192) if turn else 8192),
                                      usage_sink=usage.update)
                 result = parse(json.dumps(value))
                 if result is None:
                     outcome = "invalid_output"
             except ProviderError as error:
                 outcome = error.code
+            except LockStopped:
+                if turn:
+                    turn.reason = 'decision_deadline_exhausted'
+                outcome = None
+                return None
+            except BudgetExhausted:
+                outcome = None
+                return None
             except LockUnavailable:
                 outcome = None   # no model call was made
                 return None
@@ -169,6 +218,6 @@ class CloudProvider(OllamaProvider):
                     self._record(outcome, usage, started)
             if result is not None:
                 return result
-            if outcome != "invalid_output":
+            if outcome not in (("invalid_output", "invalid_json") if turn else ("invalid_output",)):
                 return None
         return None

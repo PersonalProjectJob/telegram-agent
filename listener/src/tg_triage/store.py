@@ -9,6 +9,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import IncomingMessage
+from .followup_store import FollowupStoreMixin
+from .topic_store import TopicStoreMixin
+from .autonomy_store import AutonomyStoreMixin
 from .config import ConfigError
 
 USAGE_RETENTION_DAYS = 90
@@ -96,10 +99,11 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
-class Store:
+class Store(FollowupStoreMixin, TopicStoreMixin, AutonomyStoreMixin):
     """One service owns a database; a lock allows sequential thread offloading."""
 
     def __init__(self, path, *, clock=utc_now, recover_pending=True, read_only=False):
+        self._read_only = read_only
         self.clock = clock
         self._lock = threading.RLock()
         self._usage_pruned_at = 0.0
@@ -215,6 +219,9 @@ class Store:
                     UPDATE messages SET github_called_at = COALESCE(processed_at, received_at)
                     WHERE decision IN ('issue', 'needs_human', 'error', 'pending')
                 """)
+            self.init_followups(recover_pending)
+            from .thinking import init_store
+            init_store(self)
             if recover_pending:
                 self._recover_cases()
                 self.connection.execute("""
@@ -254,11 +261,22 @@ class Store:
     def group_notice_reply_target(self, chat_id, reply_to_id):
         """Map replies to our outgoing notice back to the group's original message."""
         with self._lock:
+            episode=self.connection.execute('''SELECT e.anchor_message_id FROM group_notices n
+                JOIN followup_jobs j ON j.chat_id=n.chat_id AND j.message_id=n.message_id
+                JOIN followup_episodes e ON e.job_id=j.id AND e.chat_id=n.chat_id
+                WHERE n.chat_id=? AND n.notice_message_id=? AND n.status='sent'
+                ORDER BY e.created_at DESC LIMIT 1''',(chat_id,reply_to_id)).fetchone()
+            if episode:
+                return episode[0]
             row = self.connection.execute("""
                 SELECT message_id FROM group_notices
                 WHERE chat_id=? AND notice_message_id=? AND status='sent'
             """, (chat_id, reply_to_id)).fetchone()
-            return row[0] if row else reply_to_id
+            if row:
+                return row[0]
+            if getattr(self,'_autonomy_enabled',False):
+                return self.autonomy_notice_reply_target(chat_id,reply_to_id)
+            return reply_to_id
 
     def record_model_usage(self, ts, provider, model, role, outcome, prompt_tokens=0,
                            completion_tokens=0, cache_hit_tokens=0, latency_ms=0, cost=0.0):
@@ -427,6 +445,7 @@ class Store:
                     self._finish_group(row["group_key"], message, result, fields)
                 elif row["case_key"] is not None:
                     self._finish_case(row["case_key"], message, result, fields)
+                self.project_topics(message.chat_id, row["case_key"])
 
     def _finish_group(self, group_key, message, result, fields):
         """Close one topic group and mirror its outcome onto the group's unfinished messages."""
@@ -565,7 +584,7 @@ class Store:
                     WHERE case_key=? AND decision NOT IN ('error', 'followup')
                 """, (row["case_key"],))
 
-    def assign_case(self, message, *, window_minutes, max_messages, is_command=False) -> CaseAssignment:
+    def assign_case(self, message, *, window_minutes, max_messages, is_command=False, fresh=False) -> CaseAssignment:
         """Attach a message to exactly one case, atomically and idempotently.
 
         Rules (12.1): a reply joins the case of the replied message; otherwise, when
@@ -580,10 +599,10 @@ class Store:
                 case = self._case(row["case_key"])
                 return CaseAssignment(case["case_key"], case["first_message_id"], False,
                                       row["decision"] == "followup", case["message_count"])
-            notice = self._notice_followup(message)
+            notice = self._notice_followup(message) if not fresh else None
             if notice is not None:
                 return notice
-            target = self._find_case(message, window_minutes, max_messages, is_command)
+            target = self._find_case(message, window_minutes, max_messages, is_command) if not fresh else None
             created = target is None
             if created:
                 key = f"{message.chat_id}:{message.message_id}"
@@ -641,7 +660,7 @@ class Store:
             FROM group_notices n
             JOIN messages m ON m.chat_id=n.chat_id AND m.message_id=n.message_id
             JOIN cases c ON c.case_key=m.case_key
-            WHERE n.chat_id=? AND n.status='sent'
+            WHERE n.chat_id=? AND n.status='sent' AND n.kind!='context_pending'
               AND (n.message_id=? OR n.notice_message_id=?)
         """, (message.chat_id, message.reply_to_id, message.reply_to_id)).fetchone()
         if source is None:
@@ -660,6 +679,20 @@ class Store:
               self.clock().isoformat(), message.chat_id, message.message_id))
         return CaseAssignment(source["case_key"], source["first_message_id"], False, True,
                               source["message_count"] + 1)
+
+    def pending_context_source(self, message):
+        """Exact same-chat pending clarification, never a ticket/foreign root permission."""
+        if message.reply_to_id is None:
+            return None
+        with self._lock:
+            row=self.connection.execute('''SELECT m.* FROM messages m JOIN group_notices n
+                ON n.chat_id=m.chat_id AND n.message_id=m.message_id AND n.status='sent'
+                AND n.kind='context_pending'
+                WHERE m.chat_id=? AND m.decision='pending_review' AND m.issue_number IS NULL AND m.issue_url IS NULL
+                AND m.reason='vision_partition_unresolved'
+                AND (m.message_id=? OR n.notice_message_id=?) LIMIT 1''',
+                (message.chat_id,message.reply_to_id,message.reply_to_id)).fetchone()
+            return dict(row) if row else None
 
     def _find_case(self, message, window_minutes, max_messages, is_command):
         if message.reply_to_id is not None:
@@ -734,6 +767,8 @@ class Store:
                     """, (group_key, case["chat_id"], message_id, case_key))
                     if cursor.rowcount != 1:
                         raise ValueError("message not available for this group")
+
+            self.project_topics(case["chat_id"], case_key)
 
     def get_group(self, group_key):
         with self._lock:
@@ -849,7 +884,7 @@ class Store:
                 SELECT COUNT(*) FROM messages WHERE github_called_at IS NOT NULL
                 AND julianday(github_called_at) >= julianday(?)
             """, ((now - timedelta(minutes=60)).isoformat(),)).fetchone()
-            return row[0]
+            return row[0] + self.followup_create_count(now)
 
     def export_csv(self, out):
         with self._lock:

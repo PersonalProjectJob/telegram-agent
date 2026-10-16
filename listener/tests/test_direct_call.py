@@ -83,7 +83,7 @@ class Test37To42(GateBase):
         self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("issue", "auto_task"))
         self.assertEqual((len(self.github.calls), beats.calls), (1, [(CHAT, 1, HEART)]))
 
-    def test_37_untagged_task_or_feedback_below_the_threshold_waits_for_review(self):
+    def test_37_untagged_task_or_feedback_below_the_threshold_asks_for_clarification(self):
         for category in ("task", "feedback"):
             with self.subTest(category=category):
                 self.setUp()
@@ -91,8 +91,9 @@ class Test37To42(GateBase):
                 self.run_window((INVITE,), (topic([1], type=category, category=category, confidence=0.5),),
                                 beats=beats)
                 self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]),
-                                 ("pending_review", "pending_untagged"))
-                self.assertEqual((self.github.calls, beats.calls), ([], []))
+                                 ("needs_human", "auto_needs_human"))
+                self.assertEqual((len(self.github.calls), beats.calls), (1, [(CHAT, 1, HEART)]))
+                self.assertEqual(self.github.calls[0].labels, ("needs-human", "source:telegram"))
 
     def test_37_untagged_feedback_is_an_automatic_issue(self):
         self.run_window(("nên thêm nút xuất Excel ở màn báo cáo",),
@@ -126,19 +127,20 @@ class Test37To42(GateBase):
         self.assertEqual(results[0].reaction_message_ids, (1,))
         self.assertFalse(row["mentions_listener"])
 
-    def test_39_a_bug_without_a_tag_below_the_threshold_waits_for_review_and_is_in_the_csv(self):
+    def test_39_a_bug_without_a_tag_below_the_threshold_asks_for_clarification_and_is_in_the_csv(self):
         beats = Beats()
         self.run_window((REAL_BUG,), (topic([1], type="bug", category="bug", confidence=0.6),), beats=beats)
         row = self.row(1)
         self.assertEqual((row["decision"], row["reason"], row["type"]),
-                         ("pending_review", "pending_untagged", "bug"))
-        self.assertEqual((self.github.calls, beats.calls, row["issue_number"]), ([], [], None))
+                         ("needs_human", "auto_needs_human", "bug"))
+        self.assertEqual((len(self.github.calls), beats.calls, row["issue_number"]), (1, [(CHAT, 1, HEART)], 101))
+        self.assertEqual(self.github.calls[0].labels, ("needs-human", "source:telegram"))
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory) / "review.csv"
             self.store.export_csv(out)
             rows = list(csv.DictReader(io.StringIO(out.read_text(encoding="utf-8-sig"))))
         self.assertEqual([(item["decision"], item["reason"], item["type"], item["mentions_listener"])
-                          for item in rows], [("pending_review", "pending_untagged", "bug", "0")])
+                          for item in rows], [("needs_human", "auto_needs_human", "bug", "0")])
         self.assertEqual(rows[0]["text"], REAL_BUG)
 
     def test_39_an_automatic_bug_in_dry_run_is_hearted_but_never_ok_handed(self):
@@ -271,8 +273,8 @@ class Test37To42(GateBase):
              topic([3], type="bug", category="bug", confidence=0.5)),   # 12.13: an unsure untagged bug waits
             mode="dry-run", tagged=(1,), beats=beats)
         self.assertEqual(self.github.calls, [])
-        self.assertEqual(self.decisions(1, 2, 3), ["dry_run_issue", "chat", "pending_review"])
-        self.assertEqual(beats.calls, [(CHAT, 1, HEART)])    # only the ticket group is hearted
+        self.assertEqual(self.decisions(1, 2, 3), ["dry_run_issue", "chat", "dry_run_needs_human"])
+        self.assertEqual(beats.calls, [(CHAT, 1, HEART), (CHAT, 3, HEART)])
         self.assertEqual(results[0].reaction_message_ids, ())  # dry-run: never an OK hand
         self.assertEqual(self.numbers(1, 2, 3), [None] * 3)
 
@@ -312,10 +314,10 @@ class WorkerReactionGate(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await advancer
-        self.assertEqual(len(github.calls), 1)
-        self.assertEqual(send.calls, [(CHAT, 1, HEART), (CHAT, 1, OK)])
+        self.assertEqual(len(github.calls), 2)
+        self.assertEqual(send.calls, [(CHAT, 1, HEART), (CHAT, 3, HEART), (CHAT, 1, OK), (CHAT, 3, OK)])
         self.assertEqual([store.get(CHAT, i)["decision"] for i in (1, 2, 3)],
-                         ["issue", "chat", "pending_review"])
+                         ["issue", "chat", "needs_human"])
 
 
 class CategoryMappingTests(GateBase):
@@ -449,10 +451,10 @@ class ChatAndReviewStateTests(GateBase):
         self.assertEqual((len(self.github.calls), self.decisions(1)), (1, ["needs_human"]))
         self.assertEqual(self.row(1)["reason"], "forced_mention")
 
-    def test_an_untagged_group_below_the_confidence_threshold_waits_for_review(self):
+    def test_an_untagged_group_below_the_confidence_threshold_asks_for_clarification(self):
         self.run_window((REAL_BUG,), (topic([1], category="bug", confidence=0.4),))
-        self.assertEqual((self.github.calls, self.decisions(1)), ([], ["pending_review"]))
-        self.assertEqual(self.row(1)["reason"], "pending_untagged")
+        self.assertEqual((len(self.github.calls), self.decisions(1)), (1, ["needs_human"]))
+        self.assertEqual(self.row(1)["reason"], "auto_needs_human")
 
     def test_a_tagged_ticket_that_only_misses_information_is_still_a_ticket(self):
         self.run_window((REAL_BUG,), (topic([1], category="bug", missing_info=("Máy nào?",)),),
@@ -466,9 +468,9 @@ class ChatAndReviewStateTests(GateBase):
         self.assertEqual(self.decisions(1), ["needs_human"])
         self.assertEqual(len(self.github.calls), 1)
 
-    def test_a_failed_model_without_a_tag_waits_for_review(self):
+    def test_a_failed_model_without_a_tag_asks_for_clarification(self):
         self.run_window((REAL_BUG,), (RuntimeError("offline"), RuntimeError("offline")))
-        self.assertEqual((self.decisions(1), self.github.calls), (["pending_review"], []))
+        self.assertEqual((self.decisions(1), len(self.github.calls)), (["needs_human"], 1))
 
     def test_reconciliation_counts_every_state_and_balances(self):
         # 12.12: "ok" is no longer tier-1 noise; the model puts it in a chat group. A no-letter
@@ -479,10 +481,10 @@ class ChatAndReviewStateTests(GateBase):
              topic([3], type="bug", category="bug", confidence=0.5),   # 12.13: unsure and untagged => waits
              chat_group([4])),
             tagged=(1,))
-        self.assertEqual(self.decisions(1, 2, 3, 4, 5), ["issue", "chat", "pending_review", "chat", "noise"])
+        self.assertEqual(self.decisions(1, 2, 3, 4, 5), ["issue", "chat", "needs_human", "chat", "noise"])
         tally = self.reconciliation()
         self.assertEqual((tally["received"], tally["issue"], tally["chat"], tally["pending_review"],
-                          tally["noise"], tally["needs_human"], tally["failed"]), (5, 1, 2, 1, 1, 0, 0))
+                          tally["noise"], tally["needs_human"], tally["failed"]), (5, 1, 2, 0, 1, 1, 0))
         self.assertEqual((tally["balanced"], tally["status"]), (1, "done"))
         self.assertEqual(self.store.reconcile(f"{CHAT}:1").accounted, 5)
         self.assertEqual(self.store.get_case(f"{CHAT}:1")["status"], "done")   # it holds an issue
@@ -519,10 +521,11 @@ class SingleCaseModelTests(CaseBase):
                          "issue")
         self.assertEqual(len(self.github.calls), 1)
 
-    def test_untagged_unsure_ticket_waits_for_review(self):
+    def test_untagged_unsure_ticket_asks_for_clarification(self):
         analysis = CaseAnalysis("ticket", classification(confidence=0.4), (1,))
-        self.assertEqual(self.run_case(analysis, False)[0].decision, "pending_review")
-        self.assertEqual(self.github.calls, [])
+        self.assertEqual(self.run_case(analysis, False)[0].decision, "needs_human")
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
 
     def test_tagged_ticket_is_an_issue_and_feature_is_feedback(self):
         analysis = CaseAnalysis("ticket", classification(type="feature"), (1,))

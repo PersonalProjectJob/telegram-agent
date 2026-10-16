@@ -105,16 +105,17 @@ class AdminTalkPipelineTests(TopicBase):
         self.assertEqual(self.decisions(1, 2, 3), ["issue"] * 3)
         self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["auto_task"] * 3)
 
-    def test_c_untagged_admin_group_the_model_is_not_sure_about_waits_for_review(self):
+    def test_c_untagged_admin_group_the_model_is_not_sure_about_asks_for_clarification(self):
         self.run_window(ADMIN, (topic([1, 2, 3], verdict="needs_human", type="task", category="task",
                                       title="Mời thành viên"),), tagged=())
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual(self.decisions(1, 2, 3), ["pending_review"] * 3)
-        self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["pending_untagged"] * 3)
-        self.assertEqual(self.numbers(1, 2, 3), [None] * 3)
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual(self.decisions(1, 2, 3), ["needs_human"] * 3)
+        self.assertEqual([self.row(i)["reason"] for i in (1, 2, 3)], ["auto_needs_human"] * 3)
+        self.assertEqual(self.numbers(1, 2, 3), [101] * 3)
         tally = self.reconciliation()
         self.assertEqual((tally["received"], tally["issue"], tally["pending_review"],
-                          tally["balanced"]), (3, 0, 3, 1))
+                          tally["balanced"]), (3, 0, 0, 1))
 
     def test_c_the_original_text_stays_in_the_database(self):
         self.run_window(ADMIN, (topic([1, 2, 3], type="task"),), tagged=())
@@ -127,7 +128,7 @@ class AdminTalkPipelineTests(TopicBase):
         self.assertEqual(self.decisions(1, 2, 3), ["dry_run_issue"] * 3)
         self.setUp()
         self.run_window(ADMIN, (topic([1, 2, 3], type="task", confidence=0.4),), mode="dry-run", tagged=())
-        self.assertEqual(self.decisions(1, 2, 3), ["pending_review"] * 3)
+        self.assertEqual(self.decisions(1, 2, 3), ["dry_run_needs_human"] * 3)
 
     def test_d_a_bug_command_with_an_email_is_still_a_ticket_with_the_email_hidden(self):
         self.run_window((f"/bug không in được hoá đơn, báo {EMAIL}",),
@@ -190,11 +191,12 @@ class AdminTalkSingleCaseModelTests(CaseBase):
         self.assertEqual(len(self.github.calls), 1)
         self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("issue", "auto_task"))
 
-    def test_untagged_admin_window_a_case_model_unsure_waits_for_review(self):
+    def test_untagged_admin_window_a_case_model_unsure_asks_for_clarification(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1, 2, 3], type="task", confidence=0.4)))
         self.close(pipeline, ADMIN, tagged=False)
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("pending_review", "pending_untagged"))
+        self.assertEqual(len(self.github.calls), 1)
+        self.assertIn("needs-human", self.github.calls[0].labels)
+        self.assertEqual((self.row(1)["decision"], self.row(1)["reason"]), ("needs_human", "auto_needs_human"))
 
     def test_bug_window_from_a_case_model_still_creates_an_issue(self):
         pipeline = self.pipeline(model=FakeCaseModel(ticket([1, 2])))

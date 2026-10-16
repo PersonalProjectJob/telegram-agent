@@ -90,3 +90,15 @@ max_documents_per_case = 5
 
 [storage]
 db_path = "/var/lib/agentfleet/tg/triage.sqlite3"
+
+# Bounded context controller; absence defaults true. Set false and restart to use the legacy
+# semantic path. Existing decisions/operation reservations remain in SQLite during rollback.
+[thinking]
+enabled = true
+# Opt-in additive topic projection; does not replace aggregation or grant routing authority.
+topic_memory_enabled = false
+# Semantic multi-topic routing and closed-ticket lifecycle; keep off until verified.
+autonomous_enabled = false
+# Live autonomous Telegram: wait for conversation context, then classify by meaning.
+context_quiet_seconds = 30
+context_max_wait_seconds = 60

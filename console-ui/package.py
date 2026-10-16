@@ -19,10 +19,11 @@ STATIC_FILES = (
     'console-ui/styles.css', 'console-ui/tokens.css', 'console-ui/README.md',
     'config/listener.example.toml', 'config/nailhub.example.toml',
     'listener/prompts/classify.md', 'listener/prompts/case.md', 'listener/prompts/topics.md',
+    'listener/prompts/followup.md',
 )
 TRIAGE_MODULES = (
     '__init__', '__main__', 'ai_transport', 'attachments', 'classifier', 'config',
-    'github_issues', 'group_notices', 'issue_format', 'model_lock', 'models',
+    'followup_model', 'followup_store', 'followups', 'github_issues', 'group_notices', 'issue_format', 'model_lock', 'models',
     'pipeline', 'provider', 'reactions', 'receipt', 'rules', 'runtime', 'store', 'telegram_io',
 )
 NAILHUB_MODULES = (
