@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.7.0 · **Updated**: 2026-10-16 15:23 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.7.1 · **Updated**: 2026-10-16 16:22 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -233,7 +233,7 @@ Valid partition giữ riêng từng group: uncertainty của image group không 
 
 ### TG-16 — Root hội thoại tin cậy
 
-Reply được chứng minh bằng sent notice cùng chat hoặc source member thuộc topic có sent notice/issue đã chứng minh mới có quyền xử lý hội thoại. Chuỗi notice giữ cùng root. URL do người/model đưa, notice chưa sent và cross-chat không cấp quyền. Late reply thường không có tuyến notice có thể chỉ lưu followup.
+Reply được chứng minh bằng sent notice cùng chat hoặc source member thuộc topic có sent notice/issue đã chứng minh mới có quyền xử lý hội thoại. Chuỗi notice giữ cùng root. Xác nhận tạo ticket sau bước hỏi rõ cũng phải phân giải về source/root đã chứng minh; chỉ ledger cùng chat có trạng thái sent và issue còn khớp mới hợp lệ. Lookup không đổi Reply edge gốc, không truy đuổi chuỗi alias lồng/vòng và vẫn nhận xác nhận đã gửi khi tắt autonomous mode. URL do người/model đưa, notice chưa sent và cross-chat không cấp quyền. Late reply thường không có tuyến notice có thể chỉ lưu followup.
 
 `context_pending` không cấp quyền conversational followup. Chỉ exact pending source/no-issue + notice đã sent cùng chat được nhận diện để **fresh intake**, bypass aggregate vào case cũ; không chọn repo/issue từ notice hoặc source ngoại lai. Unknown/failed/foreign notice và positive ticket ack vẫn theo route cũ. Ingress dedup và original pending row/group vẫn được giữ nguyên.
 
@@ -939,6 +939,22 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_autonomous.py",
           "symbol": "AutonomousTests.test_recurrence_episode_requires_actual_reply_to_update"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_reply_to_sent_autonomous_confirmation_updates_once_with_actual_edge"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_confirmation_alias_requires_sent_same_chat_current_source_issue"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_confirmation_cycle_is_rejected_without_recursive_resolution"
+        },
+        {
+          "path": "listener/tests/test_reply_authority.py",
+          "symbol": "ReplyAuthorityTests.test_stored_sent_confirmation_resolves_when_autonomous_mode_is_off"
         }
       ]
     },
@@ -1562,7 +1578,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/classifier.py": "8284a17be87f5dc883c1e870c80eebb156ec9f2913216bbbc4e086244f3feb0f",
     "listener/src/tg_triage/config.py": "42e3af7cdce5282937cd7b879e676f02cebba088062de24ada1f4e58224120ec",
     "listener/src/tg_triage/followup_model.py": "898ae428bc0e5101550665853ed66dbfa0a8324fcc2ba4df18f4ab33d513d934",
-    "listener/src/tg_triage/followup_store.py": "77e071b67d596f9a32b64b4a844ab740c953bdcbaece31386233aeccab69bb50",
+    "listener/src/tg_triage/followup_store.py": "d793ce24c46e7385adaf4022e671ff4300757ef30ea584c149e440e42f360c48",
     "listener/src/tg_triage/followups.py": "f906e2b65dab07fcda3a44a24ec6fe477989f651588de52fb9cbe0aeefa5b4ea",
     "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
     "listener/src/tg_triage/group_notices.py": "9223144438704e49573a740bde8d85cbd76df755298fc8df60b8af0036a86f95",
@@ -1608,6 +1624,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.7.1 | 2026-10-16 16:22 | Codex / owner AlexChu | Sửa phân giải Reply vào confirmation đã gửi sau pending→ticket; giữ edge gốc, từ chối alias sai/vòng, bổ sung regression và đồng bộ reviewed runtime hash. |
 | v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Chỉ cập nhật nội dung cũ bằng Reply đã xác minh của chính nhóm; incident nhiều biểu hiện, chống tạo bug từ cảm thán/nhầm ảnh lịch sử, kiểm lại partition rủi ro trước side effect; kiểm thử và rollout phải có bằng chứng riêng. |
 | v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Chat pacing30–60s, context đến muộn, durable chống hỏi lặp và packing ưu tiên đúng nguồn; rollout cần evidence riêng. |
 | v1.5.0 | 2026-10-16 11:20 | Codex / owner AlexChu | Autonomous nhiều chủ đề, context batch, current partition, vòng đời closed/recurrence và debug bền vững; rollout có evidence riêng. |
