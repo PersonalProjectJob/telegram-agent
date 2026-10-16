@@ -221,10 +221,16 @@ def _enrichment_sources(pipeline,root,originals):
     from .store import _to_message
     state=json.loads(root.get('context_state') or '{}')
     snapshot=state.get('managed_snapshot',{})
-    ids=list(snapshot.get('source_ids',[]))+[int(i) for i in state.get('media_evidence',{}) if str(i).isdigit()]
+    ids=list(snapshot.get('source_ids',[]))+list(state.get('lifecycle_evidence_ids',[]))+[int(i) for i in state.get('media_evidence',{}) if str(i).isdigit()]
+    ids += [row[0] for row in pipeline.store.connection.execute('''SELECT s.message_id FROM followup_job_sources s
+        JOIN followup_jobs j ON j.id=s.job_id WHERE j.root_key=? ORDER BY j.id DESC,s.message_id DESC LIMIT 30''',(root['root_key'],))]
     result=list(originals); present={m.message_id for m in result}
     for mid in ids:
         if type(mid) is not int or mid in present: continue
+        episode=pipeline.store.connection.execute('SELECT root_key FROM followup_episode_sources WHERE chat_id=? AND message_id=?',
+                                                  (root['chat_id'],mid)).fetchone()
+        if episode is not None and episode[0]!=root['root_key']:
+            continue  # New recurrence media is not evidence for the old incident.
         row=pipeline.store.get(root['chat_id'],mid)
         if (row is None or row['decision']!='followup' or row['case_key']!=root['case_key']
                 or row['group_key']!=root['group_key'] or row['issue_number']!=root['issue_number']):
@@ -258,23 +264,44 @@ def _materialize_update(pipeline,job,root,originals,reply,op,payload):
     store=pipeline.store
     images,documents=[],[]
     note=None
-    if reply.has_attachment:
-        rows=store.followup_attachment_rows(root,reply.message_id)
+    for incoming in store.followup_job_messages(job):
+        if op['kind']=='related_create' and incoming.message_id not in payload['source_ids']:
+            continue  # Previous-success evidence remains context, not new-episode attachments.
+        if not incoming.has_attachment:
+            continue
+        current_images,current_documents=[],[]
+        rows=store.followup_attachment_rows(root,incoming.message_id)
         if rows:
-            images,documents=store.followup_media(root,[reply],pipeline.config.gh_repo)
+            current_images,current_documents=store.followup_media(root,[incoming],pipeline.config.gh_repo)
         else:
-            found=_bounded_attachment_processor(pipeline).process(root['group_key'] or root['case_key'],[reply],live=True,
+            found=_bounded_attachment_processor(pipeline).process(root['group_key'] or root['case_key'],[incoming],live=True,
                                                prepared=getattr(pipeline,'_followup_prepared_images',None))
-            images,documents=found.images,found.documents
-        if not images and not documents:
+            current_images,current_documents=found.images,found.documents
+        if not current_images and not current_documents:
             note='Em chưa xác nhận được ảnh/tài liệu đã tải lên; nhờ Anh/Chị giữ lại bản gốc và hỗ trợ kiểm tra.'
-        store.record_followup_evidence(job['root_key'],reply.message_id,images,documents,bool(images or documents))
+        images.extend(current_images);documents.extend(current_documents)
+        store.record_followup_evidence(job['root_key'],incoming.message_id,current_images,current_documents,bool(current_images or current_documents))
     payload['materialized']=True
     payload['media_note']=note
     if op['kind']=='comment':
         payload['body']+=''.join('\nẢnh bổ sung: '+url for _,url in images)
         payload['body']+=''.join('\nTài liệu bổ sung: '+url for _,url in documents)
         if note: payload['body']+='\n'+note
+    elif op['kind']=='related_create':
+        from .store import _to_message
+        sources=[_to_message(store.get(reply.chat_id,mid)) for mid in payload['source_ids']]
+        analysis=payload['analysis']
+        old_images,old_documents=store.followup_media(root,sources,pipeline.config.gh_repo)
+        all_images=list(dict.fromkeys(tuple(x) for x in old_images+list(images)))
+        all_documents=list(dict.fromkeys(tuple(x) for x in old_documents+list(documents)))
+        c=Classification(analysis['type'],analysis['confidence'],analysis['title'],analysis['summary'],analysis['priority'])
+        issue=format_issue(sources[0],c,'model',False,pipeline.config.ollama.model,case_messages=sources,
+            max_quoted=len(sources),key_message_ids=analysis['key_message_ids'],details=analysis['details'],
+            images=all_images,documents=all_documents,clarify=analysis['missing_info'],notes=[note] if note else [])
+        body=issue.body+'\n\nLỗi tái diễn; ticket liên quan: '+_link(pipeline.config.gh_repo,payload['parent_number'])
+        snapshot=dict(repo=pipeline.config.gh_repo,title=issue.title,body_sha=hashlib.sha256(body.encode()).hexdigest(),
+            source_ids=payload['source_ids'],analysis=analysis,images=all_images,documents=all_documents,owned_labels=list(issue.labels))
+        payload.update(title=issue.title,body=body,labels=list(issue.labels),new_snapshot=snapshot)
     else:
         state=json.loads(store.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',
                                                 (root['root_key'],)).fetchone()[0])
@@ -315,8 +342,18 @@ def _materialize_update(pipeline,job,root,originals,reply,op,payload):
 
 def _plan(pipeline,job,root,originals,reply,history):
     tickets=_tickets(root)
+    incoming=pipeline.store.followup_job_messages(job)
     if not tickets:
         return dict(action='clarify',questions=['Em chưa xác nhận được ticket gốc. Nhờ bạn hoặc Owner kiểm tra kết quả trên GitHub trước khi tạo lại nhé.']),[]
+    lifecycle_state=None
+    if getattr(pipeline.config,'autonomous_enabled',False):
+        try:
+            lifecycle_state=pipeline.github.lifecycle_snapshot(tickets[0])
+            if (lifecycle_state.get('number')!=tickets[0] or lifecycle_state.get('repo','').casefold()!=pipeline.config.gh_repo.casefold()
+                    or lifecycle_state.get('state') not in ('open','closed') or not lifecycle_state.get('observed_at')):
+                raise ValueError('Invalid trusted lifecycle snapshot')
+        except Exception:
+            return dict(action='clarify',questions=['Em chưa kiểm tra được trạng thái ticket gốc. Anh/Chị giữ lại thông tin để Em đối chiếu nhé.'],context_reason='lifecycle_lookup_failed'),[]
     state,accepted,conflict=_context(pipeline,job,root,originals,reply)
     ack=_context_ack(state,originals)
     if conflict:
@@ -326,6 +363,14 @@ def _plan(pipeline,job,root,originals,reply,history):
         ordinal=state['bindings'][str(reply.reply_to_id)]
         if ordinal>=len(tickets):
             return dict(action='clarify',ack=ack,questions=[TARGET_QUESTION]),[]
+        if lifecycle_state and ordinal!=0:
+            try:
+                target_state=pipeline.github.lifecycle_snapshot(tickets[ordinal])
+                if (target_state.get('number')!=tickets[ordinal] or target_state.get('repo','').casefold()!=pipeline.config.gh_repo.casefold()
+                        or target_state.get('state') not in ('open','closed') or not target_state.get('observed_at')):
+                    raise ValueError('Invalid bound lifecycle target')
+            except Exception:
+                return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='lifecycle_target_unobserved'),[]
         selected=[m for m in originals if m.message_id==reply.reply_to_id]
         body='### Xác nhận phạm vi từ người gửi\n'+_safe(_describe(selected[0]))+f' thuộc phạm vi ticket {ordinal+1}.'
         if telegram_link(selected[0]):
@@ -351,6 +396,8 @@ def _plan(pipeline,job,root,originals,reply,history):
                       scope=scopes[i]['summary'] if i<len(scopes) else '') for i,n in enumerate(tickets)]
         if mapping:
             mapping[0]['confirmed_context']=state
+            if lifecycle_state:
+                mapping[0]['lifecycle_state']=lifecycle_state
         if anchor_plan is not None:
             if not unassigned_text:
                 raw=anchor_plan
@@ -364,14 +411,22 @@ def _plan(pipeline,job,root,originals,reply,history):
                           source_roles=response.get('source_roles')) if isinstance(response,dict) else None)
         else:
             analysis_sources=_enrichment_sources(pipeline,root,originals)
+            if lifecycle_state and lifecycle_state['state']=='closed':
+                from .store import _to_message
+                present={m.message_id for m in analysis_sources}
+                for item in history:
+                    row=pipeline.store.get(reply.chat_id,item['message_id'])
+                    if row is not None and row['message_id'] not in present and row['issue_number']==tickets[0]:
+                        analysis_sources.append(_to_message(row)); present.add(row['message_id'])
             options={}
-            if reply.has_image:
+            pixel_sources=[m for m in incoming if m.has_image]
+            if pixel_sources:
                 if not getattr(pipeline.classifier,'supports_vision',False):
                     return dict(action='clarify',questions=['Em chưa đọc được ảnh mới theo quyền/công cụ hiện có. Anh/Chị ghi lại thông báo lỗi trong ảnh giúp Em nhé.'],context_reason='vision_unavailable'),[]
-                prepared=pipeline.attachments.prepare_images(root['group_key'] or root['case_key'],[reply])
+                prepared=pipeline.attachments.prepare_images(root['group_key'] or root['case_key'],pixel_sources)
                 pipeline._followup_prepared_images=prepared
-                options['images']=prepared.for_messages([reply])
-                if reply.message_id not in options['images']:
+                options['images']=prepared.for_messages(pixel_sources)
+                if any(m.message_id not in options['images'] for m in pixel_sources):
                     return dict(action='clarify',questions=['Em chưa tải/đọc được ảnh mới. Anh/Chị gửi lại hoặc ghi thông báo lỗi giúp Em nhé.'],context_reason='vision_unavailable'),[]
             raw=ask(analysis_sources,reply,mapping,history,**options) if ask else None
         value=validate_followup(raw)
@@ -383,7 +438,7 @@ def _plan(pipeline,job,root,originals,reply,history):
     expected_ids={m.message_id for m in originals}
     roles={r['message_id']:r for r in (value or {}).get('source_roles',[])}
     role_ids=expected_ids
-    if value is not None and value['action']=='update' and value.get('case_analysis') is not None:
+    if value is not None and value['action']=='update':
         role_ids={m.message_id for m in analysis_sources}|{reply.message_id}
     valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=role_ids
                  and (anchor_plan is None or not unassigned_text or set(roles)=={m.message_id for m in unassigned_text}))
@@ -419,6 +474,8 @@ def _plan(pipeline,job,root,originals,reply,history):
                 or proposed['message_ids']!=[reply.reply_to_id]):
             return dict(action='clarify',ack=ack,questions=['Bạn reply trực tiếp vào tin yêu cầu và xác nhận ticket tương ứng giúp Em nhé?'],context_reason='unproven_binding'),[]
     action=value['action']
+    if action=='split' and len(incoming)>1:
+        return dict(action='clarify',questions=[SCOPE_QUESTION],context_reason='batch_scope_correction_unclear'),[]
     if action in ('chat','clarify'):
         value['ack']=ack
         if action=='clarify' and state['bindings']:
@@ -430,21 +487,51 @@ def _plan(pipeline,job,root,originals,reply,history):
             target=0
         if target is None or target>=len(tickets):
             return dict(action='clarify',questions=[TARGET_QUESTION]),[]
+        if lifecycle_state and target!=0:
+            return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='lifecycle_target_unobserved'),[]
+        if lifecycle_state and lifecycle_state['state']=='closed':
+            from .lifecycle import closed_decision,QUESTION
+            disposition=closed_decision(value,analysis_sources,reply,{m.message_id for m in incoming})
+            value['lifecycle_state']=lifecycle_state
+            if disposition=='unclear':
+                return dict(action='clarify',questions=[QUESTION],context_reason='closed_episode_unclear'),[]
+            if disposition=='recurrence':
+                analysis=value['case_analysis']
+                if analysis['confidence']<pipeline.config.ollama.confidence_threshold or len(tickets)!=1:
+                    return dict(action='clarify',questions=[QUESTION],context_reason='recurrence_unproven'),[]
+                latest=pipeline.store.latest_related_episode(root['root_key'])
+                working=value['lifecycle']['knownworking_source_ids']
+                if latest is not None and min(working)<=latest['anchor_message_id']:
+                    return dict(action='clarify',questions=[f'Em đã ghi nhận lần lỗi tái diễn ở ticket #{latest["issue_number"]}. Anh/Chị đang bổ sung cho lần đó, hay đã xác nhận chạy tốt rồi mới lỗi thêm lần nữa?'],
+                        existing_related=latest['issue_number'],context_reason='existing_recurrence_episode'),[]
+                value['related_episode']=True
+                return value,[('related_create',dict(parent_number=tickets[0],analysis=analysis,
+                    source_ids=sorted(value['lifecycle']['recurrence_source_ids']),knownworking_source_ids=working,
+                    lifecycle_state=lifecycle_state,materialized=False))]
+            known=value['lifecycle']['knownworking_source_ids']
+            allowed={m.message_id for m in analysis_sources+[reply]}
+            if not set(known)<=allowed:
+                return dict(action='clarify',questions=[QUESTION],context_reason='lifecycle_foreign_sources'),[]
+            # Persist source evidence beyond the short conversational history, not a model fact.
+            state['lifecycle_evidence_ids']=list(dict.fromkeys(state.get('lifecycle_evidence_ids',[])+known+[reply.message_id]))[-30:]
+            pipeline.store.save_followup_context_state(job['root_key'],state)
+            root['context_state']=json.dumps(state)
         body='### Bổ sung từ hội thoại Telegram\n'+_safe(value['summary'])+'\n\nPhản hồi của người gửi:\n> '+_safe(reply.text).replace('\n','\n> ')
         if telegram_link(reply):
             body+='\n\nNguồn phản hồi: '+telegram_link(reply)
         analysis=value.get('case_analysis')
-        sources=_enrichment_sources(pipeline,root,originals)+[reply]
+        sources=_enrichment_sources(pipeline,root,originals)
+        if reply.message_id not in {m.message_id for m in sources}:sources.append(reply)
         allowed={m.message_id for m in sources}
         if analysis is not None and (set(analysis['key_message_ids'])-allowed or analysis['confidence']<pipeline.config.ollama.confidence_threshold):
             return dict(action='clarify',questions=['Anh/Chị xác nhận lại phạm vi và thông tin cần bổ sung giúp Em nhé.'],context_reason='invalid_enrichment_sources'),[]
         snapshot=state.get('managed_snapshot')
-        if analysis is not None and snapshot is not None:
+        if analysis is not None and snapshot is not None and not (lifecycle_state and lifecycle_state['state']=='closed'):
             if len(tickets)!=1 or root.get('split_plan') is not None or snapshot.get('issue_number')!=tickets[0] or str(snapshot.get('repo','')).casefold()!=pipeline.config.gh_repo.casefold():
                 return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='ambiguous_enrichment'),[]
             return value,[('refresh',dict(number=tickets[0],analysis=analysis,reply_id=reply.message_id,
                    expected_sha=snapshot['body_sha'],expected_title=snapshot['title'],expected_labels=snapshot.get('owned_labels'),materialized=False))]
-        if reply.has_attachment:
+        if any(m.has_attachment for m in incoming):
             if len(tickets)!=1:
                 return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='ambiguous_enrichment'),[]
             return value,[('comment',dict(number=tickets[target],body=body,reply_id=reply.message_id,materialized=False))]
@@ -579,18 +666,35 @@ def _run_inner(pipeline,job):
         text=_clarify(plan.get('questions',[])) if plan['action']=='clarify' else 'Em đã nhận phản hồi của Anh/Chị rồi nhé 😊'
         if plan.get('ack'):
             text=plan['ack']+'\n'+text
-        _result(pipeline,job,root,reply,'done',text)
+        _result(pipeline,job,root,reply,'done',text,(plan['existing_related'],) if plan.get('existing_related') else ())
         return
     completed=[]
     for op in store.followup_operations(job):
         if op['status']=='done':
-            if op['kind']=='create':
+            if op['kind'] in ('create','related_create'):
                 completed.append(op['result'])
             continue
         if op['status']!='planned':
             _result(pipeline,job,root,reply,'blocked','Em chưa xác nhận được kết quả thao tác GitHub. Nhờ Owner kiểm tra trước khi thử lại nhé.',completed)
             return
         payload=json.loads(op['payload'])
+        if op['kind']=='related_create':
+            latest=store.latest_related_episode(root['root_key'])
+            if latest is not None and (not payload.get('knownworking_source_ids') or min(payload['knownworking_source_ids'])<=latest['anchor_message_id']):
+                _result(pipeline,job,root,reply,'blocked',
+                    'Em đã có ticket cho lần lỗi này. Anh/Chị xác nhận giúp Em đây là bổ sung cho lần đó hay một lần mới sau khi đã chạy tốt nhé.',(latest['issue_number'],))
+                return
+            # Recheck even after a delayed planned resume; never create using stale closure.
+            try:
+                observed=pipeline.github.lifecycle_snapshot(payload['parent_number'])
+                expected=payload['lifecycle_state']
+                if (observed.get('number')!=payload['parent_number'] or observed.get('repo','').casefold()!=pipeline.config.gh_repo.casefold()
+                        or observed.get('state')!='closed' or not observed.get('observed_at')
+                        or observed.get('updated_at')!=expected.get('updated_at')):
+                    raise ValueError('Parent lifecycle changed')
+            except Exception:
+                _result(pipeline,job,root,reply,'blocked','Em cần đối chiếu lại trạng thái ticket cũ trước khi tạo ticket cho lần tái diễn. Anh/Chị xác nhận giúp Em nhé.')
+                return
         if payload.get('materialized') is False:
             try:
                 payload=_materialize_update(pipeline,job,root,originals,reply,op,payload)
@@ -612,11 +716,17 @@ def _run_inner(pipeline,job):
                 if type(number) is not int or number!=payload['number']:
                     raise ValueError('Unverified managed refresh result')
                 store.finish_followup_operation(job,op,number)
-            elif op['kind']=='create':
-                number,_=pipeline.github.create_issue(Issue(payload['title'],payload['body'],tuple(payload['labels'])))
+            elif op['kind'] in ('create','related_create'):
+                rendered=Issue(payload['title'],payload['body'],tuple(payload['labels']))
+                number,_=pipeline.github.create_issue(rendered)
                 if type(number) is not int or number<=0:
                     raise ValueError('Invalid created issue number')
                 completed.append(number)
+                if op['kind']=='related_create':
+                    verified=pipeline.github.verify_created_issue(number,rendered)
+                    if type(verified) is not int or verified!=number:
+                        raise ValueError('Unverified related issue result')
+                    op['readback_verified']=True
                 store.finish_followup_operation(job,op,number)
             else:
                 body=payload['body']
@@ -643,7 +753,8 @@ def _run_inner(pipeline,job):
                 store.connection.execute("UPDATE followup_operations SET status='ambiguous' WHERE job_id=? AND ordinal=? AND status='reserved'",(job['id'],op['ordinal']))
             _result(pipeline,job,root,reply,'blocked','Em chưa xác nhận được một thao tác GitHub đã hoàn tất hay chưa. Nhờ Owner kiểm tra trước khi thử lại; các ticket đã xác nhận được giữ lại bên dưới nhé.',completed)
             return
-    text=('Em đã tách các yêu cầu thành từng ticket riêng rồi nhé 😊' if plan['action']=='split'
+    text=('Em đã tạo ticket cho lần lỗi tái diễn và gắn ticket liên quan rồi nhé 😊' if plan.get('related_episode') else
+          'Em đã tách các yêu cầu thành từng ticket riêng rồi nhé 😊' if plan['action']=='split'
           else 'Em đã bổ sung thông tin vào ticket rồi nhé 😊')
     questions=plan.get('questions',[])+[q for g in plan.get('groups',[]) for q in g['missing_info']]
     questions += [json.loads(o['payload'])['media_note'] for o in store.followup_operations(job) if json.loads(o['payload']).get('media_note')]

@@ -62,6 +62,11 @@ def validate_followup(value):
         return None
     result=dict(action=value['action'],confidence=confidence,target_ordinal=target,
                 summary=summary[:2000],questions=[q[:200] for q in questions[:3]],groups=[])
+    if value.get('lifecycle') is not None:
+        from .lifecycle import validate_lifecycle
+        result['lifecycle']=validate_lifecycle(value['lifecycle'])
+        if result['lifecycle'] is None:
+            return None
     if value.get('case_analysis') is not None:
         analysis=case_analysis_data(value['case_analysis'])
         if value['action']!='update' or analysis is None:
@@ -148,3 +153,11 @@ def parse_source_roles(content):
 # Optional authoritative-shape draft, still untrusted until source/snapshot guards in the engine.
 from .classifier import CASE_SCHEMA
 FOLLOWUP_SCHEMA['properties']['case_analysis']={'anyOf':[CASE_SCHEMA,{'type':'null'}]}
+FOLLOWUP_SCHEMA['properties']['lifecycle']={'type':'object','properties':{
+    'kind':{'type':'string','enum':['evidence','recurrence','unclear']},
+    'knownworking_quote':{'type':'string','maxLength':200},
+    'recurrence_quote':{'type':'string','maxLength':200},
+    'temporal_order_confirmed':{'type':'boolean'},
+    'knownworking_source_ids':{'type':'array','maxItems':40,'items':{'type':'integer','minimum':1}},
+    'recurrence_source_ids':{'type':'array','maxItems':40,'items':{'type':'integer','minimum':1}}},
+    'required':['kind','knownworking_source_ids','recurrence_source_ids']}

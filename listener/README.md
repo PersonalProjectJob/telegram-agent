@@ -1,8 +1,8 @@
 # Telegram Triage Agent
 
-**Documentation version**: v1.1.1 · **Updated**: 2026-10-16 09:57 (Asia/Saigon) · **Owner**: AlexChu
+**Documentation version**: v1.3.0 · **Updated**: 2026-10-16 11:31 (Asia/Saigon) · **Owner**: AlexChu
 
-Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Current reviewed runtime baseline is `9746ef2`, deployed on THINKPAD and read-only compared during documentation normalization. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
+Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
 ## Offline verification (Python >= 3.11)
 
@@ -206,6 +206,33 @@ Profile lookup is performed by `make_public_profile_address_resolver` at notice 
 
 Allowlisted images are signature-checked JPG/PNG/WEBP; document metadata is checked by `attachments.document_extension`. The pipeline downloads into private temporary directories, reuses prepared images for initial vision/upload and deletes temporary files after processing. `gh release upload` uses environment credentials and generated asset names. Followup scope planning reuses stored media provenance; only a new reply photo is prepared for multimodal enrichment, without re-reading old pixels. Detailed behavior/limits live in [TG-14..TG-15/TG-22](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md).
 
+## Topic memory and read-only trace
+
+The [canonical foundation/lifecycle contract](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md#nâng-cấp-harness-phạm-vi-foundation-và-quy-tắc-đích) defines authority and scope. This release adds opt-in autonomous semantic routing, batched followups and closed-ticket lifecycle. Original intake history remains separate from the validated `triage_current_topics` partition; partial siblings and unresolved membership are explicit. Legacy window routing remains available when autonomous is disabled.
+
+```toml
+[thinking]
+enabled = true
+topic_memory_enabled = false
+autonomous_enabled = false
+```
+
+`topic_memory_enabled` defaults to false. When explicitly enabled, normal `run` initializes additive `triage_topics`, `triage_topic_messages`, `triage_topic_events` and `triage_topic_hydration` after acquiring the process lock. Startup hydrates up to 100 historical cases using a persisted cursor; subsequent starts continue the cursor. Current touched cases project through existing writable persistence hooks. Turning the flag off stops projection and preserves stored history. It does not reset decisions/reservations or remove tables. Historical hydration is incremental; absence from the registry can mean not yet hydrated, not absence from originals. Per-case projection bounds originals (1000), roots (20) and members per root (1000); respect `membership_truncated` rather than treating the projection as exhaustive history.
+
+After installing this version, query local storage without model calls, Telegram login, GitHub access or recovery/migrations:
+
+```bash
+sudo -u tglistener /opt/agentfleet/listener/.venv/bin/python -m tg_triage trace \
+  --config /etc/tg-triage/listener.toml \
+  --repo PersonalProjectJob/telegram-agent --issue 47
+
+sudo -u tglistener /opt/agentfleet/listener/.venv/bin/python -m tg_triage trace \
+  --config /etc/tg-triage/listener.toml \
+  --repo PersonalProjectJob/telegram-agent --chat-id -5264814171 --message-id 454
+```
+
+Repository is explicit `--repo` or `GH_REPO`; a message lookup requires both chat and message IDs. Default `--limit 100` is bounded (1–1000); inspect truncation/missing sections before concluding context is complete. JSON output defaults to metadata. `--include-text` deliberately opts into sensitive local source content; protect/redact it before sharing. Trace reports older schemas without creating missing tables. It reads stored observations, not current remote GitHub/Telegram state. SQLite `mode=ro` prevents logical writes; WAL/shared-memory auxiliary files may still be affected by SQLite or concurrent writers. Use a consistent backup for strict forensic immutability; do not blindly use `immutable=1` against live WAL. Use the canonical debug procedure for verified external readback and repair.
+
 ## Documentation drift check
 
 From repository root:
@@ -256,6 +283,20 @@ Offline checks: `python scripts/test_reformat_telegram_issue.py`.
 
 | Version | Date/time (Asia/Saigon) | Author | Change |
 |---|---|---|---|
+| v1.3.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous activation/isolated model smoke and current topic/episode tracing; business DOCS remains canonical. |
+| v1.2.0 | 2026-10-16 10:13 | Codex / owner AlexChu | Opt-in durable topic projection and local read-only trace operations; deployment evidence separate. |
 | v1.1.1 | 2026-10-16 09:57 | Codex / owner AlexChu | Link storage and debug operations to the canonical business procedure. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | THINKING feature switch, additive journal operations and isolated configured-model smoke. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Keep technical operations; replace evolving duplicated business descriptions with canonical rule links. |
+
+### Autonomous operations
+
+Enable `[thinking] enabled=true`, `topic_memory_enabled=true`, `autonomous_enabled=true` only on a tested installed release. Semantic ingress processes bounded same-chat queued sources and trusted candidates without waiting two minutes. Shared turn budget is two model attempts/40 seconds/six reads. One followup batch carries all new captions/images in one USER packet. Trace exposes immutable routes, cached plans, current partition, batch membership and recurrence episodes; see the canonical policy for lifecycle and recovery rules.
+
+Configured-model isolated regression (fake GitHub/Telegram, in-memory SQLite, supplied reviewed image fixtures):
+
+```text
+python scripts/telegram-autonomous-model-smoke.py --config /etc/tg-triage/listener.toml --case all --image46 /private/442-1.jpg --image47 /private/454.jpg
+```
+
+This uses the actual startup provider and configured consent; it does not open the live database/session or send real group messages. The five-case corpus is a regression check, not an accuracy estimate. Packet saturation and candidate bounds can cause a visible clarification rather than a guessed ticket.

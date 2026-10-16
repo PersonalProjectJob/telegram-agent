@@ -10,6 +10,8 @@ from pathlib import Path
 
 from .models import IncomingMessage
 from .followup_store import FollowupStoreMixin
+from .topic_store import TopicStoreMixin
+from .autonomy_store import AutonomyStoreMixin
 from .config import ConfigError
 
 USAGE_RETENTION_DAYS = 90
@@ -97,10 +99,11 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
-class Store(FollowupStoreMixin):
+class Store(FollowupStoreMixin, TopicStoreMixin, AutonomyStoreMixin):
     """One service owns a database; a lock allows sequential thread offloading."""
 
     def __init__(self, path, *, clock=utc_now, recover_pending=True, read_only=False):
+        self._read_only = read_only
         self.clock = clock
         self._lock = threading.RLock()
         self._usage_pruned_at = 0.0
@@ -258,11 +261,22 @@ class Store(FollowupStoreMixin):
     def group_notice_reply_target(self, chat_id, reply_to_id):
         """Map replies to our outgoing notice back to the group's original message."""
         with self._lock:
+            episode=self.connection.execute('''SELECT e.anchor_message_id FROM group_notices n
+                JOIN followup_jobs j ON j.chat_id=n.chat_id AND j.message_id=n.message_id
+                JOIN followup_episodes e ON e.job_id=j.id AND e.chat_id=n.chat_id
+                WHERE n.chat_id=? AND n.notice_message_id=? AND n.status='sent'
+                ORDER BY e.created_at DESC LIMIT 1''',(chat_id,reply_to_id)).fetchone()
+            if episode:
+                return episode[0]
             row = self.connection.execute("""
                 SELECT message_id FROM group_notices
                 WHERE chat_id=? AND notice_message_id=? AND status='sent'
             """, (chat_id, reply_to_id)).fetchone()
-            return row[0] if row else reply_to_id
+            if row:
+                return row[0]
+            if getattr(self,'_autonomy_enabled',False):
+                return self.autonomy_notice_reply_target(chat_id,reply_to_id)
+            return reply_to_id
 
     def record_model_usage(self, ts, provider, model, role, outcome, prompt_tokens=0,
                            completion_tokens=0, cache_hit_tokens=0, latency_ms=0, cost=0.0):
@@ -431,6 +445,7 @@ class Store(FollowupStoreMixin):
                     self._finish_group(row["group_key"], message, result, fields)
                 elif row["case_key"] is not None:
                     self._finish_case(row["case_key"], message, result, fields)
+                self.project_topics(message.chat_id, row["case_key"])
 
     def _finish_group(self, group_key, message, result, fields):
         """Close one topic group and mirror its outcome onto the group's unfinished messages."""
@@ -752,6 +767,8 @@ class Store(FollowupStoreMixin):
                     """, (group_key, case["chat_id"], message_id, case_key))
                     if cursor.rowcount != 1:
                         raise ValueError("message not available for this group")
+
+            self.project_topics(case["chat_id"], case_key)
 
     def get_group(self, group_key):
         with self._lock:

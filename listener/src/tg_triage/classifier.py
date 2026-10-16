@@ -398,9 +398,60 @@ class Classifier:
         }
         return self._ask(body, parse_topic_groups, attempts=1)
 
+    def analyze_ingress(self, sources, candidates, *, images=None):
+        """One joint route/draft call, through the same consent and provider retry boundary."""
+        from .ingress_model import INGRESS_SCHEMA, parse_ingress
+        from .thinking import ContextJSON, request_text_bytes
+        system=load_prompt('autonomous.md')
+        images=images or {}
+        all_sources={m.message_id:m for c in candidates for m in c['messages']}
+        all_sources.update({m.message_id:m for m in sources})
+        ordered=[m for m in all_sources.values() if m.message_id in images]
+        encoded=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii') for m in ordered]
+        def render(cap):
+            def source(m):
+                return [m.message_id,m.reply_to_id,m.sender_id,m.text[:cap],len(m.text)>cap,
+                        m.has_image,m.message_id in images]
+            packet=dict(NEW_SOURCE_IDS=[m.message_id for m in sources],
+                source_columns=['message_id','reply_to_id','sender_id','text','text_truncated','has_image','pixels_available'],
+                sources=[source(m) for m in sources],candidates=[dict(candidate_id=c['candidate_id'],
+                    pending=c['pending'],exact_reply=c['exact_reply'],split=c.get('split',False),
+                    current_scopes=c.get('current_scopes',[]),
+                    pending_questions=c.get('pending_questions',[]),
+                    sources=[source(m) for m in c['messages']]) for c in candidates],
+                images_order=[dict(image_index=i,message_id=m.message_id) for i,m in enumerate(ordered)])
+            user=dict(role='user',content=ContextJSON(json.dumps(packet,ensure_ascii=False)))
+            if encoded:
+                user['images']=encoded
+            return [dict(role='system',content=system),user]
+        low,high=0,700
+        while low<high:
+            mid=(low+high+1)//2
+            if request_text_bytes(dict(messages=render(mid),format=INGRESS_SCHEMA))<=8000:
+                low=mid
+            else:
+                high=mid-1
+        rendered=render(low)
+        if low<30 or request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA))>8000:
+            self.last_ingress_outcome='context_budget_exhausted'
+            return None
+        self.last_ingress_outcome='provider_unavailable'
+        def parse(content):
+            value=parse_ingress(content)
+            self.last_ingress_outcome='ok' if value is not None else 'invalid_output'
+            return value
+        return self._ask(dict(model=self.settings.model,stream=False,think=self.think,
+            options=dict(temperature=0),messages=rendered,format=INGRESS_SCHEMA),parse,attempts=1)
+
     def analyze_followup(self, originals, reply, tickets, history, *, images=None):
         """One joint source/reply/pixel packet through the existing consent/provider boundary."""
         from .followup_model import FOLLOWUP_SCHEMA, parse_followup
+        needs_lifecycle=any(isinstance(t.get('lifecycle_state'),dict) and t['lifecycle_state'].get('state')=='closed' for t in tickets)
+        schema=FOLLOWUP_SCHEMA
+        if needs_lifecycle:
+            schema=dict(FOLLOWUP_SCHEMA,required=list(dict.fromkeys(FOLLOWUP_SCHEMA.get('required',[])+['lifecycle'])))
+        else:
+            schema=dict(FOLLOWUP_SCHEMA,properties={k:v for k,v in FOLLOWUP_SCHEMA['properties'].items() if k!='lifecycle'})
         from .thinking import ContextJSON, request_text_bytes, CURRENT
         sources=list(originals)+([reply] if reply.message_id not in {m.message_id for m in originals} else [])
         if not sources or len(sources)>40:
@@ -412,19 +463,44 @@ class Classifier:
         snapshot=state.get('managed_snapshot',{})
         ordered=[m for m in sources if m.message_id in images]
         system=load_prompt("followup.md")
-        def render(cap):
+        if not needs_lifecycle:
+            system=system.split('\nWhen LIFECYCLE_STATE',1)[0]
+        else:
+            system+='\nSOURCE_DEFAULTS fill omitted ORIGINAL_METADATA fields.'
+        def render(cap,hypothesis_cap=80):
+            hypothesis=snapshot.get('analysis')
+            hypothesis_truncated=False
+            if isinstance(hypothesis,dict) and any('lifecycle_state' in t for t in tickets):
+                def bounded(value):
+                    if isinstance(value,str):
+                        return value[:hypothesis_cap]
+                    if isinstance(value,dict):
+                        return {k:bounded(v) for k,v in value.items()}
+                    if isinstance(value,(list,tuple)):
+                        return [bounded(v) for v in value]
+                    return value
+                compact=bounded(hypothesis)
+                hypothesis_truncated=compact!=hypothesis
+                hypothesis=compact
             packet={"REPLY":{"message_id":reply.message_id,"reply_to_id":reply.reply_to_id,"sender_id":reply.sender_id,
                              "text":reply.text[:cap],"text_truncated":len(reply.text)>cap,"has_image":reply.has_image},
                     "HUMAN_BINDINGS":human,
-                    "CURRENT_TICKET_MODEL_HYPOTHESIS":snapshot.get('analysis'),
-                    "TRUSTED_TICKETS":[{k:t[k] for k in ('ordinal','issue_number','message_ids') if k in t} for t in tickets],
+                    "CURRENT_TICKET_MODEL_HYPOTHESIS":hypothesis,
+                    "hypothesis_text_truncated":hypothesis_truncated,
+                    "TRUSTED_TICKETS":[{k:t[k] for k in ('ordinal','issue_number','message_ids','lifecycle_state') if k in t} for t in tickets],
                     "ORIGINAL_METADATA":[dict(message_id=m.message_id,reply_to_id=m.reply_to_id,sender_id=m.sender_id,
                            text=m.text[:cap],text_truncated=len(m.text)>cap,has_image=m.has_image,has_document=m.has_document,
                            pixels_available=m.message_id in images) for m in sources],
                     "HISTORY":[dict(message_id=h.get('message_id'),reply_to_id=h.get('reply_to_id'),
-                                               sender_id=h.get('sender_id'),text=str(h.get('text',''))[:min(cap,120)]) for h in history[-5:]],
+                        sender_id=h.get('sender_id'),text=str(h.get('text',''))[:min(cap,120)],
+                        questions=(json.loads(h['plan']).get('questions',[])[:3] if h.get('plan') else [])) for h in history[-5:]],
                     "images_order":[dict(image_index=i,message_id=m.message_id) for i,m in enumerate(ordered)]}
-            user={"role":"user","content":ContextJSON(json.dumps(packet,ensure_ascii=False))}
+            if needs_lifecycle:
+                defaults=dict(reply_to_id=None,sender_id=None,has_image=False,has_document=False,pixels_available=False)
+                packet['SOURCE_DEFAULTS']=defaults
+                packet['ORIGINAL_METADATA']=[{k:v for k,v in source.items() if k not in defaults or v!=defaults[k]}
+                                             for source in packet['ORIGINAL_METADATA']]
+            user={"role":"user","content":ContextJSON(json.dumps(packet,ensure_ascii=False,separators=(',',':')))}
             if ordered:
                 user['images']=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii') for m in ordered]
             return [{"role":"system","content":system},user]
@@ -433,19 +509,29 @@ class Classifier:
             low,high=0,700
             while low<high:
                 mid=(low+high+1)//2
-                if request_text_bytes(dict(messages=render(mid),format=FOLLOWUP_SCHEMA))<=8000:
+                if request_text_bytes(dict(messages=render(mid,0),format=schema))<=8000:
                     low=mid
                 else:
                     high=mid-1
-            rendered=render(low)
-            if request_text_bytes(dict(messages=rendered,format=FOLLOWUP_SCHEMA))>8000:
+            source_cap=low
+            low,high=0,200
+            while low<high:
+                mid=(low+high+1)//2
+                if request_text_bytes(dict(messages=render(source_cap,mid),format=schema))<=8000:
+                    low=mid
+                else:
+                    high=mid-1
+            rendered=render(source_cap,low)
+            if request_text_bytes(dict(messages=rendered,format=schema))>8000:
                 self.last_followup_outcome="context_budget_exhausted"
                 return None
         body={"model":self.settings.model,"stream":False,"think":self.think,
-              "options":{"temperature":0},"messages":rendered,"format":FOLLOWUP_SCHEMA}
+              "options":{"temperature":0},"messages":rendered,"format":schema}
         self.last_followup_outcome="provider_unavailable"
         def parse(content):
             result=parse_followup(content)
+            if needs_lifecycle and result is not None and result.get('lifecycle') is None:
+                result=None
             self.last_followup_outcome="ok" if result is not None else "invalid_output"
             return result
         return self._ask(body,parse,attempts=1)

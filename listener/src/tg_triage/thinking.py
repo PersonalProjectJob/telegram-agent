@@ -121,13 +121,16 @@ def pack_messages(system, sources, images, schema):
 
 
 class Turn:
-    def __init__(self, store, key, root_key, input_id, *, clock=time.monotonic):
+    def __init__(self, store, key, root_key, input_id, *, clock=time.monotonic, max_reads=3):
         self.store, self.key, self.root_key, self.input_id = store, key, root_key, input_id
         self.clock = clock
         self.started = clock()
         self.deadline = self.started + 40
         self.calls = 0
         self.reads = 0
+        if type(max_reads) is not int or not 1 <= max_reads <= 6:
+            raise ValueError("Invalid bounded read limit")
+        self.max_reads = max_reads
         self.reason = None
         self.version = 0
         with store._lock:
@@ -166,7 +169,7 @@ class Turn:
 
     def lookup(self):
         self.reads += 1
-        if self.reads > 3 or self.is_set():
+        if self.reads > self.max_reads or self.is_set():
             self.reason = 'lookup_budget_exhausted'
             raise BudgetExhausted(self.reason)
 
@@ -181,7 +184,7 @@ class Turn:
                      conflicts=conflicts or {}, reason_code=self.reason or intent,
                      reply_to_message_id=self.input_id, operation_refs=list(operations), status=status,
                      budget=dict(model_calls_used=self.calls, max_model_calls=2, reads_used=self.reads,
-                                 max_reads=3, elapsed_ms=int((self.clock()-self.started)*1000)))
+                                 max_reads=self.max_reads, elapsed_ms=int((self.clock()-self.started)*1000)))
         if self.key.startswith('case:'):
             targets = proposed_plan if proposed_plan is not None else confirmed.get('results',[])
             value['reply_to_message_id'] = None
@@ -221,7 +224,14 @@ def decision_turn(pipeline, key, root_key, input_id):
     if not getattr(pipeline.config, 'thinking_enabled', True):
         yield None
         return
-    turn = Turn(pipeline.store, key, root_key, input_id)
+    autonomous = getattr(pipeline.config, 'autonomous_enabled', False)
+    existing = CURRENT.get()
+    if autonomous and existing is not None and existing.store is pipeline.store:
+        # Ingress routing and the resulting case/follow-up share one actual-call
+        # budget and deadline. A nested phase must never buy another two calls.
+        yield existing
+        return
+    turn = Turn(pipeline.store, key, root_key, input_id, max_reads=6 if autonomous else 3)
     token = CURRENT.set(turn)
     try:
         yield turn

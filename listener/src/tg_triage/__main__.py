@@ -24,6 +24,8 @@ def _build_classifier(config, store):
     load_prompt('topics.md')
     if config.thinking_enabled:
         load_prompt('thinking-topics.md')
+    if config.autonomous_enabled:
+        load_prompt('autonomous.md')
     return build_provider(config, usage=UsageRecorder(store, config))
 
 
@@ -31,16 +33,34 @@ def main(argv=None) -> int:
     os.umask(0o077)
     parser = argparse.ArgumentParser(prog="tg-triage")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("run", "login", "export-csv", "check-config"):
+    for name in ("run", "login", "export-csv", "check-config", "trace"):
         command = commands.add_parser(name)
         command.add_argument("--config", default="/etc/tg-triage/listener.toml")
         if name == "export-csv":
             command.add_argument("--out", required=True)
             command.add_argument("--db")
+        if name == "trace":
+            command.add_argument("--repo")
+            command.add_argument("--issue", type=int)
+            command.add_argument("--chat-id", type=int)
+            command.add_argument("--message-id", type=int)
+            command.add_argument("--limit", type=int, default=100)
+            command.add_argument("--include-text", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                         format="%(asctime)s %(levelname)s %(message)s")
     try:
+        if args.command == "trace":
+            from .trace import trace, validate_repo
+            repo = validate_repo(args.repo or os.environ.get("GH_REPO", ""))
+            store = Store(load_database_path(args.config), read_only=True)
+            try:
+                print(json.dumps(trace(store, repo=repo, issue=args.issue, chat_id=args.chat_id,
+                                       message_id=args.message_id, limit=args.limit,
+                                       include_text=args.include_text), ensure_ascii=False, indent=2))
+            finally:
+                store.close()
+            return 0
         if args.command == "export-csv":
             db_path = args.db or load_database_path(args.config)
             store = Store(db_path, read_only=True)
@@ -64,6 +84,8 @@ def main(argv=None) -> int:
             with ProcessLock(Path(config.db_path).parent):
                 store = Store(config.db_path)
                 try:
+                    if config.topic_memory_enabled or config.autonomous_enabled:
+                        store.enable_topic_registry()
                     from .telegram_io import run
                     # Fail at startup, not per window, when the topics prompt is not installed.
                     classifier = _build_classifier(config, store)

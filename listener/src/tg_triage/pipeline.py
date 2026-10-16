@@ -88,6 +88,7 @@ class Plan:
     fallback: bool = False         # no usable model judgment at all (model down, partition or JSON unusable)
     model_reason: str | None = None   # 12.12: the model's short why; stored for the reviewer only
     details: object = None          # 12.15: optional model fields, only passed to the renderer
+    related_issue_number: int | None = None  # host-proven replied ticket; never a model target
 
 
 def _order(item):
@@ -221,6 +222,9 @@ class Pipeline:
         self.timer = timer
         self._lock = threading.Lock()
         self._prepared_images = None
+        if config.autonomous_enabled:
+            self.store.enable_topic_registry()
+            self.store.enable_autonomy()
         self.attachments = AttachmentProcessor(
             config.attachments, store, repo=config.gh_repo,
             downloader=downloader, uploader=uploader)
@@ -273,6 +277,13 @@ class Pipeline:
         with self._lock:
             from .followups import sweep
             sweep(self)
+            if self.config.autonomous_enabled:
+                from .autonomous import resume_case
+                for row in self.store.connection.execute("SELECT case_key FROM cases WHERE status='open' ORDER BY id").fetchall():
+                    result=resume_case(self,row['case_key'])
+                    if result is not None:
+                        results.append(result)
+                return results
             due = self.store.due_cases(self.store.clock(), aggregation.window_minutes,
                                        aggregation.max_messages_per_case)
             for case_key in due:
@@ -298,6 +309,9 @@ class Pipeline:
                      "decision=duplicate issue_number=None latency_ms=0",
                      message.chat_id, message.message_id)
             return None
+        if self.config.autonomous_enabled:
+            from .autonomous import process
+            return process(self, message, start)
         pending_context=self.store.pending_context_source(message)
         source = self.store.followup_source(message) if pending_context is None else None
         if source is not None:
@@ -823,6 +837,8 @@ class Pipeline:
                 case_messages=plan.messages, key_message_ids=plan.key_ids, images=found.images,
                 documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
                 max_quoted=len(plan.messages), details=plan.details if plan.details is not None else {})
+            if type(plan.related_issue_number) is int and plan.related_issue_number>0:
+                issue=replace(issue,body=issue.body+f'\n\nTicket liên quan: https://github.com/{self.config.gh_repo}/issues/{plan.related_issue_number}\n')
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)

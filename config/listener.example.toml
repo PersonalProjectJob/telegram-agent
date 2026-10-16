@@ -95,3 +95,7 @@ db_path = "/var/lib/agentfleet/tg/triage.sqlite3"
 # semantic path. Existing decisions/operation reservations remain in SQLite during rollback.
 [thinking]
 enabled = true
+# Opt-in additive topic projection; does not replace aggregation or grant routing authority.
+topic_memory_enabled = false
+# Semantic multi-topic routing and closed-ticket lifecycle; keep off until verified.
+autonomous_enabled = false

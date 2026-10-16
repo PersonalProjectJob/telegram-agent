@@ -619,7 +619,7 @@ class WheelTests(unittest.TestCase):
         self.assertTrue(verify_record(data))
         with zipfile.ZipFile(io.BytesIO(data)) as wheel:
             prompts = [n for n in wheel.namelist() if '.data/data/share/tg-triage/prompts/' in n]
-            expected = ('classify.md', 'case.md', 'topics.md', 'followup.md', 'thinking-topics.md')
+            expected = ('classify.md', 'case.md', 'topics.md', 'followup.md', 'thinking-topics.md', 'autonomous.md')
             prompt_root = 'tg_triage-1.0.0.data/data/share/tg-triage/prompts/'
             self.assertEqual(set(prompts), {prompt_root + filename for filename in expected})
             self.assertEqual(len(prompts), len(expected))

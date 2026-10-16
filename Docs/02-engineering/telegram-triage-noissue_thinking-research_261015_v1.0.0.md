@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.3.0 · **Updated**: 2026-10-16 09:11 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.5.0 · **Updated**: 2026-10-16 11:31 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -9,6 +9,18 @@
 - [Fleet Master](../00-master/worker-agent-fleet-1_master_261007_v1.0.8.md)
 - [Nguồn nghiệp vụ TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md)
 - [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43) · không có issue riêng.
+
+## Harness foundation: durable topics và trace (2026-10-16)
+
+Foundation trước đó thêm projection/trace. Increment v1.5.0 bổ sung autonomous semantic ingress và closed-ticket lifecycle; đường legacy hai phút giữ khi flag tắt. Contract duy nhất nằm ở [nguồn nghiệp vụ](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md#nâng-cấp-harness-phạm-vi-foundation-và-quy-tắc-đích). Source implementation trong worktree không phải bằng chứng đã chạy trên THINKPAD.
+
+- `topic_store.py`: registry additive `original_intake` theo chat/case/group, membership có role/provenance, revision và immutable events. Root đã followup split có siblings/bindings riêng; registry chưa project corrected split partition, trace phải nêu `split_partition_not_projected` thay vì khẳng định một topic là một ticket hiện tại. Hydration cursor/batch giới hạn công việc cũ, idempotent; projection từ kết quả đã lưu, không gọi model/GitHub/Telegram. Hook ở writable store chỉ cập nhật case bị tác động, không scan toàn transcript trên mỗi tin. Registry không được dùng để mở rộng quyền TG-16.
+- `trace.py` và CLI: mở database read-only, schema capability discovery, query theo repository/issue hoặc chat/message; traversal/output có bounds và đánh dấu thiếu/cắt. Whitelist metadata; prose cần opt-in. Không build provider, load session hay chạy migration/recovery; config chỉ dùng để xác định database/repository, không in secrets.
+- Giữ nguyên `cases/groups/reconciliation`, root key lịch sử và side-effect ledger. Case `done` nghĩa đã xử lý intake, không nghĩa GitHub issue đã đóng. Generic late followup không có proven job/root không được xác nhận thành topic binding.
+- `[thinking] topic_memory_enabled=false` là mặc định; khi true, `run` khởi tạo registry sau ProcessLock/writable Store. `enable_topic_registry(hydration_batch=100)` tiến cursor theo case ID, batch hợp lệ 1–1000; tắt cờ giữ dữ liệu additive và không tiếp tục projection. Projector giới hạn 1000 originals, 20 roots và 1000 followup members/root; `membership_truncated` báo projection chưa đầy đủ, không dùng phần thiếu để suy quyền. Trace vẫn đọc được bảng đã có, không hydrate.
+- Không bật WAL/FTS hoặc thêm framework trong đợt này. Autonomous mode triển khai bounded candidate search, event-driven readiness, semantic routing và trusted lifecycle reader/related create; không có toàn lịch sử semantic search. User đã chọn policy bổ sung ticket cũ / confirmed recurrence tạo related / unclear hỏi lại; chưa có quyền auto reopen.
+
+Review/verification phải chứng minh: migration/hydration hai lần không thêm event trùng; membership partition đúng; old database trace không migrate; snapshot rollback-journal độc lập giữ DB hash/mtime/directory entries, WAL/concurrent writer có kiểm riêng và giới hạn auxiliary files được báo rõ; mặc định không lộ text/plan/payload; giới hạn SQL và output; cross-chat/repository isolation; toàn bộ regression listener vẫn đạt. Trạng thái các điều kiện này nằm trong evidence của lần verify, không tick PASS tại tài liệu thiết kế.
 
 ## Solution vs codebase
 
@@ -222,15 +234,25 @@ No canonical Harness/provider/auth/model changes were made. Synthetic fake-tool 
 - [ ] QA tạo corpus có nhãn, crash drills và so sánh baseline; chạy offline trước shadow/canary.
 - [ ] Review privacy/retention của telemetry và dữ liệu hội thoại trước shadow production.
 
-FE/UI: không thay đổi trong nghiên cứu này. API/DB mới: chưa triển khai; decision JSON phía trên là mẫu thiết kế, không phải schema SQLite hiện hành. Ngân sách và mốc đánh giá phải đo lại theo cấu hình host/provider thực tế. Tài liệu này không cấp quyền truy xuất thêm group, gửi message, tạo issue hay bật cloud consent.
+Đoạn nghiên cứu gốc này không thay đổi FE/UI; decision JSON phía trên là mẫu thiết kế, không phải toàn bộ schema SQLite hiện hành. Các bảng decision đã triển khai được mô tả ở phần implementation; topic/trace mới của đợt 2026-10-16 được mô tả ở phần foundation. Routing/lifecycle v1.5.0 được mô tả bên dưới; metric/pilot nghiên cứu vẫn là đề xuất. Ngân sách và mốc đánh giá phải đo lại theo cấu hình host/provider thực tế. Tài liệu này không cấp quyền truy xuất thêm group, gửi message, tạo issue hay bật cloud consent.
 
 ## Changelog
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.5.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous/lifecycle implementation, batch/provenance, current partition, bounded joint packing và verified episodes. |
+| v1.4.0 | 2026-10-16 10:11 | Codex / owner AlexChu | Thiết kế triển khai topic/trace foundation, additive/bounded/read-only contracts và ranh giới lifecycle/routing. |
 | v1.3.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Production startup parity, bounded source packing/redaction and guarded multimodal canonical enrichment for the POS regression. |
 | v1.2.0 | 2026-10-15 23:29 | Codex / owner AlexChu | Image-envelope root cause, scoped partition fallback/recovery and real-image semantic acceptance. |
 | v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Generic intake-essential principle and existing temperature0 intent; labels/threshold/budgets unchanged. |
 | v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Diagnose provider timeouts and explicit DeepSeek disable request; retain20/40, document experiment limits. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | Implement bounded controller/journal, separate historical pilot proposals and actual runtime limits; QA and isolated smoke. |
 | v1.0.0 | 2026-10-15 21:08 | Codex / owner AlexChu | Nghiên cứu Harness và nguồn chính thức; kiến trúc/budget/pilot đề xuất, không đổi runtime. |
+
+## Autonomous/lifecycle implementation v1.5.0
+
+`autonomous.py` điều phối cùng `ingress_model.py`/`autonomy_store.py`: host candidates same-chat/fixed-repo, strict partition, one joint USER packet, canonical ingress draft reuse. `thinking.decision_turn` tái sử dụng CURRENT cho nested followup, tối đa hai attempts/40s/sáu reads. Cache plan trước mutation, kiểm lại repo/full source khi resume; atomic batch membership tránh tiêu model theo từng tin. Existing legacy cases vẫn được drain, không bỏ quên khi bật flag.
+
+`lifecycle.py` kiểm evidence/recurrence/unclear bằng source và exact quotes; closed/updated timestamp không đủ chứng minh working. `github_issues.lifecycle_snapshot` trusted GET; related create preflight kiểm state/update token, verified readback trước episode registration. Historical evidence comment giữ closed, recurrence tạo canonical new related, unclear hỏi và không reopen. Episode provenance có namespace riêng, exact reply/current followup route vào episode mới; old parent không nuốt lại evidence đã chuyển.
+
+Topic current projection không thay originals. Trace đọc các ledger routing/batch/episodes/current partition và explicit turn link, metadata mặc định. Prompt autonomous được đóng gói wheel; `[thinking] autonomous_enabled=false` mặc định, bật cùng enabled/topic_memory trên host sau kiểm immutable release. Rollback chỉ code/config, giữ additive ledger và backup nhất quán.

@@ -1,0 +1,249 @@
+"""Event-driven semantic intake. SQL proofs and canonical renderer own all side effects."""
+from dataclasses import replace
+from . import group_notices
+from .models import CaseAnalysis, Decision, TopicGroup
+from .thinking import CURRENT, decision_turn
+
+
+def _validate(groups,sources,candidates,threshold):
+    if not isinstance(groups,list) or not groups:
+        return None
+    expected={m.message_id for m in sources}; seen=set(); chosen={c['candidate_id']:c for c in candidates}
+    for group in groups:
+        if not isinstance(group,dict):
+            return None
+        ids=group.get('message_ids',[])
+        if not ids or any(type(i) is not int or i not in expected or i in seen for i in ids):
+            return None
+        seen.update(ids)
+        action=group.get('action'); candidate=chosen.get(group.get('candidate_id'))
+        if group.get('candidate_id') is not None and candidate is None:
+            return None
+        if action=='CONTINUE' and (candidate is None or group['confidence']<threshold):
+            return None
+        if action=='NEW' and candidate is not None:
+            return None
+        analysis=group.get('analysis')
+        allowed=set(ids)|({m.message_id for m in candidate['messages']} if candidate else set())
+        if analysis is None or any(i not in allowed for i in analysis.key_message_ids):
+            return None
+        if action=='NEW' and (analysis.verdict!='ticket' or analysis.actionable is not True
+                or analysis.classification is None or analysis.classification.confidence<threshold
+                or group['confidence']<threshold or analysis.missing_info):
+            group['action']='CLARIFY'
+        if action not in ('NEW','CONTINUE','CLARIFY','CHAT'):
+            return None
+        group['candidate']=candidate
+    return groups if seen==expected else None
+
+
+def _pending(pipeline,messages,candidate,question,reason):
+    key,group,all_sources=pipeline.store.autonomy_case(messages,candidate if candidate and candidate['pending'] else None)
+    first=min(all_sources,key=lambda m:m.message_id)
+    result=Decision('pending_review','model',case_key=key,reason=reason)
+    pipeline.store.finish(first,result)
+    pipeline.store.close_case(key,result,0)
+    # Focused visible question, durably reserved even when delivery is ambiguous.
+    if pipeline.config.mode!='dry-run':
+        group_notices.notify(pipeline.store,pipeline.notice_sender,messages[0],
+            Decision('needs_human','model',case_key=key),
+            (question or 'Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?',),
+            pipeline.config.gh_repo)
+    return result
+
+
+def process(pipeline,message,start):
+    """Process durable same-chat backlog together; semantic groups decide membership."""
+    cached=pipeline.store.autonomous_plan(message.chat_id,message.message_id)
+    if cached and cached.get('host_repo')!=pipeline.config.gh_repo:
+        return _quarantine(pipeline,message,'cached_repo_changed')
+    sources=[message]
+    if cached:
+        from .store import _to_message
+        sources=[]
+        for mid in cached['message_ids']:
+            row=pipeline.store.get(message.chat_id,mid)
+            if row is None:
+                return _quarantine(pipeline,message,'cached_sources_missing')
+            old=_to_message(row)
+            if row['decision']=='queued':
+                pipeline.store.start_classifying(old)
+            sources.append(old)
+    for queued in pipeline.store.queued_messages():
+        if (cached is None and queued.chat_id==message.chat_id and queued.message_id!=message.message_id and len(sources)<20):
+            if pipeline.store.start_classifying(queued):
+                sources.append(queued)
+    sources.sort(key=lambda m:m.message_id)
+    key=f'{message.chat_id}:{message.message_id}'
+    with decision_turn(pipeline,'ingress:'+key,key,message.message_id):
+        candidates=[]
+        ordered=[m for m in sources if m.reply_to_id is not None][:6] or sources[:1]
+        for source in ordered:
+            found=pipeline.store.autonomy_candidates(source,pipeline.config.gh_repo)
+            for candidate in found:
+                existing=next((c for c in candidates if c['source']['root_key']==candidate['source']['root_key']),None)
+                if existing:
+                    if candidate['exact_reply']:
+                        existing.setdefault('reply_source_ids',[]).append(source.message_id)
+                        existing['exact_reply']=True
+                    continue
+                if len(candidates)>=6 or sum(len(c['messages']) for c in candidates)+len(candidate['messages'])>20:
+                    continue
+                candidate['reply_source_ids']=[source.message_id] if candidate['exact_reply'] else []
+                candidates.append(candidate)
+            if not any(m.reply_to_id is not None for m in ordered):
+                break
+        for i,candidate in enumerate(candidates,1):
+            candidate['candidate_id']=f'c{i}'
+        turn=CURRENT.get()
+        if turn:
+            turn.record('ingress_candidates',dict(source_ids=[m.message_id for m in sources],
+                candidates=[dict(candidate_id=c['candidate_id'],case_key=c['source']['case_key'],
+                    exact_reply=c['exact_reply'],pending=c['pending']) for c in candidates]))
+        all_sources={m.message_id:m for m in sources}
+        for candidate in candidates:
+            for old in candidate['messages']:
+                all_sources.setdefault(old.message_id,old)
+        try:
+            if any(m.has_image for m in all_sources.values()) and getattr(pipeline.classifier,'supports_vision',False):
+                pipeline._prepared_images=pipeline.attachments.prepare_images(key,list(all_sources.values()))
+            ask=getattr(pipeline.classifier,'analyze_ingress',None)
+            if cached:
+                groups=[cached]
+                candidate=cached.get('candidate')
+                if candidate and not candidate['pending']:
+                    proof=candidate['source']; stored=pipeline.store.get(message.chat_id,proof['source_message_id'])
+                    if (proof['chat_id']!=message.chat_id or stored is None
+                            or stored['issue_url']!=f"https://github.com/{pipeline.config.gh_repo}/issues/{proof['issue_number']}"):
+                        raise ValueError('Cached ingress target proof changed')
+            else:
+                answer=ask(sources,candidates,**pipeline._vision_options(list(all_sources.values()))) if ask else None
+                groups=_validate(answer,sources,candidates,pipeline.config.ollama.confidence_threshold)
+            if groups is None:
+                # No guessed membership on provider/schema failure, even adjacent messages.
+                reason=getattr(pipeline.classifier,'last_ingress_outcome','invalid_ingress_output')
+                groups=[dict(message_ids=[source.message_id],action='CLARIFY',candidate=None,candidate_id=None,
+                    confidence=0,question='',analysis=CaseAnalysis('needs_human',None,(source.message_id,)),
+                    host_reason=reason) for source in sources]
+            if not cached:
+                for group in groups:
+                    if group['action']=='NEW' and pipeline._vision_unavailable([m for m in sources if m.message_id in group['message_ids']]):
+                        group['action']='CLARIFY'; group['host_reason']='ingress_pixels_unavailable'
+                    if group['action']=='NEW':
+                        related=[c for c in candidates if not c['pending'] and set(c['reply_source_ids'])&set(group['message_ids'])]
+                        if len(related)==1:
+                            group['host_related_issue']=related[0]['source']['issue_number']
+                pipeline.store.save_autonomous_plans(sources,groups,pipeline.config.gh_repo)
+            by_id={m.message_id:m for m in sources}; results=[]
+            for group in groups:
+                own=[by_id[i] for i in group['message_ids']]
+                own.sort(key=lambda m:m.message_id)
+                candidate=group['candidate']; action=group['action']; analysis=group['analysis']
+                target=candidate['source']['case_key'] if candidate else f'{own[0].chat_id}:{own[0].message_id}'
+                reason=group.get('host_reason','semantic_'+action.lower())
+                pipeline.store.autonomy_route(own,action,candidate,target,reason)
+                if action in ('CONTINUE','CLARIFY') and candidate and not candidate['pending']:
+                    from .followups import sweep
+                    job_id=pipeline.store.enqueue_followup_batch(own,candidate['source'])
+                    if action=='CLARIFY':
+                        job=dict(pipeline.store.connection.execute('SELECT * FROM followup_jobs WHERE id=?',(job_id,)).fetchone())
+                        if job['status']=='queued':
+                            pipeline.store.save_followup_plan(job,dict(action='clarify',questions=[
+                                group['question'] or next(iter(analysis.missing_info),group_notices.FALLBACK_QUESTION)],
+                                context_reason='ingress_scope_clarification'),[])
+                    sweep(pipeline)
+                    results.append(Decision('followup','model',case_key=target,issue_number=candidate['source']['issue_number']))
+                    continue
+                if action=='CLARIFY' or action=='CONTINUE' and (analysis.verdict!='ticket' or not analysis.actionable):
+                    results.append(_pending(pipeline,own,candidate,group['question'] or next(iter(analysis.missing_info),''),reason))
+                    continue
+                case_key,group_key,members=pipeline.store.autonomy_case(own,candidate if action=='CONTINUE' else None)
+                first=min(members,key=lambda m:m.message_id)
+                if action=='CHAT':
+                    from .pipeline import Plan
+                    plan=Plan(group_key,members,first,'model','chat',reason='semantic_chat')
+                else:
+                    value=analysis.classification
+                    model_group=TopicGroup('',tuple(m.message_id for m in members),analysis.verdict,
+                        type=value.type if value else None,category=analysis.category,
+                        title=value.title if value else '',summary=value.summary if value else '',
+                        priority=value.priority if value else None,confidence=value.confidence if value else None,
+                        missing_info=analysis.missing_info,actionable=analysis.actionable,
+                        reason=analysis.reason,details=analysis.details)
+                    plan=pipeline._safety(pipeline._plan_group({m.message_id:m for m in members},model_group,{}))
+                    plan=replace(plan,key=group_key,key_ids=analysis.key_message_ids)
+                    plan=replace(plan,related_issue_number=group.get('host_related_issue'))
+                result=pipeline._run(plan,case_key)
+                if candidate and candidate['pending'] and result.issue_number and pipeline.notice_sender is not None:
+                    if pipeline.store.reserve_autonomous_confirmation(first,result.issue_number):
+                        notice_id=None
+                        try:
+                            notice_id=pipeline.notice_sender(first.chat_id,first.message_id,
+                                group_notices.notice_text(result,plan.clarify,pipeline.config.gh_repo))
+                        except Exception:
+                            pass  # Reserved delivery is ambiguous; never blindly replay a send.
+                        pipeline.store.finish_autonomous_confirmation(first,result.issue_number,notice_id)
+                pipeline.store.close_case(case_key,result,max(0,int((pipeline.timer()-start)*1000)))
+                results.append(result)
+            if turn:
+                turn.record('ingress_result',dict(source_ids=[m.message_id for m in sources],
+                    results=[dict(decision=r.decision,issue_number=r.issue_number) for r in results]),
+                    status=('outcome_unverified' if any(r.decision in ('error','rate_limited') for r in results)
+                            else 'routing_recorded' if any(r.decision=='followup' for r in results) else 'accounting_verified'))
+            return pipeline._combine(results[0].case_key if len(results)==1 else key,results)
+        finally:
+            if pipeline._prepared_images is not None:
+                pipeline._prepared_images.close()
+                pipeline._prepared_images=None
+
+
+def resume_case(pipeline,case_key):
+    """Resume cached canonical draft after a crash; never repeat an ambiguous GitHub POST."""
+    from .pipeline import Plan
+    case=pipeline.store.get_case(case_key)
+    cached=pipeline.store.autonomous_plan(case['chat_id'],case_key=case_key)
+    if cached is None:
+        return pipeline._analyze_case(case_key,pipeline.timer())  # legacy intake drained on activation
+    if cached.get('host_repo')!=pipeline.config.gh_repo:
+        return _quarantine(pipeline,pipeline.store.case_messages(case_key)[0],'cached_repo_changed',case_key)
+    if not pipeline.store.begin_analysis(case_key):
+        return None
+    members=pipeline.store.case_messages(case_key)
+    first=min(members,key=lambda m:m.message_id); group_key=f'{first.chat_id}:{first.message_id}'
+    pipeline.store.plan_groups(case_key,[(group_key,[m.message_id for m in members])])
+    action=cached['action']; analysis=cached['analysis']
+    if action=='CLARIFY' or action=='CONTINUE' and not analysis.actionable:
+        plan=Plan(group_key,members,first,'model','pending_review',reason='semantic_clarify')
+    elif action=='CHAT':
+        plan=Plan(group_key,members,first,'model','chat',reason='semantic_chat')
+    else:
+        value=analysis.classification
+        model_group=TopicGroup('',tuple(m.message_id for m in members),analysis.verdict,
+            type=value.type if value else None,category=analysis.category,
+            title=value.title if value else '',summary=value.summary if value else '',
+            priority=value.priority if value else None,confidence=value.confidence if value else None,
+            missing_info=analysis.missing_info,actionable=analysis.actionable,reason=analysis.reason,details=analysis.details)
+        plan=pipeline._safety(pipeline._plan_group({m.message_id:m for m in members},model_group,{}))
+        plan=replace(plan,key=group_key,key_ids=analysis.key_message_ids)
+        plan=replace(plan,related_issue_number=cached.get('host_related_issue'))
+    result=pipeline._run(plan,case_key)
+    pipeline.store.close_case(case_key,result,0)
+    if result.decision=='pending_review' and pipeline.config.mode!='dry-run':
+        group_notices.notify(pipeline.store,pipeline.notice_sender,first,
+            Decision('needs_human','model',case_key=case_key),(cached['question'] or group_notices.FALLBACK_QUESTION,),pipeline.config.gh_repo)
+    return result
+
+
+def _quarantine(pipeline,message,reason,case_key=None):
+    """Configuration changes revoke cached tool authority; retain evidence and ask visibly."""
+    if case_key:
+        pipeline.store.fail_case(case_key,reason)
+    else:
+        pipeline.store.fail_message(message,reason)
+    result=Decision('error','none',case_key=case_key,error=reason,reason=reason)
+    if pipeline.config.mode!='dry-run':
+        group_notices.notify(pipeline.store,pipeline.notice_sender,message,
+            Decision('needs_human','none',case_key=case_key),
+            ('Repository đã thay đổi từ lần phân tích trước. Nhờ Owner xác nhận nơi ghi nhận yêu cầu này giúp Em nhé.',),
+            pipeline.config.gh_repo)
+    return result

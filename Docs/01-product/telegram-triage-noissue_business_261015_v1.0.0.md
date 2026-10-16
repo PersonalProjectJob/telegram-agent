@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.3.1 · **Updated**: 2026-10-16 09:57 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.5.0 · **Updated**: 2026-10-16 11:31 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -16,14 +16,117 @@ User yêu cầu tài liệu này và sau đó yêu cầu triển khai THINKING. 
 - [Hướng dẫn listener](../../listener/README.md)
 - [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43)
 
+## Business DOCS — Harness phân loại hội thoại và vòng đời ticket
+
+### Persona
+
+Người gửi yêu cầu trong group Telegram là người dùng chính: họ trao đổi tự nhiên, forward tin, gửi ảnh trước hoặc sau caption và reply vào bất kỳ tin cũ nào. Họ không cần biết ticket ID, tag bot hay cú pháp lệnh. Team xử lý và Owner cần ticket có phạm vi, bằng chứng và lịch sử đúng. Operator là người dùng phụ: cần lần từ một tin Telegram hoặc issue về nguồn, quyết định và side effect để debug an toàn.
+
+### Scenario
+
+Hiện trạng: gom theo thời gian/sender có thể trộn nhiều yêu cầu; phân tích ảnh tách caption mất ý nghĩa “bảng này”; câu trả lời ngắn mất câu hỏi trước; reply thông báo dễ nối nhầm ticket. Kết quả là ticket thiếu thông tin đã có, hỏi lặp hoặc tạo trùng.
+
+Trạng thái mong muốn: Harness AlexChu giữ mạch chủ đề và nguồn bằng chứng qua nhiều lượt, đề xuất quyết định rồi kiểm quyền/phạm vi trước khi ghi. Người dùng thấy link ticket tương ứng hoặc câu hỏi cụ thể ngay tại tin đang trao đổi. Giá trị nghiệp vụ là giảm thao tác nhập lại, bảo toàn bằng chứng và giúp team nhận đúng công việc. Đây là mục tiêu; chưa có số liệu chứng minh mức giảm thời gian hay độ chính xác.
+
+### Audit
+
+Nguyên nhân đã quan sát gồm ranh giới case dựa thời gian, thiếu context chung của ảnh/caption, thiếu ánh xạ bền vững từ reply/notice tới phạm vi ticket, giả thuyết model bị coi như sự thật và packet vượt ngân sách khi lặp dữ liệu. Thêm prompt suy luận đơn thuần không giải quyết hết: cần bộ nhớ, kiểm nguồn, phân quyền hành động, reservation và kiểm kết quả. Transcript/pixel/forward chỉ là bằng chứng, không phải lệnh thay đổi quy tắc của Harness.
+
+### Solution và phạm vi
+
+Harness xử lý một vòng nghiệp vụ: lưu tin → tìm context cùng chat → phân biệt chủ đề → kiểm thông tin đủ nhận diện công việc → chọn tạo/bổ sung/hỏi/chat → kiểm ticket lifecycle và quyền → thực hiện → lưu kết quả → reply đúng nguồn. Một chủ đề có thể trải qua nhiều người/nhiều lượt; một người có thể trao đổi nhiều chủ đề xen kẽ. Tuổi tin và cùng người gửi không quyết định membership.
+
+Trong phạm vi: untagged intake, nhiều chủ đề, ảnh/caption/reply theo gói, hỏi làm rõ, bổ sung ticket mở/đóng, lỗi tái diễn có liên quan, sửa binding/partition, template chuẩn và truy vết. Ngoài phạm vi hiện tại: tự giải quyết bug, tự đóng/mở lại issue, tìm kiếm ngữ nghĩa không giới hạn toàn lịch sử, dashboard debug mới hoặc tự thay đổi quyền/provider consent.
+
+### Context packet và quyền nguồn
+
+| Thành phần | Ý nghĩa nghiệp vụ | Ràng buộc |
+|---|---|---|
+| Tin mới, caption và pixel | Nội dung người dùng muốn xử lý | Gửi chung một gói, ảnh phải ánh xạ source ID |
+| Reply chain và bot notice | Chỉ nơi người dùng đang trao đổi | Tra cả tin cũ; không mặc định cùng phạm vi khi nội dung khác |
+| Tin trước và câu hỏi đang chờ | Giải nghĩa “cả hai”, “ticket 1”, “đây là hình ảnh” | Không hỏi lại dữ kiện đã có |
+| Xác nhận của người dùng | Evidence scope/binding/chạy tốt | Giữ provenance; không thay bằng suy đoán model |
+| Nội dung ticket do model dựng | Giả thuyết hiện tại có thể sửa | Không lấn át nguồn gốc hoặc human binding |
+| Repository, issue và trạng thái đọc được | Target được host xác minh | Model không tự chọn target, URL hay permission |
+
+Context có giới hạn để kiểm soát latency/chi phí. Khi chưa tìm đủ bằng chứng hoặc không đóng gói đủ, Harness phải lưu pending và hỏi đúng điểm thiếu; không suy rằng phần không đọc thấy là không tồn tại. Exact reply có durable provenance độc lập với giới hạn hai phút.
+
+### Quyết định nghiệp vụ
+
+| Tình huống | Hành động | Phản hồi kỳ vọng |
+|---|---|---|
+| Một yêu cầu qua ba tin | Một ticket, giữ cả ba nguồn | Reply tin đầu, một link |
+| Ba yêu cầu độc lập hoặc xen kẽ | Ba ticket/phạm vi riêng | Mỗi tin đầu nhận đúng link tương ứng |
+| Đủ nhận diện bug/task, thiếu chi tiết debug phụ | Ghi nhận theo template | Không chặn vì thiếu thiết bị/log/layout tương lai |
+| Thiếu đối tượng/hành vi/ý định thực sự | Giữ pending, hỏi focused | Người dùng reply bổ sung nối lại đúng chủ đề |
+| Reply ticket mở cùng phạm vi | Bổ sung bằng chứng; cập nhật canonical body khi guard hợp lệ | Link ticket hiện có, không tạo trùng |
+| Reply ticket cũ nhưng yêu cầu mới khác phạm vi | Tạo ticket riêng khi đủ rõ, gắn liên quan target đã chứng minh | Reply nguồn yêu cầu mới |
+| Không chắc thuộc chủ đề nào | Hỏi ánh xạ source/phạm vi | Không gộp theo adjacency/sender |
+| Thông tin/cảm ơn/chào hỏi | CHAT | Không tạo issue |
+
+### Vòng đời ticket
+
+Trạng thái xử lý nội bộ (pending/đang phân tích/đã log/ambiguous) khác trạng thái issue (open/closed). “Đã log” không có nghĩa bug đã sửa, và “closed” không có nghĩa đã kiểm tra chạy tốt.
+
+| Trạng thái và evidence | Quyết định |
+|---|---|
+| Open + thông tin cùng sự cố | Bổ sung đúng ticket; không sinh episode mới |
+| Closed + bằng chứng lịch sử hoặc lỗi chưa từng hết | Bổ sung ticket cũ và giữ closed; không tự reopen |
+| Closed + xác nhận đã chạy tốt, sau đó lỗi tái diễn | Tạo ticket cho episode mới, gắn liên quan parent |
+| Đã có episode mới + lại reply parent dùng success evidence cũ | Không tạo thêm ticket trùng; hỏi/đối chiếu episode đang có |
+| Có success confirmation mới sau episode gần nhất rồi lỗi lại | Có thể tạo episode tiếp theo với evidence mới |
+| Chưa rõ chưa từng hết hay tái diễn | Hỏi đúng sự khác biệt này trong group |
+| Không đọc/đối chiếu được trạng thái target | Giữ pending, không đoán lifecycle |
+
+Sau related create, reply source lỗi mới hoặc notice của episode phải về ticket mới; reply nguồn lịch sử vẫn giữ parent. Related episode không phải sibling của thao tác tách ticket. Tách lại hoặc xử lý lại dùng template đang chạy và ticket hiện hữu, không tạo mới chỉ để sửa format. POST outcome không rõ phải kiểm external readback; không tự thử tạo lần nữa.
+
+### User Flow
+
+```mermaid
+flowchart TD
+    A["Nhận và lưu tin Telegram"] --> B["Gói ảnh, caption, reply và context đã chứng minh"]
+    B --> C{"Chủ đề và ý định đủ rõ?"}
+    C -->|"Chat"| D["Lưu quyết định, không tạo ticket"]
+    C -->|"Chưa rõ"| E["Lưu pending, reply hỏi đúng điểm thiếu"]
+    E -->|"Người dùng bổ sung"| B
+    C -->|"Đủ rõ"| F{"Có ticket cùng phạm vi?"}
+    F -->|"Chưa có"| G["Tạo canonical ticket, kiểm kết quả"]
+    F -->|"Có"| H{"Trusted lifecycle và evidence"}
+    H -->|"Open hoặc bằng chứng cũ"| I["Bổ sung ticket hiện hữu"]
+    H -->|"Chạy tốt rồi tái diễn"| J["Kiểm episode gần nhất, tạo related khi đủ evidence mới"]
+    H -->|"Không chắc"| E
+    G --> K["Lưu mapping và reply đúng source với link"]
+    I --> K
+    J --> K
+    G -->|"Outcome không rõ"| L["Giữ reservation, operator kiểm tra trước retry"]
+```
+
+### Wireframe hội thoại và Design System Audit
+
+Dùng group, media caption, reply và link của Telegram hiện có; không thêm màn hình, component hoặc token giao diện. Layout/responsive do Telegram quản lý trên mobile/tablet/desktop, không đặt breakpoint riêng cho bot. Audit giao diện: không áp dụng thay đổi token; không phát sinh hardcoded UI value cần thiết kế lại.
+
+Tin xác nhận tạo thành công: **“Em đã ghi nhận nội dung này và tạo ticket: [Link] rồi nhé 😊”**. Reply tin đầu đúng chủ đề. Câu hỏi phải nhắc phần đã biết và hỏi phần còn thiếu, ví dụ “Em đã ghi nhận lỗi POS trên app và web với máy in có dây. Anh/Chị cho Em biết lỗi chưa từng hết hay đã in được rồi mới lỗi lại nhé?”. Xưng hô theo TG-28/TG-29; không đoán giới tính từ tên/ảnh.
+
+### Bộ nhớ, debug và tiêu chí nghiệm thu
+
+Bộ nhớ nghiệp vụ gồm nguồn gốc, membership, binding người dùng, câu hỏi đang chờ, giả thuyết ticket, episode liên quan, quyết định và kết quả write/notice. Dữ liệu nằm ở SQLite của listener, owner/state lineage AlexChu; vị trí host, schema, trace và quy trình điều tra ở phần “Bộ nhớ, truy vấn và debug vận hành” bên dưới. Operator phải lần được issue → topic → source/reply → decision/plan → operation → readback → notice. Chỗ thiếu/truncated/ambiguous phải hiện rõ; không sửa dữ liệu để làm lịch sử có vẻ đầy đủ.
+
+Nghiệm thu bắt buộc gồm các context người dùng đã gửi: #46 phải giải nghĩa panel/mode từ ảnh và caption, bỏ Q&A backend; #47 giữ lỗi POS/app/web/máy in có dây và thêm đúng error từ ảnh; ticket1/2 giữ binding đã xác nhận; ba-tin/một và ba-tin/ba reply đúng; closed evidence/recurrence/unclear đúng quy tắc; crash/replay không tạo trùng; reply notice sau recurrence không quay nhầm parent. QA Doc là nơi ghi kết quả thật, không tick PASS chỉ từ mô tả này.
+
+Metric đề xuất để đo sau rollout: tỷ lệ source–ticket mapping đúng qua audit, câu hỏi lặp dữ kiện đã có, duplicate ticket, context packet failure, clarification có ích, thời gian từ tin đầu tới link và thời gian hoàn tất bổ sung. Chưa chốt mục tiêu số/p95 hoặc accuracy benchmark; regression corpus nhỏ không thay thế đánh giá production.
+
+### Trạng thái triển khai tại lần cập nhật DOCS
+
+User đã chốt các quy tắc trên và yêu cầu code/test/PR/deploy. Autonomous/lifecycle/trace có implementation; revision trước qua 863 test (một skip Windows); ba lỗi semantic/budget từ model thật đã được sửa và kiểm lại 5/5 tình huống đạt trên preview source đã đối chiếu 37 runtime/prompt files. Full regression revision cuối và installed proof được ghi riêng trong QA Doc. Chưa coi lần nâng cấp này đã deploy THINKPAD cho tới khi có evidence immutable release, installed tests và service readback. Các mốc sau phải cập nhật ở QA/release evidence, không suy từ version DOCS.
+
 ## Bảng quyết định hiện hành
 
 | Đầu vào / bằng chứng | Quyết định | GitHub | Reply |
 |---|---|---|---|
 | Công việc rõ, không tag | ticket | Tạo issue | Link, reply source đầu topic |
-| Công việc chưa rõ/model unusable | needs_human | Ticket theo dõi | Hỏi tối đa ba câu trong group |
+| Công việc chưa rõ/model unusable | clarify/needs_human | Autonomous giữ pending, legacy có thể tạo ticket theo dõi | Hỏi đúng điểm thiếu trong group |
 | Chat/cảm ơn/câu hỏi thông tin | chat | Không write | Không text notice |
-| Ảnh đơn lẻ thiếu yêu cầu | pending_review có thể xảy ra | Không create | Có thể im lặng, giới hạn TG-15 |
+| Ảnh đơn lẻ thiếu yêu cầu | Autonomous clarify, legacy pending_review | Không create | Autonomous hỏi intent ngay; legacy giới hạn TG-15 |
 | Vision partition lỗi, text độc lập chưa phân loại | pending_review/context_pending | Không gộp/tạo ticket cho text chưa rõ | Hỏi ngay theo component; reply có proof mở intake mới |
 | Reply có root/provenance đủ, bổ sung | update | Append comment | Reply lượt phản hồi mới |
 | Xác nhận tách đủ source/count | split | Giữ gốc + N−1 sibling | Link thực tế của từng ticket |
@@ -46,15 +149,15 @@ Lớp code chỉ nhận command đầu câu và noise không có chữ/command r
 
 ### TG-04 — Command
 
-Nhận /bug, /feature, /question, /task, /feedback đầu câu, không phân biệt hoa thường, có thể kèm @BotName. Command có nội dung xử lý ngay với các tin đã gom; command rỗng là noise. /question theo TG-09.
+Nhận /bug, /feature, /question, /task, /feedback đầu câu, không phân biệt hoa thường, có thể kèm @BotName. Đường legacy: command có nội dung xử lý ngay với các tin đã gom; autonomous đưa payload vào semantic ingress để chia đúng chủ đề; command rỗng là noise. /question theo TG-09.
 
-### TG-05 — Gom cửa sổ
+### TG-05 — Gom và định tuyến chủ đề
 
-Reply thật ưu tiên case được tham chiếu; nếu không, gom case mới nhất cùng chat/cùng sender trong cửa sổ và giới hạn số tin. Sender không xác định không tự gom. Reply ngoài cửa sổ vẫn có thể vào case nếu còn chỗ; conversational followup dùng TG-16.
+Khi `[thinking] autonomous_enabled=true` và THINKING bật, Harness định tuyến theo ngữ nghĩa của các tin đang chờ cùng chat, không dùng giới hạn hai phút hoặc cùng sender làm ranh giới chủ đề. Một lượt đọc tối đa 20 tin mới và sáu candidate có nguồn do host xác minh. Reply thật/notice là candidate mạnh; nội dung mới khác phạm vi vẫn có thể thành ticket liên quan riêng. Khi tắt autonomous, giữ đường intake cửa sổ/case cũ để tương thích.
 
 ### TG-06 — Đóng và chia topic
 
-Đóng theo thời gian idle, command hoặc đầy case. Chia chunk theo thứ tự thời gian và giới hạn cấu hình, rồi chia topic; mỗi source ID phải được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
+Ở đường legacy, đóng theo thời gian idle, command hoặc đầy case. Ở đường autonomous, model trả partition NEW/CONTINUE/CLARIFY/CHAT cùng readiness và canonical draft trong một lượt; host kiểm opaque candidate, confidence, repository và partition; mỗi source ID phải được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
 
 Default THINKING dùng projection gọn và packing byte-aware: giữ mọi ID, reply edge, sender/media/pixel flags; chia đều ngân sách cho trích đoạn text, đánh dấu `text_truncated`. Full source vẫn ở SQLite và quote issue theo source scope. Model không được coi excerpt là toàn bộ phạm vi. Nếu mandatory metadata/schema không vừa, báo technical budget failure; không tự gộp thành topic thật. Custom prompt/legacy renderer được giữ.
 
@@ -66,7 +169,7 @@ Model đề xuất bug/task/feedback/chat; feature được chuẩn hóa thành 
 
 ### TG-08 — Yêu cầu không cần tag
 
-Công việc đủ rõ/actionable và confidence đạt ngưỡng tạo issue dù không tag. Yêu cầu thiếu/không chắc hoặc output không dùng được chuyển needs_human, tạo ticket theo dõi và hỏi trong group. Chat vẫn là chat; ngoại lệ ảnh đơn lẻ xem TG-15.
+Công việc đủ rõ/actionable và confidence đạt ngưỡng tạo issue dù không tag. Yêu cầu thiếu/không chắc hoặc output không dùng được: autonomous giữ pending và hỏi trong group, không tạo issue đoán phạm vi; legacy chuyển needs_human, tạo ticket theo dõi và hỏi. Chat vẫn là chat; ngoại lệ ảnh đơn lẻ xem TG-15.
 
 Ghi nhận bug không cần specification/debug report hoàn chỉnh. Module/control/setting đã xác định, hành vi thực tế trái mong đợi và hướng sửa mong muốn đủ nhận diện công việc; device/platform/logs hay recipe tái hiện đầy đủ không tự thành blocker. Chỉ hỏi essential thật sự thiếu để nhận diện phạm vi, không hỏi lại dữ kiện đã có và không bịa môi trường/nguyên nhân/bước tái hiện. “Nút này lỗi” chưa xác định đối tượng/hành vi vẫn cần hỏi rõ.
 
@@ -86,7 +189,7 @@ Sau khi xác nhận tạo thành công: “Em đã ghi nhận nội dung này v�
 
 ### TG-12 — Hỏi rõ và báo lỗi
 
-needs_human reply tin đầu topic với tối đa ba câu hỏi ngắn đã sanitize. Outcome GitHub không rõ phải nhờ Owner kiểm tra repo trước retry; hết quota thông báo hỗ trợ. Noise/chat/pending_review không có text notice; không lặng chờ duyệt đối với công việc chưa rõ thuộc TG-08.
+needs_human reply tin đầu topic với tối đa ba câu hỏi ngắn đã sanitize. Outcome GitHub không rõ phải nhờ Owner kiểm tra repo trước retry; hết quota thông báo hỗ trợ. Legacy noise/chat/pending_review không có text notice; autonomous pending có câu hỏi rõ ngay; không lặng chờ duyệt đối với công việc chưa rõ thuộc TG-08.
 
 Ngoại lệ pending do **vision partition technical failure**: mỗi component text chưa phân loại được lưu `pending_review`/reason `vision_partition_unresolved` và nhận notice `context_pending`, chưa tạo ticket hay gắn với image ticket. Notice yêu cầu reply tin/notice với đầy đủ intent hoặc xác nhận chỉ chat. Reply có exact same-chat pending+sent-notice proof mở intake mới ngay, không sửa kế toán case cũ hoặc cấp quyền cho followup ticket cũ. Bare image không có yêu cầu vẫn theo TG-15.
 
@@ -182,7 +285,7 @@ Khi THINKING bật, hosted trả `invalid_json` hoặc output không qua parser 
 
 DeepSeek non-thinking request gửi `temperature: 0` để giữ ý định sampling tập trung đã đặt ở classifier; trước đó hosted adapter bỏ sót nên server dùng mặc định riêng. Không đổi threshold hay tự coi sampling bằng không là đảm bảo đúng. Các provider khác giữ wire contract cũ; giới hạn semantics vẫn theo code validation. [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
-Khi THINKING bật, một lượt dùng chung tối đa hai model attempts thực sự, gồm retry/fallback; lock wait không tiêu attempt. Deadline ngữ nghĩa 40 giây tính cả queue/DNS/TCP/TLS/response, mỗi request tối đa 20 giây còn lại. Tối đa ba batch đọc context có scope; text envelope tối đa 8000 byte UTF-8 bảo thủ cho cả prompt, không hứa đếm token ảnh. Source-role hẹp tối đa 512 output tokens; draft topic/followup giữ output cấu hình. Hết budget giữ xác nhận và fallback hỏi rõ; không cấp quyền retry POST. Attachment/GitHub/Telegram vẫn có timeout riêng: 40 giây không phải SLA kết thúc toàn bộ ticket/reply.
+Khi THINKING bật, một lượt dùng chung tối đa hai model attempts thực sự, gồm retry/fallback; lock wait không tiêu attempt. Deadline ngữ nghĩa 40 giây tính cả queue/DNS/TCP/TLS/response, mỗi request tối đa 20 giây còn lại. Tối đa sáu batch đọc context có scope trong autonomous (legacy ba); text envelope tối đa 8000 byte UTF-8 bảo thủ cho cả prompt, không hứa đếm token ảnh. Source-role hẹp tối đa 512 output tokens; draft topic/followup giữ output cấu hình. Hết budget giữ xác nhận và fallback hỏi rõ; không cấp quyền retry POST. Attachment/GitHub/Telegram vẫn có timeout riêng: 40 giây không phải SLA kết thúc toàn bộ ticket/reply.
 
 ### TG-31 — Quyền write và sanitization
 
@@ -203,7 +306,39 @@ Ví dụ tổng hợp, ID dưới đây là giả lập:
 3. User reply trực tiếp ảnh nguồn đã lưu: “đây là ticket 2” với source evidence hợp lệ → comment B, không tạo C. Câu tách lại sau khi đã tách không tạo batch trùng.
 4. Bio ghi he/him → Anh; she/her → Chị; không có/không rõ → Anh/Chị. Assistant luôn Em, quote “em” trong tin gốc vẫn giữ nguyên.
 
-Known limits: parser xác nhận ordinal chỉ hỗ trợ một số câu rõ như “đây là ticket 1”, không phải hiểu mọi biến thể tiếng Việt. Binding deterministic yêu cầu cùng source author; nguồn đa tác giả có thể cần semantic partition/clarification. Late reply không có proven notice route có thể chỉ được lưu. Followup không xem lại pixel ảnh. At-most-once tránh lặp nhưng có thể mất notice sau crash, không hứa exactly-once. 727 kiểm thử regression trước đợt tài liệu không đo accuracy model; một lượt source-role 1.961 giây/177 output tokens là n=1, không phải p95/SLA.
+Known limits: parser xác nhận ordinal chỉ hỗ trợ một số câu rõ như “đây là ticket 1”, không phải hiểu mọi biến thể tiếng Việt. Binding deterministic yêu cầu cùng source author; nguồn đa tác giả có thể cần semantic partition/clarification. Trong legacy, late reply không có proven notice route có thể chỉ được lưu; autonomous dùng durable candidate/provenance và hỏi khi chưa đủ target. Followup không đọc lại pixel cũ; pixel mới trong cùng batch được phân tích chung với caption và context. At-most-once tránh lặp nhưng có thể mất notice sau crash, không hứa exactly-once. 727 kiểm thử regression trước đợt tài liệu không đo accuracy model; một lượt source-role 1.961 giây/177 output tokens là n=1, không phải p95/SLA.
+
+## Nâng cấp Harness: phạm vi foundation và quy tắc đích
+
+User yêu cầu bắt đầu nâng cấp ngày 2026-10-16. Lịch sử foundation bổ sung bộ nhớ topic và truy vết trên SQLite hiện có; không import CLI Harness developer, không đổi owner/state lineage AlexChu. Topic foundation là projection `original_intake` có provenance của case/group/root đã lưu, không tự cấp quyền cập nhật ticket. Bản nâng cấp v1.5.0 bổ sung autonomous routing và lifecycle opt-in. `triage_current_topics` và events phản ánh partition/siblings/bindings đã được host xác minh; sibling chưa tạo vẫn có issue null và unresolved IDs hiện rõ. Original intake luôn giữ nguyên để đối soát, không bị ghi đè thành trạng thái hiện tại.
+
+### Autonomous: quyết định và phục hồi
+
+Một USER packet chứa đồng thời caption, pixel, sources, reply edges và candidate context. Các tin mới cùng thuộc một ticket được đưa vào một followup job nguyên tử qua `followup_job_sources`, phân tích chung một lần; reply tin đầu batch. NEW dùng luôn draft ingress đã kiểm, không gọi phân loại lần nữa. CLARIFY có candidate giữ đúng root và câu hỏi; câu trả lời ngắn phải đọc lại câu hỏi đang chờ. CLARIFY chưa có target giữ pending context và hỏi trong group, không tạo ticket đoán phạm vi.
+
+`autonomous_routes` là lịch sử quyết định bất biến; `autonomous_plans` cache plan và host repository trước side effect. Replay kiểm lại repository và đầy đủ source, không gọi model mới hay tự POST lại outcome không rõ. `autonomous_confirmations` lưu xác nhận thành công sau câu hỏi trước đó, reply đúng nguồn và ánh xạ bot notice về source. Một lượt dùng chung tối đa hai model attempts/40 giây và sáu bounded reads (legacy ba); hết ngân sách hoặc packet không vừa phải hỏi rõ có lưu vết. Candidate search có giới hạn, không phải semantic search toàn bộ hội thoại; exact reply tra durable provenance không phụ thuộc tuổi tin.
+
+### Topic memory và trace foundation
+
+Registry dùng các bảng additive `triage_topics`, `triage_topic_messages`, `triage_topic_events`, `triage_topic_hydration`. Khóa topic ổn định theo chat và nguồn case/group, tách khỏi đối soát originals. Trạng thái xử lý case/topic không phải trạng thái open/closed của GitHub. Membership được ghi từ quan hệ đã lưu; generic late followup chỉ dựa cửa sổ thời gian không được biến thành binding xác nhận. History corrections append revision/event, không xóa lịch sử cũ; hydration có cursor/batch và chạy idempotent, không reclassify hoặc replay GitHub/Telegram. Projection giới hạn originals 1000, root 20 và followup members 1000 mỗi root; `membership_truncated` phải được tôn trọng, không coi projection bị cắt là toàn bộ lịch sử hoặc dùng nó cấp quyền ghi.
+
+Trace chỉ đọc là công cụ operator: tra theo repository+issue hoặc đúng `(chat_id,message_id)`, xuất nguồn/liên kết/quyết định/operation/notice và các phần thiếu. Default chỉ whitelist metadata, không dump nguyên `record`, `context_state`, plan/result/payload có thể chứa prose. Muốn đọc text phải opt-in và bảo vệ output như dữ liệu hội thoại riêng tư. Giới hạn truy vấn/output phải hiện rõ truncation; database cũ thiếu bảng mới được báo capability/gap thay vì migrate. Không khởi tạo provider, session, recovery hoặc network khi trace. `mode=ro` chặn logical writes nhưng SQLite WAL có thể dùng/thay đổi auxiliary shared-memory files tùy trạng thái; không hứa byte-immutability cho live WAL hoặc khi có writer đồng thời. Điều tra cần snapshot bất biến phải dùng backup SQLite nhất quán, không dùng `immutable=1` tùy tiện trên live WAL. Registry opt-in qua `[thinking] topic_memory_enabled`, mặc định false; khi tắt giữ dữ liệu đã có và không tiếp tục projection. Lệnh/cách bật ở README; production enablement cần bằng chứng riêng.
+
+Registry không thay thế `followup_roots` hoặc operation ledger. Candidate/topic giống nhau về ngữ nghĩa chỉ là giả thuyết cho bước routing sau; không dùng thời gian, cùng người gửi, keyword hoặc URL user đưa làm bằng chứng đủ để sửa ticket. Rollback code giữ các bảng additive và reservation; không restore database cũ đè lên lịch sử side effect mới.
+
+### Ticket đã đóng: quy tắc được user chốt
+
+Ngày 2026-10-16 user chọn quy tắc dưới đây; autonomous followup thực thi bằng trusted GET lifecycle snapshot trước quyết định và trước delayed/resumed related create. Không có API auto reopen.
+
+| Ngữ cảnh đã chứng minh | Hành vi đích |
+|---|---|
+| Bổ sung bằng chứng/chi tiết cho sự cố cũ, kể cả reply tin rất cũ | Bổ sung vào đúng ticket cũ, giữ lịch sử; không tự tạo ticket mới hoặc mở lại |
+| Lỗi tái diễn sau một giai đoạn được xác nhận đã chạy tốt | Tạo ticket mới cho lần tái diễn và gắn liên quan ticket cũ; giữ provenance xác nhận giai đoạn đã chạy tốt |
+| Chưa rõ lỗi chưa từng hết hay đã hết rồi tái diễn; chưa rõ target | Reply hỏi đúng điểm thiếu, không tự reopen/tạo ticket thay thế |
+
+Nếu parent đã có episode tái diễn được verified, lần tạo episode tiếp theo phải có xác nhận chạy tốt mới sau thời điểm bắt đầu episode gần nhất; không dùng lại success evidence cũ để tạo ticket trùng cho cùng sự cố. Plan resume kiểm lại ranh giới này trước POST.
+
+Trạng thái closed hoặc một câu "đã xử lý" không tự chứng minh đã hoạt động tốt. Lifecycle phải GET trạng thái hiện tại từ trusted repository/issue, lưu thời điểm quan sát và evidence cho nhận định recurrence. Reply tin cũ vẫn bắt đầu từ provenance nguồn; tuổi tin không đủ để tạo ticket mới. Chưa cấp quyền tự mở lại ticket. Quan hệ related và create phải đi qua ledger/reservation, canonical template, verified readback và reply đúng source; unknown outcome không tự retry.
 
 ## Bộ nhớ, truy vấn và debug vận hành
 
@@ -309,7 +444,7 @@ Output roots/job payload có thể chứa nội dung riêng tư: chỉ lưu evid
 
 Báo cáo debug phải có: thời điểm/timezone; host/runtime; repository/issue; chat/source/reply IDs; case/group/root/turn/job/operation keys tìm được hoặc ghi rõ chưa tìm thấy; nguồn ảnh/caption đã kiểm; reason/budget; trạng thái ledger và readback bên ngoài; backup/audit nếu đã sửa; kết quả còn chưa xác minh. Không báo PASS chỉ từ hash hoặc đọc code.
 
-Hiện có SQLite, journal và các ledger nêu trên; chưa có lệnh tổng hợp `trace --issue`, dashboard debug, hoặc bộ nhớ topic/facts/semantic search mới. Những phần đó là đề xuất, không được ghi như tính năng đã chạy. Giữ automatic retention 90 ngày chỉ cho usage theo TG-32; không áp con số này cho toàn bộ hội thoại/journal hay tự xóa mapping cần cho reply tin cũ.
+Baseline v1.3.1 có SQLite, journal và các ledger nêu trên. Đợt foundation v1.4.0 triển khai topic registry/trace trong worktree; tình trạng test/review/enablement phải đọc evidence của đợt đó, không suy rằng đã deploy. Autonomous routing/lifecycle có trong v1.5.0 opt-in; dashboard debug và facts/semantic search toàn bộ lịch sử chưa triển khai. Giữ automatic retention 90 ngày chỉ cho usage theo TG-32; không áp con số này cho toàn bộ hội thoại/journal hay tự xóa mapping cần cho reply tin cũ.
 
 ## Truy vết và kiểm tra drift
 
@@ -405,6 +540,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/store.py",
           "symbol": "Store.assign_case"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomous.py",
+          "symbol": "process"
         }
       ],
       "tests": [
@@ -419,7 +558,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_cases.py",
           "symbol": "GroupingTests.test_unknown_sender_ids_never_group"
+        },
+        {
+          "path": "listener/tests/test_autonomous.py",
+          "symbol": "AutonomousTests.test_three_messages_one_ticket_first_reply"
         }
+      ],
+      "prompts": [
+        "listener/prompts/autonomous.md"
       ]
     },
     {
@@ -436,6 +582,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking.py",
           "symbol": "pack_messages"
+        },
+        {
+          "path": "listener/src/tg_triage/ingress_model.py",
+          "symbol": "parse_ingress"
         }
       ],
       "tests": [
@@ -458,7 +608,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking_image_context.py",
           "symbol": "ThinkingImageTests.test_two_images_captions_reply_edges_and_independent_work_share_one_user_bundle"
+        },
+        {
+          "path": "listener/tests/test_autonomous.py",
+          "symbol": "AutonomousTests.test_three_requests_interleaved_three_corresponding_replies"
         }
+      ],
+      "prompts": [
+        "listener/prompts/autonomous.md"
       ]
     },
     {
@@ -698,6 +855,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/store.py",
           "symbol": "Store.pending_context_source"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomy_store.py",
+          "symbol": "AutonomyStoreMixin.autonomy_candidates"
         }
       ],
       "tests": [
@@ -712,6 +873,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking_image_context.py",
           "symbol": "ThinkingImageTests.test_pending_direct_source_requires_sent_notice_and_foreign_ids_do_not_authorize"
+        },
+        {
+          "path": "listener/tests/test_autonomous.py",
+          "symbol": "AutonomousTests.test_recurrence_episode_candidate_exact_and_unthreaded_process"
         }
       ]
     },
@@ -752,6 +917,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/followup_store.py",
           "symbol": "FollowupStoreMixin.register_managed_issue"
+        },
+        {
+          "path": "listener/src/tg_triage/lifecycle.py",
+          "symbol": "closed_decision"
         }
       ],
       "tests": [
@@ -774,6 +943,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followup_enrichment.py",
           "symbol": "EnrichmentTests.test_preflight_get_failure_is_not_sent_but_readback_failure_is_ambiguous"
+        },
+        {
+          "path": "listener/tests/test_lifecycle.py",
+          "symbol": "LifecycleTests.test_reply_old_parent_cannot_repeat_same_episode_but_fresh_success_can_create_next"
         }
       ],
       "prompts": [
@@ -794,6 +967,18 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking.py",
           "symbol": "pack_messages"
+        },
+        {
+          "path": "listener/src/tg_triage/topic_store.py",
+          "symbol": "TopicStoreMixin.enable_topic_registry"
+        },
+        {
+          "path": "listener/src/tg_triage/topic_store.py",
+          "symbol": "project_chat"
+        },
+        {
+          "path": "listener/src/tg_triage/trace.py",
+          "symbol": "trace"
         }
       ],
       "tests": [
@@ -820,6 +1005,26 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followup_enrichment.py",
           "symbol": "EnrichmentTests.test_packet_marks_source_and_reply_excerpts_as_truncated"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_hydration_bounded_cursor_idempotent_and_accounting_unchanged"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_generic_legacy_time_followup_is_not_membership"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_partial_historical_split_exposes_bindings_unassigned_and_intake_scope"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_events_immutable_and_have_alexchu_provenance_no_text"
+        },
+        {
+          "path": "listener/tests/test_trace_autonomous.py",
+          "symbol": "AutonomousTraceTests.test_nonanchor_batch_member_resolves_job_and_issue_expands_all_sources"
         }
       ]
     },
@@ -925,6 +1130,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/followup_store.py",
           "symbol": "FollowupStoreMixin.reserve_followup_operation"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomy_store.py",
+          "symbol": "AutonomyStoreMixin.save_autonomous_plans"
         }
       ],
       "tests": [
@@ -939,6 +1148,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followups.py",
           "symbol": "FollowupTests.test_partial_split_keeps_confirmed_links_no_unknown_link"
+        },
+        {
+          "path": "listener/tests/test_autonomous.py",
+          "symbol": "AutonomousTests.test_followup_batch_commit_crash_resumes_one_durable_job"
         }
       ]
     },
@@ -994,6 +1207,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/followup_store.py",
           "symbol": "FollowupStoreMixin.retry_followup_analysis"
+        },
+        {
+          "path": "listener/src/tg_triage/trace.py",
+          "symbol": "trace"
+        },
+        {
+          "path": "listener/src/tg_triage/lifecycle.py",
+          "symbol": "closed_decision"
         }
       ],
       "tests": [
@@ -1008,6 +1229,22 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followup_retry.py",
           "symbol": "RetryTests.test_explicit_retry_edits_existing_notice_once_with_immutable_audit"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_trace_cli_readonly_file_hash_mtime_no_credentials_model_or_network"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_legacy_minimal_database_reports_gaps_without_migration"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_issue_selector_repo_exact_no_forged_user_url_or_crosschat_reply"
+        },
+        {
+          "path": "listener/tests/test_lifecycle.py",
+          "symbol": "LifecycleTests.test_resumed_related_plan_rechecks_latest_verified_episode_boundary"
         }
       ]
     },
@@ -1145,6 +1382,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking.py",
           "symbol": "decision_turn"
+        },
+        {
+          "path": "listener/src/tg_triage/trace.py",
+          "symbol": "Reader"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomy_store.py",
+          "symbol": "AutonomyStoreMixin.enable_autonomy"
         }
       ],
       "tests": [
@@ -1167,41 +1412,68 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking.py",
           "symbol": "ThinkingTests.test_kill_switch_keeps_legacy_path_without_decision_journal"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_malformed_snapshot_and_nested_metadata_never_leak_or_crash"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_fetched_byte_budget_caps_legacy_large_json_before_accumulating"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_config_topic_memory_strict_boolean_default_false"
+        },
+        {
+          "path": "listener/tests/test_topic_trace.py",
+          "symbol": "TopicTraceTests.test_wal_trace_no_logical_writes_and_reports_shared_memory_caveat"
+        },
+        {
+          "path": "listener/tests/test_autonomous.py",
+          "symbol": "AutonomousTests.test_clear_request_no_tag_does_not_wait_two_minutes"
         }
       ]
     }
   ],
   "runtime_inventory": {
+    "listener/prompts/autonomous.md": "cd19606627185647484c9d5494eb704041338a43de8daa96de4d89a48557ad3d",
+    "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
+    "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
+    "listener/prompts/followup.md": "136e9d24a0df2a50f7161db9176cb1fcf2e7d568973112548a799ff6697e40e3",
+    "listener/prompts/thinking-topics.md": "f3295f8cdf8d3707d8844ffe61c2eeca0efc1763a0f9879c86b375c1a8b15a58",
+    "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8",
     "listener/src/tg_triage/__init__.py": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
-    "listener/src/tg_triage/__main__.py": "081827c01240834076ec6e313b686577f143b447336506ad913a5e2797f2148e",
+    "listener/src/tg_triage/__main__.py": "3b2d70fc3e169fb04be69227778441cafc9bc2dcb75cf6db2bacc88eda68759e",
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
     "listener/src/tg_triage/attachments.py": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
-    "listener/src/tg_triage/classifier.py": "34c5d87ba3f5bd9a8279d2f3ca659bee6aaa7f425fe5e35bde95a6bff776b0b1",
-    "listener/src/tg_triage/config.py": "40391fd623f45a4218e4f2155ff971704f44558e701407b728dcbf6e21c56336",
-    "listener/src/tg_triage/followup_model.py": "7c8933824eab78abcb8934777079ff451eb379dc89e6866234c4d8541e78a029",
-    "listener/src/tg_triage/followup_store.py": "75e3554e24d0decb581dbd2e5c2fa0f3de22e9d16e4cc79de9a06a000a9923d1",
-    "listener/src/tg_triage/followups.py": "03834bfc805b42985c2e61de180196c02347b3816ba4d8210ca3e0322ed87543",
-    "listener/src/tg_triage/github_issues.py": "360489dd34ad6f9080d6dd2b080da3cc192501157bbbf67319b6d5885b803cd3",
+    "listener/src/tg_triage/autonomous.py": "01182decde5148f9b844286ee5e0dde61b449f80ef7692300681acf5f84fbb26",
+    "listener/src/tg_triage/autonomy_store.py": "37e3307b7b9c06bd18b568b5c242a8622ca6fc4ed6397ba7469c535cc1054720",
+    "listener/src/tg_triage/classifier.py": "1e4417e06984b87378366bbaa321aa35af72e84e9877f00d94cdc74b1bed7514",
+    "listener/src/tg_triage/config.py": "54c9b2f8933339f54ca262edeab81a47254b80364c08613b5d797c5a9bb8b79e",
+    "listener/src/tg_triage/followup_model.py": "898ae428bc0e5101550665853ed66dbfa0a8324fcc2ba4df18f4ab33d513d934",
+    "listener/src/tg_triage/followup_store.py": "77e071b67d596f9a32b64b4a844ab740c953bdcbaece31386233aeccab69bb50",
+    "listener/src/tg_triage/followups.py": "fa6fc98a312aa6f1e111de06820454a6ff0fee870b0b75ca814ba3127ed8115c",
+    "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
     "listener/src/tg_triage/group_notices.py": "8f52a9f1f375191a5374a645da4ae82b1e32b8882ce7e756b7d07ef5f2b91ce8",
+    "listener/src/tg_triage/ingress_model.py": "15368c1c94839f782424df2281e552e3a574151fec648ca4e4e46773cc819634",
     "listener/src/tg_triage/issue_format.py": "04b274fc419a57bb0e4e59636303c8762ec0c295d9029130b85ebb6e7936c3d5",
+    "listener/src/tg_triage/lifecycle.py": "e39f3e70ab2a9e9c774d9419636b23ae31f09b53b2be6daf919774bfcd319a85",
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
-    "listener/src/tg_triage/pipeline.py": "73f63b347f9576cb124f8f5b6a2e632411944115ca1eb743d7ae26c971125da8",
+    "listener/src/tg_triage/pipeline.py": "26ace1a2e7127be2e586e4f1f0dbc44e4d4724e91649f10ffa5cd10c6feecb5e",
     "listener/src/tg_triage/provider.py": "b72f72d305d738fe183fac3a81a3141b3cdca8bffe88bc181ae04535d2a25f1a",
     "listener/src/tg_triage/reactions.py": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
     "listener/src/tg_triage/receipt.py": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
     "listener/src/tg_triage/rules.py": "93778eef5df2abe88ae4424179ec509595cd6dcf14d5d94ddb70d5852454bccd",
     "listener/src/tg_triage/runtime.py": "558a876aa86f2e2c7be8d54587ea9510e0762686bbf2a3a8dd9742db596b1862",
-    "listener/src/tg_triage/store.py": "236f2b42e0ba66af22c6de148cb20661e262534b4e28315bb208c38f4e9b1a6f",
+    "listener/src/tg_triage/store.py": "713a7ccde19d75f78f4ce81b6e101de5754d10a5185a9b23b2213b8aa24e44cd",
     "listener/src/tg_triage/telegram_io.py": "fdc4233f77571589b0ab551ff577acba58e2c9556bbdcfc7522e277aadef1b76",
-    "listener/src/tg_triage/thinking.py": "3a000d19fe0cadf720e9a6d97ad198b0961a891a713fa3aa6622d5196dd8008d",
+    "listener/src/tg_triage/thinking.py": "afde97097555430904f754331d23d752174ae732ee1c3fabca618c4b4f03f306",
     "listener/src/tg_triage/thinking_transport.py": "6a8921188e21c8424c445c03b2ff903f941885b5d4b6930306bbffd3842a6d56",
-    "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
-    "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
-    "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
-    "listener/prompts/followup.md": "adf0d2b3bee7cd4dfdb26259cbf56653b6ab4ec2a9854a251d3887e3f1a491eb",
-    "listener/prompts/thinking-topics.md": "f3295f8cdf8d3707d8844ffe61c2eeca0efc1763a0f9879c86b375c1a8b15a58",
-    "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8"
+    "listener/src/tg_triage/topic_store.py": "495bd90150783df45463d86a66dd32927e69fec001f7406808f8496f2466f672",
+    "listener/src/tg_triage/trace.py": "58250b3f758e07da6f5d89795c57cbd32d056be11efd727346daaeda4e84b7a3",
+    "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e"
   },
   "legacy_documents": [
     "Docs/00-master/worker-agent-fleet-1_brief_261007_v1.0.7.md",
@@ -1217,7 +1489,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "764fb4de24bc1f3d404c27aba51b29bf8730cc5025e0983011b30823360fed04"
+  "runtime_fingerprint": "aee0d68b9eb11de1baaff3fea5f4b40920180f2afce892cc8c9d5b162de92d43"
 }
 ```
 
@@ -1225,6 +1497,8 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.5.0 | 2026-10-16 11:20 | Codex / owner AlexChu | Autonomous nhiều chủ đề, context batch, current partition, vòng đời closed/recurrence và debug bền vững; rollout có evidence riêng. |
+| v1.4.0 | 2026-10-16 10:11 | Codex / owner AlexChu | Contract topic/trace foundation, tách quyền projection khỏi routing; ghi quy tắc closed-ticket user chốt và phạm vi chưa triển khai. |
 | v1.3.1 | 2026-10-16 09:57 | Codex / owner AlexChu | Bổ sung vị trí bộ nhớ, bản đồ schema/khóa, truy vấn chỉ đọc, quy trình debug và audit recovery theo TG-19/24/27/32; phân biệt triển khai hiện có với đề xuất. |
 | v1.3.0 | 2026-10-16 09:11 | Codex / owner AlexChu | Sửa startup prompt override, đóng gói/redaction provenance và enrichment ảnh reply vào cùng ticket qua canonical renderer/managed snapshot; kiểm preflight và giới hạn race được nêu rõ. |
 | v1.2.1 | 2026-10-16 01:08 | Codex / owner AlexChu | Chuẩn hóa xử lý lại ticket bằng renderer đang chạy, preview/source-marker/body-SHA guard và provenance thủ công; kiểm thử sửa TASK #46 không tạo trùng. |
@@ -1233,3 +1507,5 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 | v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Thực thi DeepSeek model.think=false ở bounded wire transport; giữ budget, đồng bộ regression/API references. |
 | v1.1.0 | 2026-10-15 21:42 | Codex / owner AlexChu | Đồng bộ controller THINKING, budget, journal/CAS, rollback và QA acceptance; rollout cần evidence riêng. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Chuẩn hóa 32 quy tắc, truy vết và giới hạn baseline. |
+
+Các bảng debug bổ sung v1.5.0: `autonomous_routes/plans/confirmations` nối ingress với decision turn, plan/repository và source notice; `followup_job_sources` lưu batch membership; `followup_episodes/episode_sources` nối recurrence mới với parent mà không biến thành split sibling; `triage_current_topics/triage_current_topic_events` lưu partition hiện tại cùng version. Trace mặc định chỉ xuất metadata đã whitelist, không dump plan/câu hỏi. Readback issue mới phải khớp trusted target và canonical body/title trước khi đăng ký episode/root; POST đã biết số nhưng readback lỗi vẫn giữ reservation/quota và không tự tạo lại. Khi lỗi tái diễn trong batch, chỉ source xác nhận recurrence thuộc ticket mới; ảnh chứng minh giai đoạn chạy tốt không được upload nhầm vào lần lỗi mới.

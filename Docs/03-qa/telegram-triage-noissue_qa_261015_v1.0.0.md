@@ -1,12 +1,42 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.2.0 · **Updated** 2026-10-16 09:11 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.4.0 · **Updated** 2026-10-16 11:31 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
 - [Master scope](../00-master/worker-agent-fleet-1_master_261007_v1.0.8.md)
 - [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md)
 - [Engineering and research](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md)
+
+## Historical Harness foundation acceptance (2026-10-16)
+
+Các case dưới là yêu cầu kiểm, chưa phải kết quả PASS. Dùng temporary SQLite và fake tools, không mở database production/session hoặc gọi model thật. Bằng chứng configured-model cũ không chứng minh chất lượng semantic routing mới vì foundation chưa triển khai routing đó.
+
+| Case | Kết quả bắt buộc |
+|---|---|
+| Ba source cùng yêu cầu / ba yêu cầu độc lập | Projection đúng một / ba topic theo partition đã chứng minh; không đổi originals accounting |
+| #46 design image/caption và backend chat | Giữ topic đúng scope source; backend không biến thành cùng yêu cầu do gần thời gian |
+| #47 POS originals và reply photo | Proven root giữ đúng originals/followup, không tạo issue hay gửi Telegram mới |
+| Reply source/notice cũ sau restart | Giữ đúng cùng-chat root và topic; không đoán root format hoặc lấy tuổi tin làm authority |
+| Forged URL, cross-chat IDs, legacy time-only followup | Không có write authority hay membership được xác nhận sai |
+| Followup split có anchors xác nhận và media chưa gán | Registry ghi scope original_intake; trace hiện sibling/binding/unassigned metadata và gap split_partition_not_projected, không giả định current partition một ticket |
+| Hydration hai lần/restart, sửa partition | Không event trùng; correction append event mới và giữ revision cũ; original tables unchanged |
+| Old schema thiếu topic/decision tables | Trace báo capability/gap, không migrate, không lỗi do thiếu module provider |
+| Trace read-only | Không logical writes/migration/recovery/network/auth/model. Với snapshot rollback-journal độc lập: DB hash/mtime và directory entries không đổi. WAL/concurrent writer kiểm riêng và báo giới hạn auxiliary files, không hứa immutability mọi trạng thái |
+| Privacy | Default không text/title/summary/raw plan/result/payload/context; text opt-in riêng tư |
+| Bounds | SQL/traversal/output bị giới hạn; truncation có marker, không coi tập bị cắt là context đầy đủ |
+| Repository+issue ambiguity | Không gộp nhầm issue cùng số ở repo/chat khác; target chưa chứng minh được báo rõ |
+| Processing vs lifecycle | Case done không bị diễn giải GitHub closed; không reopen/recurrence writes trong foundation |
+
+Chạy targeted topic/trace tests, toàn bộ listener unittest, compileall, policy drift checker và 17 policy negative tests; reviewer khác writer kiểm authority/privacy/data integrity. So diff phạm vi thực tế và package module mới. Không suy ra p95/accuracy hoặc production enablement từ offline suite.
+
+Lifecycle policy user đã chốt được ghi ở nguồn nghiệp vụ; test cho API recurrence/related và event-driven readiness thuộc increment tiếp theo. Foundation chỉ PASS khi báo rõ giới hạn này, không tuyên bố đã thay hoàn toàn gom hai phút.
+
+### Foundation verification — 2026-10-16 10:28 Asia/Saigon
+
+Final source-only verification: independent listener suite ran **806 tests**, `OK (skipped=1)` in 102.201s; targeted topic/trace **20 tests PASS** in 14.756s; policy checker **32 rules / 32 runtime files PASS** and **17 negative tests PASS**. Final independent review: **APPROVED**. Legacy CLI audit confirmed isolated rollback-journal file hash/mtime/directory immutability and no network/auth/model/recovery; WAL test verifies logical read-only behavior and reports sidecar caveat. Package-shape audit includes 27 modules and 5 prompts, not a release wheel or installed-runtime claim.
+
+Evidence is local under `.context/harness-foundation-independent-*`; these are captured test results, not live production state. Runtime fingerprint: `69917b6b0a6c8f7acd37416a9fb7cdc41aa0cddedc2752f107983b00897553d0`. No model accuracy benchmark, commit, push or THINKPAD deployment performed in this increment. The generic developer `harness-verify.mjs` reports Node-only/no package.json for this Python repo; its formal gate is **not PASS**. Actual Python commands and independent review above are recorded separately, not substituted silently for that gate.
 
 ## Test Strategy
 
@@ -192,8 +222,26 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.4.0 | 2026-10-16 11:31 Asia/Saigon | Codex / owner AlexChu | Autonomous/lifecycle business acceptance, actual-context/model regression và separate release proofs. |
+| v1.3.0 | 2026-10-16 10:11 Asia/Saigon | Codex / owner AlexChu | Acceptance topic/trace foundation: provenance, immutable history, readonly/legacy/privacy/bounds và scope lifecycle. |
 | v1.2.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Actual startup/POS source-context, new reply image, managed refresh, source roles and generated-field smoke assertions. |
 | v1.1.0 | 2026-10-15 23:29 Asia/Saigon | Codex / AlexChu owner | Image-caption/context, privacy, scoped failure and fresh-intake regression with actual-image proof criteria. |
 | v1.0.2 | 2026-10-15 22:26 Asia/Saigon | Codex / AlexChu owner | Intake essentials and DeepSeek sampling wire regression; fixed-label smoke remains required. |
 | v1.0.1 | 2026-10-15 22:19 Asia/Saigon | Codex / AlexChu owner | Wire-level existing think=false contract and fixed-label default-budget verification. |
 | v1.0.0 | 2026-10-15 21:39 Asia/Saigon | Codex / AlexChu owner | Capture production-path acceptance, model-smoke isolation and honest budget limits. |
+
+## Autonomous/lifecycle acceptance v1.4.0
+
+Release verification must exercise the final frozen source and installed wheel separately. Offline tests cover three-to-one/three-to-three, interleaved topics, exact old replies/new scope, pending answer continuation, samebatch images/captions, ordinal corrections, current split partition, closed evidence/recurrence/unclear, successful POST with failed readback, repo drift, route/case/batch crash resume and ambiguous operations. Nonanchor batch source trace must resolve its job, and a reply to a recurrence notice must survive actual Telegram ingress normalization.
+
+The configured-model smoke uses actual startup factory and supplied #46/#47 JPEG fixtures with fake GitHub/Telegram/in-memory SQLite only. Assertions require generated Salon/Chat only task grounding, no backend-Q&A contamination, POS app+web+wired facts and literal printer error after image supplementation, correct source replies and recurrence102 subsequent update. Keep failed samples; no weakening assertions to hide a failure. Results are a small regression corpus, not model accuracy or service SLA. Final verification/release evidence is recorded after source freeze and deployment; historical foundation counts above do not prove this increment.
+
+### Configured-model preview result (2026-10-16 11:31 Asia/Saigon)
+
+Five cases PASS using the actual configured startup provider, actual reviewed #46/#47 JPEG pixels, fake GitHub/Telegram and memory SQLite. Three-to-one replies [1]; three-to-three replies [1,2,3]. #46 generates a TASK for Salon information & visibility / Chat only, source442 only, backend Q&A/ack CHAT. #47 preserves essential sources448..451/canonical source links, app+web+wired environment and generated exact printer error, refreshes issue101, replies448/454. Closed recurrence creates related102 from current502 exact temporal quotes; subsequent503 refreshes102 without a third ticket. Preview archive binding: all37 runtime/prompt files match reviewed fingerprint `aee0d68b9eb11de1baaff3fea5f4b40920180f2afce892cc8c9d5b162de92d43`.
+
+Earlier failed samples were retained on the private THINKPAD preview path: #46 over-clarification, #47 second-packet budget exhaustion and missing recurrence proof. They prompted code/prompt fixes and stronger assertions, not relaxed parsing or budget increases. Complete metadata is under `/tmp/autonomous-v2-preview/model-result*.json` for this test session; temporary files are not a durable product database. Five examples do not establish general AI accuracy. Installed/release verification remains separate.
+
+### Final frozen source verification
+
+Independent listener: `python -m unittest discover -s tests -t . -q`, 867 tests in114.340s, one Windows skip, exit0 (2026-10-16 11:30–11:32 Asia/Saigon). Independent targeted review83 PASS, implementation integration100 PASS. Policy checker32 rules/37 runtime files and17 negative tests PASS; compileall/diffcheck PASS. Evidence `.context/autonomous-v2-independent-refrozen-*`; previous moving-tree reports remain provisional and are not substituted for these frozen results. Fingerprint remains `aee0d68b9eb11de1baaff3fea5f4b40920180f2afce892cc8c9d5b162de92d43`. Generic developer Harness gate remains Node-only/no package.json for this Python repository; its formal gate is not PASS.

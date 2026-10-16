@@ -139,6 +139,8 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     console_revision: str = ""
     thinking_enabled: bool = True
+    topic_memory_enabled: bool = False
+    autonomous_enabled: bool = False
 
     def redacted(self) -> dict:
         result = asdict(self)
@@ -356,9 +358,17 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
                  "attachments.max_per_hour", 0),
         _integer(attachments_table.get("max_documents_per_case", default_attachments.max_documents_per_case),
                  "attachments.max_documents_per_case", 0))
+    topic_memory_enabled = _optional_table(data, 'thinking').get('topic_memory_enabled', False)
+    if type(topic_memory_enabled) is not bool:
+        raise ConfigError('thinking.topic_memory_enabled: expected boolean')
     thinking_enabled = _optional_table(data, 'thinking').get('enabled', True)
     if type(thinking_enabled) is not bool:
         raise ConfigError('thinking.enabled: expected boolean')
+    autonomous_enabled = _optional_table(data, 'thinking').get('autonomous_enabled', False)
+    if type(autonomous_enabled) is not bool:
+        raise ConfigError('thinking.autonomous_enabled: expected boolean')
+    if autonomous_enabled and not thinking_enabled:
+        raise ConfigError('thinking.autonomous_enabled requires thinking.enabled')
     return Config(
         mode=mode,
         telegram=TelegramConfig(
@@ -377,4 +387,6 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
                          image_consent, fallback, fallback_model, fallback_think, pricing),
         console_revision=str(data.get("console", {}).get("revision", "")),
         thinking_enabled=thinking_enabled,
+        topic_memory_enabled=topic_memory_enabled,
+        autonomous_enabled=autonomous_enabled,
     )

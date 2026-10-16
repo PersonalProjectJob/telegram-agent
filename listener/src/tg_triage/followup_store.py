@@ -12,6 +12,12 @@ def _locked(method):
 
 
 class FollowupStoreMixin:
+    def _project_followup_topic(self, job):
+        root=self.connection.execute('SELECT chat_id,case_key FROM followup_roots WHERE root_key=?',
+                                     (job['root_key'],)).fetchone()
+        if root is not None:
+            self.project_topics(root['chat_id'],root['case_key'])
+
     def init_followups(self, recover):
         self._followup_execution_lock = threading.RLock()
         self.connection.executescript("""
@@ -32,6 +38,18 @@ class FollowupStoreMixin:
                 job_id INTEGER NOT NULL, ordinal INTEGER NOT NULL, kind TEXT NOT NULL,
                 payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'planned',
                 reserved_at TEXT, result INTEGER, PRIMARY KEY(job_id,ordinal));
+            CREATE TABLE IF NOT EXISTS followup_episodes (
+                root_key TEXT PRIMARY KEY, parent_root_key TEXT NOT NULL,
+                job_id INTEGER NOT NULL UNIQUE, chat_id INTEGER NOT NULL,
+                anchor_message_id INTEGER NOT NULL, issue_number INTEGER NOT NULL,
+                repo TEXT NOT NULL, source_ids TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(chat_id,anchor_message_id));
+            CREATE TABLE IF NOT EXISTS followup_episode_sources (
+                chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, root_key TEXT NOT NULL,
+                PRIMARY KEY(chat_id,message_id));
+            CREATE TABLE IF NOT EXISTS followup_job_sources (
+                job_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,message_id INTEGER NOT NULL,
+                PRIMARY KEY(chat_id,message_id));
         """)
         existing = {row[1] for row in self.connection.execute('PRAGMA table_info(followup_roots)')}
         if 'split_plan' not in existing:
@@ -49,6 +67,25 @@ class FollowupStoreMixin:
         if message.reply_to_id is None:
             return None
         with self._lock:
+            episode_notice=self.connection.execute('''SELECT r.* FROM followup_episodes e
+                JOIN followup_jobs j ON j.id=e.job_id JOIN group_notices n
+                ON n.chat_id=j.chat_id AND n.message_id=j.message_id JOIN followup_roots r ON r.root_key=e.root_key
+                WHERE n.chat_id=? AND n.notice_message_id=? AND n.status='sent' LIMIT 1''',
+                (message.chat_id,message.reply_to_id)).fetchone()
+            if episode_notice is not None:return dict(episode_notice)
+            episode=self.connection.execute("""SELECT r.* FROM followup_episode_sources e
+                JOIN followup_roots r ON r.root_key=e.root_key
+                WHERE e.chat_id=? AND (e.message_id=? OR e.message_id IN
+                    (SELECT message_id FROM group_notices WHERE chat_id=? AND notice_message_id=? AND status='sent'))
+                LIMIT 1""",
+                (message.chat_id,message.reply_to_id,message.chat_id,message.reply_to_id)).fetchone()
+            if episode is not None:
+                return dict(episode)
+            member_job=self.connection.execute('''SELECT r.* FROM followup_job_sources s
+                JOIN followup_jobs j ON j.id=s.job_id JOIN followup_roots r ON r.root_key=j.root_key
+                WHERE s.chat_id=? AND s.message_id=?''',(message.chat_id,message.reply_to_id)).fetchone()
+            if member_job is not None:
+                return dict(member_job)
             notice = self.connection.execute("""SELECT message_id FROM group_notices
                 WHERE chat_id=? AND status='sent' AND kind!='context_pending' AND (notice_message_id=? OR message_id=?)
                 ORDER BY reserved_at DESC LIMIT 1""",
@@ -94,6 +131,66 @@ class FollowupStoreMixin:
                  self.get(source['chat_id'],source['source_message_id'])['issue_url'],self.clock().isoformat(),
                  message.chat_id,message.message_id))
 
+            self.project_topics(message.chat_id, source['case_key'])
+
+    def enqueue_followup_batch(self, messages, source):
+        """Commit all context members and one anchored job together, or commit nothing."""
+        messages=list(messages)
+        if (not messages or len(messages)>20 or len({m.message_id for m in messages})!=len(messages)
+                or any(m.chat_id!=source['chat_id'] for m in messages)):
+            raise ValueError('Invalid followup context batch')
+        anchor=messages[0]
+        with self._lock,self.connection:
+            prior_job=self.connection.execute('SELECT * FROM followup_jobs WHERE chat_id=? AND message_id=?',
+                                              (anchor.chat_id,anchor.message_id)).fetchone()
+            if prior_job is not None:
+                prior_ids={r[0] for r in self.connection.execute('SELECT message_id FROM followup_job_sources WHERE job_id=?',(prior_job['id'],))}
+                if not prior_ids:prior_ids={prior_job['message_id']}
+                if prior_job['root_key']!=source['root_key'] or prior_ids!={m.message_id for m in messages}:
+                    raise ValueError('Existing followup batch membership differs')
+                return prior_job['id']  # Preserve proven recurrence mappings and operation history.
+            for m in messages:
+                prior=self.connection.execute('SELECT job_id FROM followup_job_sources WHERE chat_id=? AND message_id=?',
+                                              (m.chat_id,m.message_id)).fetchone()
+                if prior is not None:
+                    job=self.connection.execute('SELECT message_id,root_key FROM followup_jobs WHERE id=?',(prior[0],)).fetchone()
+                    if job['message_id']!=anchor.message_id or job['root_key']!=source['root_key']:
+                        raise ValueError('Followup batch already belongs to another job')
+            # Inline the single-message writes to avoid nested connection-context commits.
+            self.connection.execute('''INSERT OR IGNORE INTO followup_roots
+                (root_key,chat_id,source_message_id,group_key,case_key,issue_number)
+                VALUES (:root_key,:chat_id,:source_message_id,:group_key,:case_key,:issue_number)''',source)
+            self.connection.execute('INSERT OR IGNORE INTO followup_jobs(chat_id,message_id,root_key) VALUES(?,?,?)',
+                                    (anchor.chat_id,anchor.message_id,source['root_key']))
+            job=self.connection.execute('SELECT * FROM followup_jobs WHERE chat_id=? AND message_id=?',
+                                        (anchor.chat_id,anchor.message_id)).fetchone()
+            if job['root_key']!=source['root_key']:
+                raise ValueError('Conflicting followup anchor')
+            origin=self.get(source['chat_id'],source['source_message_id'])
+            for m in messages:
+                if self.get(m.chat_id,m.message_id) is None:
+                    raise ValueError('Followup batch source is missing')
+                self.connection.execute('INSERT OR IGNORE INTO followup_job_sources VALUES(?,?,?)',
+                                        (job['id'],m.chat_id,m.message_id))
+                self.connection.execute('''UPDATE messages SET decision='followup',tier='none',case_key=?,group_key=?,
+                    issue_number=?,issue_url=?,processed_at=? WHERE chat_id=? AND message_id=?''',
+                    (source['case_key'],source['group_key'],source['issue_number'],origin['issue_url'],self.clock().isoformat(),m.chat_id,m.message_id))
+            self.project_topics(anchor.chat_id,source['case_key'])
+            return job['id']
+
+    @_locked
+    def followup_job_messages(self, job):
+        from .store import _to_message
+        rows=self.connection.execute('''SELECT m.* FROM followup_job_sources s JOIN messages m
+            ON m.chat_id=s.chat_id AND m.message_id=s.message_id WHERE s.job_id=? ORDER BY m.message_id''',(job['id'],)).fetchall()
+        return [_to_message(r) for r in rows] if rows else [_to_message(self.get(job['chat_id'],job['message_id']))]
+
+    @_locked
+    def latest_related_episode(self, root_key):
+        row=self.connection.execute('SELECT * FROM followup_episodes WHERE parent_root_key=? ORDER BY anchor_message_id DESC LIMIT 1',
+                                    (root_key,)).fetchone()
+        return dict(row) if row is not None else None
+
     def pending_followups(self):
         with self._lock:
             return [dict(row) for row in self.connection.execute("""SELECT * FROM followup_jobs
@@ -108,7 +205,15 @@ class FollowupStoreMixin:
             rows = self.connection.execute(f"""SELECT * FROM messages WHERE chat_id=? AND {column}=?
                 AND decision != 'followup' ORDER BY message_id""",
                 (root['chat_id'],root[column])).fetchall()
+            episode=self.connection.execute('SELECT source_ids FROM followup_episodes WHERE root_key=?',(root['root_key'],)).fetchone()
+            if episode is not None:
+                rows=[self.get(root['chat_id'],mid) for mid in json.loads(episode[0])]
+                rows=[row for row in rows if row is not None]
             reply = _to_message(self.get(job['chat_id'],job['message_id']))
+            present={r['message_id'] for r in rows}
+            for m in self.followup_job_messages(job):
+                if m.message_id!=reply.message_id and m.message_id not in present:
+                    rows.append(self.get(m.chat_id,m.message_id));present.add(m.message_id)
             history = [dict(r) for r in self.connection.execute("""SELECT m.message_id,m.reply_to_id,m.sender_id,m.sender_name,m.received_at,
                        m.has_image,m.has_document,m.text,j.plan,j.result
                 FROM followup_jobs j JOIN messages m ON m.chat_id=j.chat_id AND m.message_id=j.message_id
@@ -128,6 +233,7 @@ class FollowupStoreMixin:
             for ordinal,(kind,payload) in enumerate(operations):
                 self.connection.execute("""INSERT INTO followup_operations(job_id,ordinal,kind,payload)
                     VALUES (?,?,?,?)""", (job['id'],ordinal,kind,json.dumps(payload,ensure_ascii=False)))
+            self._project_followup_topic(job)
 
     @_locked
     def followup_operations(self, job):
@@ -142,7 +248,7 @@ class FollowupStoreMixin:
                                             (job['id'],ordinal)).fetchone()
                 if row['status'] != 'planned':
                     self.connection.rollback(); return False
-                if row['kind']=='create' and self.count_recent_issues() >= limit:
+                if row['kind'] in ('create','related_create') and self.count_recent_issues() >= limit:
                     self.connection.rollback(); return False
                 self.connection.execute("UPDATE followup_operations SET status='reserved',reserved_at=? WHERE job_id=? AND ordinal=?",
                                         (self.clock().isoformat(),job['id'],ordinal))
@@ -158,6 +264,8 @@ class FollowupStoreMixin:
                 WHERE job_id=? AND ordinal=? AND status='reserved'""", (number,job['id'],op['ordinal']))
             if changed.rowcount != 1:
                 return
+            if op['kind']=='related_create' and op.get('readback_verified') is True:
+                self._register_related_episode(job,op,number)
             if op['kind']=='refresh':
                 payload=json.loads(op['payload'])
                 root=self.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',(job['root_key'],)).fetchone()
@@ -169,6 +277,7 @@ class FollowupStoreMixin:
                 siblings=json.loads(root[0]); siblings.append(number)
                 self.connection.execute('UPDATE followup_roots SET siblings=? WHERE root_key=?',
                                         (json.dumps(siblings),job['root_key']))
+            self._project_followup_topic(job)
 
     def remember_followup_result(self, job, op, number):
         """Best-effort DB recovery for a proven response; never repeat the external POST."""
@@ -179,6 +288,8 @@ class FollowupStoreMixin:
                 return
             self.connection.execute('UPDATE followup_operations SET result=? WHERE job_id=? AND ordinal=?',
                                     (number,job['id'],op['ordinal']))
+            if op['kind']=='related_create' and op.get('readback_verified') is True:
+                self._register_related_episode(job,op,number)
             if op['kind']=='create':
                 root=self.connection.execute('SELECT siblings FROM followup_roots WHERE root_key=?',
                                              (job['root_key'],)).fetchone()
@@ -191,6 +302,7 @@ class FollowupStoreMixin:
     def finish_followup(self, job, status, result):
         with self._lock, self.connection:
             self.connection.execute('UPDATE followup_jobs SET status=?,result=? WHERE id=?', (status,result,job['id']))
+            self._project_followup_topic(job)
 
     @_locked
     def followup_split_attempted(self, root_key, before_id):
@@ -200,9 +312,32 @@ class FollowupStoreMixin:
 
     @_locked
     def followup_create_count(self, now):
-        return self.connection.execute("""SELECT COUNT(*) FROM followup_operations WHERE kind='create'
+        return self.connection.execute("""SELECT COUNT(*) FROM followup_operations WHERE kind IN ('create','related_create')
             AND reserved_at IS NOT NULL AND julianday(reserved_at)>=julianday(?)""",
             ((now-timedelta(minutes=60)).isoformat(),)).fetchone()[0]
+
+    def _register_related_episode(self, job, op, number):
+        """Same transaction as proven POST result; never changes original case accounting."""
+        payload=json.loads(op['payload'])
+        root=self.connection.execute('SELECT * FROM followup_roots WHERE root_key=?',(job['root_key'],)).fetchone()
+        key=f"episode:{job['chat_id']}:{job['message_id']}"
+        episode_anchor=min(payload['source_ids'])
+        snapshot=payload['new_snapshot']; snapshot['issue_number']=number
+        state=json.dumps({'managed_snapshot':snapshot},ensure_ascii=False)
+        self.connection.execute("""INSERT OR IGNORE INTO followup_roots
+            (root_key,chat_id,source_message_id,case_key,issue_number,context_state)
+            VALUES (?,?,?,?,?,?)""",(key,job['chat_id'],episode_anchor,root['case_key'],number,state))
+        self.connection.execute("""INSERT OR IGNORE INTO followup_episodes
+            (root_key,parent_root_key,job_id,chat_id,anchor_message_id,issue_number,repo,source_ids,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",(key,job['root_key'],job['id'],job['chat_id'],episode_anchor,number,
+                snapshot['repo'],json.dumps(payload['source_ids']),self.clock().isoformat()))
+        for mid in payload['source_ids']:
+            self.connection.execute('INSERT OR IGNORE INTO followup_episode_sources VALUES(?,?,?)',
+                (job['chat_id'],mid,key))
+        # Only the new episode's followup message mapping changes. Original messages/cases remain intact.
+        for mid in payload['source_ids']:
+            self.connection.execute('UPDATE messages SET issue_number=?,issue_url=? WHERE chat_id=? AND message_id=?',
+                (number,f"https://github.com/{snapshot['repo']}/issues/{number}",job['chat_id'],mid))
 
     @_locked
     def followup_media(self, root, messages, repo):
@@ -335,6 +470,7 @@ class FollowupStoreMixin:
                 state['managed_snapshot']=snapshot
                 self.connection.execute('UPDATE followup_roots SET context_state=? WHERE root_key=?',
                                         (json.dumps(state,ensure_ascii=False),root_key))
+            self.project_topics(first.chat_id,case_key)
 
     def materialize_followup_operation(self, job, op, payload):
         with self._lock,self.connection:

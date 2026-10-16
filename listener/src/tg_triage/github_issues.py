@@ -148,6 +148,8 @@ class GitHubIssues:
         except (GitHubError,BudgetExhausted):
             raise GitHubNotSent('Refresh preflight failed before PATCH') from None
         digest=hashlib.sha256(current['body'].encode('utf-8')).hexdigest()
+        if current.get('state')=='closed':
+            raise GitHubConflict('Closed issue cannot be refreshed')
         if digest!=expected_sha or current['title']!=expected_title or marker not in current['body']:
             raise GitHubConflict('Issue has manual changes or wrong source')
         labels=[label.get('name') if isinstance(label,dict) else label for label in current.get('labels',[])]
@@ -162,4 +164,22 @@ class GitHubIssues:
         if (verified['body']!=issue.body or verified['title']!=issue.title or marker not in verified['body']
                 or not set(desired)<=actual):
             raise GitHubError('GitHub refresh readback did not verify')
+        return number
+
+    def lifecycle_snapshot(self, number):
+        """GET an exact host-selected issue; returned URLs never choose a destination."""
+        from datetime import datetime, timezone
+        data,_=self._issue_request(number)
+        if data.get('state') not in ('open','closed') or 'pull_request' in data:
+            raise GitHubError('Invalid issue lifecycle state')
+        return dict(number=number,repo=self.repo,state=data['state'],
+                    observed_at=datetime.now(timezone.utc).isoformat(),updated_at=data.get('updated_at'))
+
+    def verify_created_issue(self, number, issue):
+        """Verify a known successful POST result without ever repeating creation."""
+        data,_=self._issue_request(number)
+        labels={item.get('name') if isinstance(item,dict) else item for item in data.get('labels',[])}
+        if (data['title']!=issue.title or data['body']!=issue.body or
+                not set(issue.labels)<=labels or 'pull_request' in data):
+            raise GitHubError('Created issue readback did not verify')
         return number
