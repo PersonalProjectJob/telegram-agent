@@ -65,6 +65,22 @@ class AutonomousTraceTests(unittest.TestCase):
         foreign=trace(self.store,repo=REPO,chat_id=CHAT-1,message_id=901)
         self.assertIn('no_stored_source_for_selector',foreign['gaps'])
 
+    def test_clarification_reservation_is_traceable_without_question_or_hash(self):
+        key,messages=self.case((448,))
+        self.issue(messages[0])
+        self.store.enable_autonomy()
+        self.store.reserve_autonomous_clarification(key,messages[0],'PRIVATE_QUESTION_TEXT')
+        self.assertTrue(self.store.reserve_autonomous_outage(messages[0]))
+        result=trace(self.store,repo=REPO,issue=47)
+        row=result['sections']['autonomous_clarifications'][0]
+        self.assertEqual(row['case_key'],key)
+        self.assertEqual(row['message_id'],448)
+        self.assertNotIn('question',row)
+        self.assertNotIn('question_key',row)
+        self.assertNotIn('PRIVATE_QUESTION_TEXT',json.dumps(result))
+        self.assertEqual(result['sections']['autonomous_outages'][0]['anchor_message_id'],448)
+        self.assertEqual(result['sections']['autonomous_outages'][0]['status'],'open')
+
     def test_ingress_decision_reason_and_six_read_budget_are_metadata(self):
         key,messages=self.case((448,))
         self.issue(messages[0])
@@ -72,6 +88,8 @@ class AutonomousTraceTests(unittest.TestCase):
         journal_root=f'{CHAT}:1'
         turn=Turn(self.store,'ingress:'+journal_root,journal_root,1,max_reads=6)
         turn.reason='semantic_new'
+        turn.record('ingress_packing',dict(text_bytes=7999,new_text_cap=700,candidate_text_cap=55,
+            candidate_context_truncated=True,retained_candidate_ids=['c1'],omitted_candidate_ids=['c2','PRIVATE_PACKING'],private='PRIVATE_PACKING'))
         turn.record('ingress_result',{'source_ids':[448]},status='verified')
         self.store.enable_autonomy()
         self.store.connection.execute('INSERT INTO autonomous_routes VALUES(?,?,?,?,?,?,?,?)',
@@ -83,3 +101,7 @@ class AutonomousTraceTests(unittest.TestCase):
         self.assertEqual(row['status'],'verified')
         self.assertEqual(row['reason_code'],'semantic_new')
         self.assertEqual(row['budget']['max_reads'],6)
+        packed=next(r for r in result['sections']['thinking_decision_events'] if r.get('intent')=='ingress_packing')
+        self.assertEqual(packed['packing']['text_bytes'],7999)
+        self.assertEqual(packed['packing']['omitted_candidate_ids'],['c2'])
+        self.assertNotIn('PRIVATE_PACKING',json.dumps(result))

@@ -4,6 +4,8 @@ from . import group_notices
 from .models import CaseAnalysis, Decision, TopicGroup
 from .thinking import CURRENT, decision_turn
 
+TECHNICAL_CONTEXT_QUESTION=group_notices.TECHNICAL_CONTEXT_QUESTION
+
 
 def _validate(groups,sources,candidates,threshold):
     if not isinstance(groups,list) or not groups:
@@ -37,19 +39,33 @@ def _validate(groups,sources,candidates,threshold):
     return groups if seen==expected else None
 
 
-def _pending(pipeline,messages,candidate,question,reason):
+def _pending(pipeline,messages,candidate,question,reason,*,notice=True,technical=False):
     key,group,all_sources=pipeline.store.autonomy_case(messages,candidate if candidate and candidate['pending'] else None)
     first=min(all_sources,key=lambda m:m.message_id)
     result=Decision('pending_review','model',case_key=key,reason=reason)
     pipeline.store.finish(first,result)
     pipeline.store.close_case(key,result,0)
-    # Focused visible question, durably reserved even when delivery is ambiguous.
-    if pipeline.config.mode!='dry-run':
-        group_notices.notify(pipeline.store,pipeline.notice_sender,messages[0],
-            Decision('needs_human','model',case_key=key),
-            (question or 'Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?',),
-            pipeline.config.gh_repo)
+    if not question and candidate and candidate['pending']:
+        prior=pipeline.store.autonomous_clarification_context(key)
+        question=prior[0]['question'] if prior else ''
+    _clarify(pipeline,key,messages[0],question,notice=notice,technical=technical)
     return result
+
+
+def _clarify(pipeline,case_key,source,question,*,notice=True,technical=False):
+    question=group_notices.address_question(question or group_notices.FALLBACK_QUESTION)
+    if not notice or pipeline.config.mode=='dry-run' or pipeline.notice_sender is None:
+        return
+    try:
+        if technical and not pipeline.store.reserve_autonomous_outage(source):
+            return
+        if not pipeline.store.reserve_autonomous_clarification(case_key,source,question):
+            return
+    except Exception:
+        return  # Durable reservation unavailable: fail closed before any send.
+    group_notices.notify(pipeline.store,pipeline.notice_sender,source,
+        Decision('needs_human','model',case_key=case_key),(question,),pipeline.config.gh_repo,
+        text_override='Em cần Anh/Chị làm rõ thêm một chút nhé: '+question)
 
 
 def process(pipeline,message,start):
@@ -70,7 +86,10 @@ def process(pipeline,message,start):
                 pipeline.store.start_classifying(old)
             sources.append(old)
     for queued in pipeline.store.queued_messages():
-        if (cached is None and queued.chat_id==message.chat_id and queued.message_id!=message.message_id and len(sources)<20):
+        from .pacing import RELEASED_SOURCES
+        released=RELEASED_SOURCES.get()
+        if (cached is None and queued.chat_id==message.chat_id and queued.message_id!=message.message_id and len(sources)<20
+                and (released is None or (queued.chat_id,queued.message_id) in released)):
             if pipeline.store.start_classifying(queued):
                 sources.append(queued)
     sources.sort(key=lambda m:m.message_id)
@@ -122,9 +141,13 @@ def process(pipeline,message,start):
             if groups is None:
                 # No guessed membership on provider/schema failure, even adjacent messages.
                 reason=getattr(pipeline.classifier,'last_ingress_outcome','invalid_ingress_output')
+                if reason=='ok':
+                    reason='invalid_ingress_output'  # Parsed JSON is not host-authorized source accounting.
                 groups=[dict(message_ids=[source.message_id],action='CLARIFY',candidate=None,candidate_id=None,
                     confidence=0,question='',analysis=CaseAnalysis('needs_human',None,(source.message_id,)),
-                    host_reason=reason) for source in sources]
+                    host_reason=reason,host_batch_notice_anchor=sources[0].message_id) for source in sources]
+            if not cached and not any('host_batch_notice_anchor' in group for group in groups):
+                pipeline.store.close_autonomous_outage(message.chat_id)
             if not cached:
                 for group in groups:
                     if group['action']=='NEW' and pipeline._vision_unavailable([m for m in sources if m.message_id in group['message_ids']]):
@@ -155,7 +178,10 @@ def process(pipeline,message,start):
                     results.append(Decision('followup','model',case_key=target,issue_number=candidate['source']['issue_number']))
                     continue
                 if action=='CLARIFY' or action=='CONTINUE' and (analysis.verdict!='ticket' or not analysis.actionable):
-                    results.append(_pending(pipeline,own,candidate,group['question'] or next(iter(analysis.missing_info),''),reason))
+                    batch_anchor=group.get('host_batch_notice_anchor')
+                    question=(TECHNICAL_CONTEXT_QUESTION if batch_anchor is not None else group['question'] or next(iter(analysis.missing_info),''))
+                    results.append(_pending(pipeline,own,candidate,question,reason,
+                        notice=batch_anchor is None or own[0].message_id==batch_anchor,technical=batch_anchor is not None))
                     continue
                 case_key,group_key,members=pipeline.store.autonomy_case(own,candidate if action=='CONTINUE' else None)
                 first=min(members,key=lambda m:m.message_id)
@@ -229,8 +255,9 @@ def resume_case(pipeline,case_key):
     result=pipeline._run(plan,case_key)
     pipeline.store.close_case(case_key,result,0)
     if result.decision=='pending_review' and pipeline.config.mode!='dry-run':
-        group_notices.notify(pipeline.store,pipeline.notice_sender,first,
-            Decision('needs_human','model',case_key=case_key),(cached['question'] or group_notices.FALLBACK_QUESTION,),pipeline.config.gh_repo)
+        batch_anchor=cached.get('host_batch_notice_anchor')
+        _clarify(pipeline,case_key,first,TECHNICAL_CONTEXT_QUESTION if batch_anchor is not None else cached['question'] or group_notices.FALLBACK_QUESTION,
+                 notice=batch_anchor is None or first.message_id==batch_anchor,technical=batch_anchor is not None)
     return result
 
 

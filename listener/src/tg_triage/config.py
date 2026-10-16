@@ -141,6 +141,8 @@ class Config:
     thinking_enabled: bool = True
     topic_memory_enabled: bool = False
     autonomous_enabled: bool = False
+    context_quiet_seconds: int = 30
+    context_max_wait_seconds: int = 60
 
     def redacted(self) -> dict:
         result = asdict(self)
@@ -369,6 +371,11 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
         raise ConfigError('thinking.autonomous_enabled: expected boolean')
     if autonomous_enabled and not thinking_enabled:
         raise ConfigError('thinking.autonomous_enabled requires thinking.enabled')
+    thinking_table=_optional_table(data,'thinking')
+    context_quiet_seconds=_integer(thinking_table.get('context_quiet_seconds',30),'thinking.context_quiet_seconds',30)
+    context_max_wait_seconds=_integer(thinking_table.get('context_max_wait_seconds',60),'thinking.context_max_wait_seconds',30)
+    if not context_quiet_seconds<=context_max_wait_seconds<=60:
+        raise ConfigError('thinking: expected 30 <= context_quiet_seconds <= context_max_wait_seconds <= 60')
     return Config(
         mode=mode,
         telegram=TelegramConfig(
@@ -389,4 +396,6 @@ def load_config(path, environ=None, *, validate_only=False) -> Config:
         thinking_enabled=thinking_enabled,
         topic_memory_enabled=topic_memory_enabled,
         autonomous_enabled=autonomous_enabled,
+        context_quiet_seconds=context_quiet_seconds,
+        context_max_wait_seconds=context_max_wait_seconds,
     )

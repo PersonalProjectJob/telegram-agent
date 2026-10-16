@@ -60,7 +60,7 @@ class AutonomousTests(TestCase):
         notices=[]; p=self.build(Router(None),notice_sender=lambda c,m,t:notices.append((m,t)) or 100+m)
         p.store.enqueue(message(2))
         p.process(message(1))
-        self.assertEqual(0,len(p.github.calls)); self.assertEqual([1,2],[n[0] for n in notices])
+        self.assertEqual(0,len(p.github.calls)); self.assertEqual([1],[n[0] for n in notices])
         self.assertNotEqual(p.store.get(message().chat_id,1)['case_key'],p.store.get(message().chat_id,2)['case_key'])
 
     def test_pending_photo_followed_by_caption_reuses_sources(self):

@@ -99,3 +99,6 @@ enabled = true
 topic_memory_enabled = false
 # Semantic multi-topic routing and closed-ticket lifecycle; keep off until verified.
 autonomous_enabled = false
+# Live autonomous Telegram: wait for conversation context, then classify by meaning.
+context_quiet_seconds = 30
+context_max_wait_seconds = 60

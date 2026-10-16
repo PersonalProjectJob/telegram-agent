@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import signal
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -341,30 +342,30 @@ _TICK = object()
 
 
 async def _next_message(queue, stop, timeout=None):
-    """Next queued message, None when stopping, or `_TICK` when `timeout` elapsed idle."""
-    if stop is None:
-        if timeout is None:
-            return await queue.get()
-        try:
-            return await asyncio.wait_for(queue.get(), timeout)
-        except TimeoutError:
-            return _TICK
-    getter = asyncio.create_task(queue.get())
-    stopper = asyncio.create_task(stop.wait())
+    """Next message, None on stop, or idle tick; cancellation releases retrieved ownership."""
+    getter=asyncio.create_task(queue.get())
+    stopper=asyncio.create_task(stop.wait()) if stop is not None else None
+    tasks=(getter,stopper) if stopper is not None else (getter,)
+    released=False
     try:
-        await asyncio.wait((getter, stopper), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-        if stop.is_set():
-            if getter.done() and not getter.cancelled():
-                queue.task_done()
-            return None
-        if not getter.done():
-            return _TICK
-        return getter.result()
-    finally:
-        for task in (getter, stopper):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(getter, stopper, return_exceptions=True)
+        try:
+            await asyncio.wait(tasks,timeout=timeout,return_when=asyncio.FIRST_COMPLETED)
+            if stop is not None and stop.is_set():
+                if getter.done() and not getter.cancelled():
+                    queue.task_done(); released=True
+                return None
+            if not getter.done():
+                return _TICK
+            return getter.result()
+        finally:
+            for task in tasks:
+                if not task.done(): task.cancel()
+            await asyncio.gather(*tasks,return_exceptions=True)
+    except asyncio.CancelledError:
+        # Also covers cancellation during cleanup after queue.get completed but before return.
+        if getter.done() and not getter.cancelled() and not released:
+            queue.task_done()
+        raise
 
 
 async def _in_thread(function, *arguments):
@@ -437,7 +438,8 @@ async def _react_issue_created(pipeline, react, decision, chat_id, message_id):
                 _mark(store, chat_id, target, "ok")
 
 
-async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None, notice_edit=None):
+async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None, notice_edit=None,
+                 _clock=time.monotonic, _receive=None):
     close_due = getattr(pipeline, "close_due_cases", None)
     interval = SWEEP_SECONDS if close_due is not None else None
     attach = getattr(pipeline, "set_reactor", None)
@@ -451,7 +453,10 @@ async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None, no
     if attach_editor is not None and notice_edit is not None:
         attach_editor(make_notice_sender(notice_edit,asyncio.get_running_loop()))
     try:
-        await _work(queue, pipeline, stop, react, interval)
+        if getattr(getattr(pipeline,'config',None),'autonomous_enabled',False):
+            await _paced_work(queue,pipeline,stop,react,interval,clock=_clock,receive=_receive)
+        else:
+            await _work(queue, pipeline, stop, react, interval)
     finally:
         if attach_editor is not None and notice_edit is not None:
             attach_editor(None)
@@ -459,6 +464,112 @@ async def worker(queue, pipeline, stop=None, *, react=None, notice_send=None, no
             attach_notice(None)
         if attach is not None and react is not None:
             attach(None)
+
+
+def _release_messages(queue,messages):
+    for _ in messages:
+        queue.task_done()
+
+
+async def _paced_work(queue,pipeline,stop,react,interval,*,clock=time.monotonic,receive=None):
+    """Collect independently of the single processing thread; never wait on Telegram's loop."""
+    from .pacing import ChatCollector,RELEASED_SOURCES,BUSY_CHATS
+    collector=ChatCollector(pipeline.config.context_quiet_seconds,pipeline.config.context_max_wait_seconds)
+    ready=asyncio.Queue()
+    receive=receive or _next_message
+    sweep_pending=False
+    ready_chats={}
+
+    def release_batch(batch):
+        chat_id=batch[0].chat_id
+        ready_chats[chat_id]=ready_chats.get(chat_id,0)+1
+        ready.put_nowait(batch)
+
+    async def collect():
+        nonlocal sweep_pending
+        next_sweep=clock()+interval if interval is not None else None
+        try:
+            while stop is None or not stop.is_set():
+                now=clock()
+                for batch in collector.release_due(now):
+                    release_batch(batch)
+                if next_sweep is not None and now>=next_sweep:
+                    # Recovery owns prior durable plans; unrelated collecting chats cannot starve it.
+                    if not sweep_pending:
+                        ready.put_nowait(_TICK)
+                        sweep_pending=True
+                    next_sweep=now+interval
+                deadlines=[d for d in (collector.next_timeout(now),
+                    max(0,next_sweep-now) if next_sweep is not None else None) if d is not None]
+                incoming=await receive(queue,stop,min(deadlines) if deadlines else None)
+                if incoming is None:
+                    return
+                if incoming is _TICK:
+                    continue
+                now=clock()
+                # An arrival at the hard boundary starts the next batch; it cannot extend the cap.
+                for batch in collector.release_due(now):
+                    release_batch(batch)
+                collector.add(incoming,now)
+        finally:
+            for batch in collector.release_all():
+                _release_messages(queue,batch)
+
+    async def process():
+        nonlocal sweep_pending
+        while stop is None or not stop.is_set():
+            batch=await ready.get()
+            try:
+                if batch is _TICK:
+                    token=RELEASED_SOURCES.set(frozenset())
+                    try:
+                        excluded=frozenset(collector.pending)|frozenset(ready_chats)
+                        for decision in await _in_thread(_sweep_cases,pipeline,excluded):
+                            if decision.reaction_message_id is not None and decision.case_key:
+                                chat_id=int(decision.case_key.rsplit(':',1)[0])
+                                await _react_issue_created(pipeline,react,decision,chat_id,decision.reaction_message_id)
+                    finally:
+                        RELEASED_SOURCES.reset(token)
+                        sweep_pending=False
+                    continue
+                chat_id=batch[0].chat_id
+                ready_chats[chat_id]-=1
+                if not ready_chats[chat_id]:
+                    del ready_chats[chat_id]
+                token=RELEASED_SOURCES.set(frozenset((m.chat_id,m.message_id) for m in batch))
+                busy_token=BUSY_CHATS.set((frozenset(collector.pending)|frozenset(ready_chats))-{chat_id})
+                try:
+                    for incoming in batch:
+                        if stop is not None and stop.is_set():
+                            break
+                        decision=await _in_thread(_process_message,pipeline,incoming)
+                        await _react_issue_created(pipeline,react,decision,incoming.chat_id,incoming.message_id)
+                finally:
+                    RELEASED_SOURCES.reset(token)
+                    BUSY_CHATS.reset(busy_token)
+            finally:
+                if batch is not _TICK:
+                    _release_messages(queue,batch)
+                ready.task_done()
+
+    tasks=[asyncio.create_task(collect()),asyncio.create_task(process())]
+    try:
+        done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        while not ready.empty():
+            batch=ready.get_nowait()
+            if batch is not _TICK:
+                _release_messages(queue,batch)
+            ready.task_done()
+        while not queue.empty():
+            queue.get_nowait()
+            queue.task_done()  # Shutdown release only; every row is still durable in SQLite.
 
 
 async def _work(queue, pipeline, stop, react, interval):
@@ -483,10 +594,10 @@ async def _work(queue, pipeline, stop, react, interval):
             queue.task_done()
 
 
-def _sweep_cases(pipeline):
+def _sweep_cases(pipeline,exclude_chat_ids=()):
     """Close expired cases; a failure here must never stop the worker."""
     try:
-        return pipeline.close_due_cases()
+        return pipeline.close_due_cases(exclude_chat_ids=exclude_chat_ids) if exclude_chat_ids else pipeline.close_due_cases()
     except Exception as error:
         LOG.error("Case sweep failed exception=%s", type(error).__name__)
         return []

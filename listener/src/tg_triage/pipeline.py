@@ -270,16 +270,19 @@ class Pipeline:
         with self._lock:
             return self._process(message)
 
-    def close_due_cases(self) -> list:
+    def close_due_cases(self,exclude_chat_ids=()) -> list:
         """Analyze every case whose window expired; returns the decisions made."""
         results = []
+        exclude_chat_ids=frozenset(exclude_chat_ids)
         aggregation = self.config.aggregation
         with self._lock:
             from .followups import sweep
-            sweep(self)
+            sweep(self,exclude_chat_ids=exclude_chat_ids) if exclude_chat_ids else sweep(self)
             if self.config.autonomous_enabled:
                 from .autonomous import resume_case
-                for row in self.store.connection.execute("SELECT case_key FROM cases WHERE status='open' ORDER BY id").fetchall():
+                for row in self.store.connection.execute("SELECT case_key,chat_id FROM cases WHERE status='open' ORDER BY id").fetchall():
+                    if row['chat_id'] in exclude_chat_ids:
+                        continue
                     result=resume_case(self,row['case_key'])
                     if result is not None:
                         results.append(result)
@@ -287,6 +290,8 @@ class Pipeline:
             due = self.store.due_cases(self.store.clock(), aggregation.window_minutes,
                                        aggregation.max_messages_per_case)
             for case_key in due:
+                if self.store.get_case(case_key)['chat_id'] in exclude_chat_ids:
+                    continue
                 start = self.timer()
                 try:
                     result = self._analyze_case(case_key, start)

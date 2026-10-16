@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.5.0 · **Updated**: 2026-10-16 11:31 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.6.0 · **Updated**: 2026-10-16 12:16 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -240,6 +240,7 @@ No canonical Harness/provider/auth/model changes were made. Synthetic fake-tool 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Per-chat pacing, sealed batch, durable clarification context and bounded candidate packing. |
 | v1.5.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous/lifecycle implementation, batch/provenance, current partition, bounded joint packing và verified episodes. |
 | v1.4.0 | 2026-10-16 10:11 | Codex / owner AlexChu | Thiết kế triển khai topic/trace foundation, additive/bounded/read-only contracts và ranh giới lifecycle/routing. |
 | v1.3.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Production startup parity, bounded source packing/redaction and guarded multimodal canonical enrichment for the POS regression. |
@@ -256,3 +257,9 @@ No canonical Harness/provider/auth/model changes were made. Synthetic fake-tool 
 `lifecycle.py` kiểm evidence/recurrence/unclear bằng source và exact quotes; closed/updated timestamp không đủ chứng minh working. `github_issues.lifecycle_snapshot` trusted GET; related create preflight kiểm state/update token, verified readback trước episode registration. Historical evidence comment giữ closed, recurrence tạo canonical new related, unclear hỏi và không reopen. Episode provenance có namespace riêng, exact reply/current followup route vào episode mới; old parent không nuốt lại evidence đã chuyển.
 
 Topic current projection không thay originals. Trace đọc các ledger routing/batch/episodes/current partition và explicit turn link, metadata mặc định. Prompt autonomous được đóng gói wheel; `[thinking] autonomous_enabled=false` mặc định, bật cùng enabled/topic_memory trên host sau kiểm immutable release. Rollback chỉ code/config, giữ additive ledger và backup nhất quán.
+
+## Chat pacing / late-context increment
+
+Autonomous Telegram worker owns async per-chat collection deadlines (quiet30s, cap60s) and a single processing lane. A sealed released-source ContextVar bounds autonomous backlog claims; direct Pipeline calls retain immediate behavior. The event loop/collector must stay responsive while the processing thread performs model/tool calls. Durable enqueue precedes collection; stop/cancel acknowledgment must leave unprocessed database rows queued, not reserve side effects early.
+
+Pending clarification ledger stores normalized question reservation by proven case. Candidate packets include prior questions and delivery statuses; legacy empty-question plans derive the exact historical fallback. Technical provider failure sends one batch notice while individual case/routes remain independent. Classifier prioritizes current sources/exact replies, bounds optional history and filters omitted-candidate pixels. Packing metadata goes to the existing decision journal and safe trace output. No model/provider/consent change, no migration that deletes existing accounting. Operator settings and limits are canonical in the business source; this is implementation detail.

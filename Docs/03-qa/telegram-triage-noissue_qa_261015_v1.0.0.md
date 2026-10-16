@@ -1,6 +1,6 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.4.0 · **Updated** 2026-10-16 11:31 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.5.0 · **Updated** 2026-10-16 12:16 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
@@ -222,6 +222,7 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.5.0 | 2026-10-16 12:00 Asia/Saigon | Codex / owner AlexChu | Chat timing/late context/anti-spam and real-history packet pressure acceptance. |
 | v1.4.0 | 2026-10-16 11:31 Asia/Saigon | Codex / owner AlexChu | Autonomous/lifecycle business acceptance, actual-context/model regression và separate release proofs. |
 | v1.3.0 | 2026-10-16 10:11 Asia/Saigon | Codex / owner AlexChu | Acceptance topic/trace foundation: provenance, immutable history, readonly/legacy/privacy/bounds và scope lifecycle. |
 | v1.2.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Actual startup/POS source-context, new reply image, managed refresh, source roles and generated-field smoke assertions. |
@@ -245,3 +246,19 @@ Earlier failed samples were retained on the private THINKPAD preview path: #46 o
 ### Final frozen source verification
 
 Independent listener: `python -m unittest discover -s tests -t . -q`, 867 tests in114.340s, one Windows skip, exit0 (2026-10-16 11:30–11:32 Asia/Saigon). Independent targeted review83 PASS, implementation integration100 PASS. Policy checker32 rules/37 runtime files and17 negative tests PASS; compileall/diffcheck PASS. Evidence `.context/autonomous-v2-independent-refrozen-*`; previous moving-tree reports remain provisional and are not substituted for these frozen results. Fingerprint remains `aee0d68b9eb11de1baaff3fea5f4b40920180f2afce892cc8c9d5b162de92d43`. Generic developer Harness gate remains Node-only/no package.json for this Python repository; its formal gate is not PASS.
+
+## Chat pacing acceptance — 2026-10-16
+
+Required: no model/notice before30s quiet; same-chat continuation resets quiet up to60s cap; other chats retain independent deadlines even while a model call is blocked. Initial and followup ingress both wait; direct Pipeline tests stay immediate. Actual worker + Pipeline must analyze synthetic login text/later photo in one packet and reply correct first source; mixed requests still split semantically. Late (>60s) reply/photo must retrieve pending questions/context, avoid normalized duplicate clarification across restart, and keep new topic/new essential questions visible. Stop/cancel/replay/queue.join and sealed batch boundary must preserve every queued row and prevent the active call from consuming the next batch.
+
+Production incident metadata (read-only): new sources457/458/461 were context_budget_exhausted with zero model calls; no source text/credentials printed. Reproduce ordinary login under3 historical candidates7+1+6 sources: actual classifier request must fit8KB and execute; preserve exact old replies, bindings/source IDs; removed candidate pixels cannot remain in packet, and model cannot choose a removed candidate. Mandatory-only overflow retains visible technical fallback. Provider failures send one batch question without merging independent source accounting. Supplied screenshot contains credentials; use synthetic fixtures and never upload it in tests. Final source/release/installed evidence is appended only after frozen verification.
+
+### Frozen verification / pacing increment
+
+Independent listener904 tests in122.011s, one Windows skip, exit0 (2026-10-16 12:16–12:18 Asia/Saigon). Independent targeted review41 PASS17.690s; scheduler17 +existing transport11 PASS; conversation14 and packet5 regressions included in full suite. Policy32 rules/38 runtime files and17 negative tests PASS; compileall/diff checks PASS. Frozen fingerprint `8e4236ec78a733783b8e2935ad8cb1ad1f92ee98f7f4c8dff10db2ee045d779e`. Metadata trace preserves packing/outage/clarification evidence without exporting question/hash.
+
+Configured-model preview7/7 PASS using fake GitHub/Telegram and memory SQLite: five historical cases plus synthetic login under3 oldtopic pressure and clarification reply after90s. New caption test keeps login sources457/461 together and billing458 separate; late pending creates one ticket and replies original601. This preview predates final debug/scoped-recovery deltas in autonomous.py/pipeline.py, so it is provisional for the complete frozen tree. Immutable installed7-case rerun is required after commit. New login fixture uses synthetic text; actual pixel bundling/timing are exercised with fake HTTP and virtual clock in worker tests, not a credential-bearing screenshot.
+
+Recovery scope is checked when entering a sweep/batch. A model/tool call already in flight is allowed to finish; later typing cannot safely cancel an already reserved external operation. Quiet/cap and sealed-source guarantees apply to newly collected ingress. Full semantic merging of multiple old independent pending roots is not implemented; unclear membership remains explicit. Generic developer Harness gate remains Node-only/no package.json for this Python repo; no formal PASS is claimed.
+
+Independent deployment suite46 PASS168.530s; real staged listener904 PASS111.371s(skip1), NailHub227 PASS27.144s(skip5). Final frozen hash drift empty at12:19:58 Asia/Saigon. Evidence .context/chat-pacing-independent-final.json. Immutable commit/installed proof remains a separate release step.

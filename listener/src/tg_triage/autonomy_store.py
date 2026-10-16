@@ -18,6 +18,16 @@ class AutonomyStoreMixin:
                     chat_id INTEGER NOT NULL,message_id INTEGER NOT NULL,issue_number INTEGER NOT NULL,
                     status TEXT NOT NULL,notice_message_id INTEGER,recorded_at TEXT NOT NULL,
                     PRIMARY KEY(chat_id,message_id,issue_number));
+                CREATE TABLE IF NOT EXISTS autonomous_outages(
+                    chat_id INTEGER NOT NULL,cycle INTEGER NOT NULL,anchor_message_id INTEGER NOT NULL,
+                    status TEXT NOT NULL,started_at TEXT NOT NULL,closed_at TEXT,
+                    PRIMARY KEY(chat_id,cycle));
+                CREATE UNIQUE INDEX IF NOT EXISTS autonomous_outage_open ON autonomous_outages(chat_id)
+                    WHERE status='open';
+                CREATE TABLE IF NOT EXISTS autonomous_clarifications(
+                    case_key TEXT NOT NULL,question_key TEXT NOT NULL,question TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,message_id INTEGER NOT NULL,recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(case_key,question_key));
                 CREATE TABLE IF NOT EXISTS autonomous_plans(
                     chat_id INTEGER NOT NULL,anchor_id INTEGER NOT NULL,source_ids TEXT NOT NULL,
                     case_key TEXT NOT NULL,plan TEXT NOT NULL,recorded_at TEXT NOT NULL,
@@ -25,6 +35,65 @@ class AutonomyStoreMixin:
             ''')
             self.connection.execute("UPDATE autonomous_confirmations SET status='ambiguous' WHERE status='reserved'")
             self._autonomy_enabled=True
+
+    def reserve_autonomous_outage(self,message):
+        """One technical notice per chat outage, unrelated to semantic topic membership."""
+        with self._lock,self.connection:
+            if self.connection.execute("SELECT 1 FROM autonomous_outages WHERE chat_id=? AND status='open'",
+                                       (message.chat_id,)).fetchone():
+                return False
+            cycle=self.connection.execute('SELECT COALESCE(MAX(cycle),0)+1 FROM autonomous_outages WHERE chat_id=?',
+                                          (message.chat_id,)).fetchone()[0]
+            self.connection.execute("INSERT INTO autonomous_outages VALUES(?,?,?,'open',?,NULL)",
+                (message.chat_id,cycle,message.message_id,self.clock().isoformat()))
+            return True
+
+    def close_autonomous_outage(self,chat_id):
+        """Only host-validated model routing ends the incident; preserve its history."""
+        with self._lock,self.connection:
+            self.connection.execute("UPDATE autonomous_outages SET status='closed',closed_at=? WHERE chat_id=? AND status='open'",
+                                    (self.clock().isoformat(),chat_id))
+
+    def reserve_autonomous_clarification(self,case_key,message,question):
+        """Semantic-topic reservation precedes the existing transport reservation.
+
+        A crash or unknown transport outcome must not cause another question attempt.
+        Different focused questions and different proven topics retain independent slots.
+        """
+        import hashlib
+        import unicodedata
+        normalized=' '.join(unicodedata.normalize('NFKC',question).casefold().split()).rstrip(' ?.!')
+        digest=hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+        with self._lock,self.connection:
+            for previous in self.autonomous_clarification_context(case_key):
+                prior=' '.join(unicodedata.normalize('NFKC',previous['question']).casefold().split()).rstrip(' ?.!')
+                if prior==normalized:
+                    return False
+            return self.connection.execute('INSERT OR IGNORE INTO autonomous_clarifications VALUES(?,?,?,?,?,?)',
+                (case_key,digest,question,message.chat_id,message.message_id,self.clock().isoformat())).rowcount==1
+
+    def autonomous_clarification_context(self,case_key):
+        with self._lock:
+            rows=self.connection.execute("""SELECT q.question,q.message_id,COALESCE(n.status,'reserved') AS status,
+                n.notice_message_id FROM autonomous_clarifications q LEFT JOIN group_notices n
+                ON n.chat_id=q.chat_id AND n.message_id=q.message_id
+                WHERE q.case_key=? ORDER BY q.recorded_at DESC,q.message_id DESC LIMIT 3""",(case_key,)).fetchall()
+            result=[dict(question=r['question'],source_message_id=r['message_id'],
+                         delivery_status=r['status'],notice_message_id=r['notice_message_id']) for r in rows]
+            # Upgrade existing pending topics without discarding their already-attempted question.
+            if not result:
+                for old in self.connection.execute("""SELECT p.plan,n.message_id,n.status,n.notice_message_id
+                    FROM autonomous_plans p JOIN group_notices n ON n.chat_id=p.chat_id AND n.message_id=p.anchor_id
+                    WHERE p.case_key=? AND n.kind='needs_human' ORDER BY p.recorded_at DESC LIMIT 3""",(case_key,)):
+                    from . import group_notices
+                    plan=json.loads(old['plan'])
+                    missing=plan.get('analysis',{}).get('missing_info',[])
+                    question=plan.get('question') or (missing[0] if missing else '') or (group_notices.TECHNICAL_CONTEXT_QUESTION
+                        if plan.get('host_batch_notice_anchor') is not None else group_notices.LEGACY_PENDING_QUESTION)
+                    result.append(dict(question=group_notices.address_question(question),source_message_id=old['message_id'],
+                        delivery_status=old['status'],notice_message_id=old['notice_message_id']))
+            return result
+
 
     def save_autonomous_plans(self,sources,groups,repo):
         """Checkpoint validated application decisions before any case or network mutation."""
@@ -164,11 +233,14 @@ class AutonomyStoreMixin:
                     plan=json.loads(job['plan'])
                     if plan.get('action')=='clarify':
                         pending_questions.extend(str(q)[:180] for q in plan.get('questions',[])[:3])
+                clarification_outcomes=self.autonomous_clarification_context(source['case_key'])
+                pending_questions=[v['question'] for v in clarification_outcomes]+pending_questions
                 result.append(dict(candidate_id=f'c{len(result)+1}',key=key,pending=pending,
                     exact_reply=bool(selected or not direct_source and direct and (direct['group_key'] or direct['case_key'])==key),
                     split=bool(source.get('split_plan') or source.get('siblings') not in (None,'[]')),
                     current_scopes=self.current_topic_context(source['root_key']),
-                    pending_questions=pending_questions[:3],
+                    pending_questions=list(dict.fromkeys(pending_questions))[:3],
+                    clarification_outcomes=[{k:v for k,v in item.items() if k!='question'} for item in clarification_outcomes],
                     source=source,messages=[_to_message(r) for r in rows],
                     title=first['title'] or '',summary=first['summary'] or ''))
                 if len(result)==6:

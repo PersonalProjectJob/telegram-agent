@@ -12,7 +12,7 @@ REASON_CODES = frozenset('''context_budget_exhausted decision_deadline_exhausted
     conflicting_binding partial_binding invalid_accounting invalid_count invalid_output
     invalid_source_roles unproven_binding unproven_count provider_unavailable
     ambiguous_enrichment invalid_enrichment_sources vision_unavailable unresolved_role
-    ingress_scope_clarification ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat
+    ingress_scope_clarification ingress_packing ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat
     ingress_pixels_unavailable invalid_ingress_output closed_episode_unclear recurrence_unproven
     lifecycle_unavailable lifecycle_lookup_failed lifecycle_target_unobserved lifecycle_foreign_sources related_create
     cached_repo_changed cached_sources_missing batch_scope_correction_unclear'''.split())
@@ -23,6 +23,8 @@ FIELDS = {
     'autonomous_routes': 'chat_id message_id recorded_at action candidate_key case_key reason_code',
     'autonomous_plans': 'chat_id anchor_id case_key recorded_at',
     'autonomous_confirmations': 'chat_id message_id issue_number status notice_message_id recorded_at',
+    'autonomous_clarifications': 'case_key chat_id message_id recorded_at',
+    'autonomous_outages': 'chat_id cycle anchor_message_id status started_at closed_at',
     'followup_episodes': 'root_key parent_root_key job_id chat_id anchor_message_id issue_number repo created_at',
     'followup_episode_sources': 'chat_id message_id root_key',
     'messages': 'chat_id message_id reply_to_id case_key group_key decision tier type issue_number received_at processed_at has_image has_document',
@@ -221,7 +223,7 @@ class Reader:
             record = _json(row.get('record'))
             data = {k: row[k] for k in ('turn_key','root_key','version') if k in row}
             enums=dict(schema={'triage.decision/v1'},harness_owner={'AlexChu'},
-                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_result'},
+                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_packing','ingress_result'},
                        status={'planned','done','blocked','ambiguous','dryrun','missing','queued','error','verified'})
             for field in ('schema','harness_owner','intent','status','policy_version','prompt_version'):
                 val=record.get(field)
@@ -239,6 +241,15 @@ class Reader:
             if isinstance(budget,dict):
                 data['budget']={k:budget[k] for k in ('model_calls_used','max_model_calls','reads_used','max_reads','elapsed_ms')
                                 if type(budget.get(k)) is int and budget[k]>=0}
+            if record.get('intent')=='ingress_packing' and isinstance(record.get('confirmed'),dict):
+                packed=record['confirmed']
+                data['packing']={k:packed[k] for k in ('new_text_cap','candidate_text_cap','text_bytes')
+                                 if type(packed.get(k)) is int and packed[k]>=0}
+                if type(packed.get('candidate_context_truncated')) is bool:
+                    data['packing']['candidate_context_truncated']=packed['candidate_context_truncated']
+                for field in ('retained_candidate_ids','omitted_candidate_ids'):
+                    if isinstance(packed.get(field),list):
+                        data['packing'][field]=[v for v in packed[field][:6] if isinstance(v,str) and re.fullmatch(r'c[1-6]',v)]
             if self.include_text:
                 data['private_content'] = _private(record)
             if self.bounded(table,data):
@@ -342,6 +353,8 @@ def _trace(store, *, repo, issue=None, chat_id=None, message_id=None, limit=100,
         else:
             r.truncated.add('reply_depth')
     sections = {k:[] for k in FIELDS}
+    for chat in sorted({chat for chat,_ in sources}):
+        sections['autonomous_outages'] += r.rows('autonomous_outages','chat_id=?',(chat,),'cycle')
     root_keys=set()
     for chat,column,key in sorted(scopes):
         originals = r.rows('messages', f'chat_id=? AND {column}=? AND decision!=?',(chat,key,'followup'),'message_id')
@@ -415,6 +428,7 @@ def _trace(store, *, repo, issue=None, chat_id=None, message_id=None, limit=100,
         case=sources[(chat,mid)].get('case_key')
         if case:
             sections['autonomous_plans'] += r.rows('autonomous_plans','chat_id=? AND case_key=?',(chat,case),'anchor_id')
+            sections['autonomous_clarifications'] += r.rows('autonomous_clarifications','chat_id=? AND case_key=?',(chat,case),'recorded_at')
     for root_key in list(root_keys):
         current_topics=r.rows('triage_current_topics','root_key=?',(root_key,),'ordinal')
         sections['triage_current_topics'] += current_topics

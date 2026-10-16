@@ -763,16 +763,22 @@ def _run_inner(pipeline,job):
     _result(pipeline,job,root,reply,'done',text,completed)
 
 
-def sweep(pipeline):
+def sweep(pipeline,exclude_chat_ids=()):
     """Called by intake and periodic case sweep, including after restarts with no new messages."""
+    from .pacing import BUSY_CHATS
+    exclude_chat_ids=set(exclude_chat_ids)|set(BUSY_CHATS.get())
     # All pipeline instances sharing this Store serialize roots, quota and HTTP reservations.
     with pipeline.store._followup_execution_lock:
         for job in pipeline.store.pending_followups():
+            if job['chat_id'] in exclude_chat_ids:
+                continue
             try:
                 _run(pipeline,job)
             except Exception as error:
                 LOG.error('Followup processing failed job_id=%s exception=%s',job['id'],type(error).__name__)
         for job in pipeline.store.pending_followup_notice_edits():
+            if job['chat_id'] in exclude_chat_ids:
+                continue
             try:
                 _edit_retry_notice(pipeline,job,job['result'],pipeline.store.followup_analysis_retry(job['id']))
             except Exception as error:

@@ -1,6 +1,6 @@
 # Telegram Triage Agent
 
-**Documentation version**: v1.3.0 · **Updated**: 2026-10-16 11:31 (Asia/Saigon) · **Owner**: AlexChu
+**Documentation version**: v1.4.0 · **Updated**: 2026-10-16 12:16 (Asia/Saigon) · **Owner**: AlexChu
 
 Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
@@ -291,7 +291,7 @@ Offline checks: `python scripts/test_reformat_telegram_issue.py`.
 
 ### Autonomous operations
 
-Enable `[thinking] enabled=true`, `topic_memory_enabled=true`, `autonomous_enabled=true` only on a tested installed release. Semantic ingress processes bounded same-chat queued sources and trusted candidates without waiting two minutes. Shared turn budget is two model attempts/40 seconds/six reads. One followup batch carries all new captions/images in one USER packet. Trace exposes immutable routes, cached plans, current partition, batch membership and recurrence episodes; see the canonical policy for lifecycle and recovery rules.
+Enable `[thinking] enabled=true`, `topic_memory_enabled=true`, `autonomous_enabled=true` only on a tested installed release. Semantic ingress processes bounded same-chat queued sources and trusted candidates after per-chat30s quiet /60s collection cap; the cap is not a total processing SLA. Shared turn budget is two model attempts/40 seconds/six reads. One followup batch carries all new captions/images in one USER packet. Trace exposes immutable routes, cached plans, current partition, batch membership and recurrence episodes; see the canonical policy for lifecycle and recovery rules.
 
 Configured-model isolated regression (fake GitHub/Telegram, in-memory SQLite, supplied reviewed image fixtures):
 
@@ -300,3 +300,9 @@ python scripts/telegram-autonomous-model-smoke.py --config /etc/tg-triage/listen
 ```
 
 This uses the actual startup provider and configured consent; it does not open the live database/session or send real group messages. The five-case corpus is a regression check, not an accuracy estimate. Packet saturation and candidate bounds can cause a visible clarification rather than a guessed ticket.
+
+### Conversation pacing
+
+In autonomous mode, `[thinking] context_quiet_seconds=30` and `context_max_wait_seconds=60` are defaults; allowed integers satisfy30 <= quiet <= max <=60. Each chat collects independently, then processes sealed batches sequentially. No early model/clarification for each arriving message. Context retrieval still applies to messages arriving after60 seconds; the collection deadline does not expire stored topic/reply/question history. Pending clarification reservations suppress normalized repeats across restart. See canonical Business DOCS for late-context and technical fallback behavior.
+
+For repeated generic questions, inspect message reason and the decision journal's model_calls_used first: zero calls/context_budget_exhausted is a packing failure, not proof of semantic uncertainty. Trace packing metadata exposes optional candidates omitted and text-byte bounds; original sources remain in SQLite. The new clarification table contains conversation text and needs the same private database protection; default trace exports metadata only.

@@ -404,13 +404,16 @@ class Classifier:
         from .thinking import ContextJSON, request_text_bytes
         system=load_prompt('autonomous.md')
         images=images or {}
-        all_sources={m.message_id:m for c in candidates for m in c['messages']}
-        all_sources.update({m.message_id:m for m in sources})
-        ordered=[m for m in all_sources.values() if m.message_id in images]
-        encoded=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii') for m in ordered]
-        def render(cap):
+        selected=list(candidates)
+        omitted=[]
+        new_ids={m.message_id for m in sources}
+        def render(cap,old_cap=30,*,pixels=False):
+            all_sources={m.message_id:m for c in selected for m in c['messages']}
+            all_sources.update({m.message_id:m for m in sources})
+            ordered=[m for m in all_sources.values() if m.message_id in images]
             def source(m):
-                return [m.message_id,m.reply_to_id,m.sender_id,m.text[:cap],len(m.text)>cap,
+                limit=cap if m.message_id in new_ids else old_cap
+                return [m.message_id,m.reply_to_id,m.sender_id,m.text[:limit],len(m.text)>limit,
                         m.has_image,m.message_id in images]
             packet=dict(NEW_SOURCE_IDS=[m.message_id for m in sources],
                 source_columns=['message_id','reply_to_id','sender_id','text','text_truncated','has_image','pixels_available'],
@@ -418,26 +421,57 @@ class Classifier:
                     pending=c['pending'],exact_reply=c['exact_reply'],split=c.get('split',False),
                     current_scopes=c.get('current_scopes',[]),
                     pending_questions=c.get('pending_questions',[]),
-                    sources=[source(m) for m in c['messages']]) for c in candidates],
+                    clarification_outcomes=c.get('clarification_outcomes',[]),
+                    sources=[source(m) for m in c['messages']]) for c in selected],
+                candidate_context_truncated=bool(omitted) or any(len(m.text)>old_cap for c in selected for m in c['messages']),
+                omitted_candidate_ids=list(omitted),
                 images_order=[dict(image_index=i,message_id=m.message_id) for i,m in enumerate(ordered)])
-            user=dict(role='user',content=ContextJSON(json.dumps(packet,ensure_ascii=False)))
-            if encoded:
-                user['images']=encoded
+            user=dict(role='user',content=ContextJSON(json.dumps(packet,ensure_ascii=False,separators=(',',':'))))
+            if ordered:
+                # Byte accounting excludes image data, but includes every image slot.
+                # Read pixels only once after final eviction and excerpt decisions.
+                user['images']=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii')
+                                if pixels else '' for m in ordered]
             return [dict(role='system',content=system),user]
-        low,high=0,700
+        # Protect useful new text and exact replies before optional older candidates.
+        # Candidate IDs remain opaque and are never renumbered after eviction.
+        while request_text_bytes(dict(messages=render(60),format=INGRESS_SCHEMA))>8000:
+            optional=next((c for c in reversed(selected) if not c['exact_reply']),None)
+            if optional is None:
+                break
+            selected.remove(optional); omitted.append(optional['candidate_id'])
+        low,high=30,700
         while low<high:
             mid=(low+high+1)//2
             if request_text_bytes(dict(messages=render(mid),format=INGRESS_SCHEMA))<=8000:
                 low=mid
             else:
                 high=mid-1
-        rendered=render(low)
-        if low<30 or request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA))>8000:
+        new_cap=low
+        low,high=30,700
+        while low<high:
+            mid=(low+high+1)//2
+            if request_text_bytes(dict(messages=render(new_cap,mid),format=INGRESS_SCHEMA))<=8000:
+                low=mid
+            else:
+                high=mid-1
+        rendered=render(new_cap,low)
+        self.last_ingress_context=dict(candidate_context_truncated=bool(omitted) or any(len(m.text)>low for c in selected for m in c['messages']),
+            omitted_candidate_ids=list(omitted),retained_candidate_ids=[c['candidate_id'] for c in selected],
+            new_text_cap=new_cap,candidate_text_cap=low,text_bytes=request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA)))
+        from .thinking import CURRENT
+        if CURRENT.get() is not None:
+            CURRENT.get().record('ingress_packing',self.last_ingress_context)
+        if request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA))>8000:
             self.last_ingress_outcome='context_budget_exhausted'
             return None
+        rendered=render(new_cap,low,pixels=True)
         self.last_ingress_outcome='provider_unavailable'
         def parse(content):
             value=parse_ingress(content)
+            allowed={c['candidate_id'] for c in selected}
+            if value is not None and any(g['candidate_id'] is not None and g['candidate_id'] not in allowed for g in value):
+                value=None
             self.last_ingress_outcome='ok' if value is not None else 'invalid_output'
             return value
         return self._ask(dict(model=self.settings.model,stream=False,think=self.think,

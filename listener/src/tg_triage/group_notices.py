@@ -29,6 +29,8 @@ def clean_question(value):
     return value[:MAX_QUESTION_CHARS].strip()
 
 
+LEGACY_PENDING_QUESTION="Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?"
+TECHNICAL_CONTEXT_QUESTION="Em chưa phân tích được các tin vừa nhận. Anh/Chị reply tin gốc để chỉ rõ yêu cầu cần xử lý giúp Em nhé."
 ADDRESS_DEFAULT="Anh/Chị"
 _PROTECTED=re.compile(r'“[^\n]*”|“[^\n]*$|"[^\n]*"|"[^\n]*$|https?://\S+|^>.*$',re.MULTILINE)
 
@@ -107,7 +109,7 @@ def notice_text(result, missing_info, repo):
     return text[:MAX_NOTICE_CHARS]
 
 
-def notify(store, sender, first, result, missing_info, repo):
+def notify(store, sender, first, result, missing_info, repo, *, text_override=None):
     """At most one send attempt per group; even ambiguous transport failures stay terminal.
 
     Reserve is committed before transport. A crash may lose a notice, deliberately:
@@ -115,7 +117,7 @@ def notify(store, sender, first, result, missing_info, repo):
     """
     if sender is None:
         return
-    text = notice_text(result, missing_info, repo)
+    text = text_override if text_override is not None else notice_text(result, missing_info, repo)
     if text is None:
         return
     try:
