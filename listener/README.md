@@ -202,7 +202,7 @@ Profile lookup is performed by `make_public_profile_address_resolver` at notice 
 
 `[aggregation]` controls `window_minutes`, `max_messages_per_case`, `max_messages_per_window`. `[attachments]` controls `max_bytes`, `max_per_case`, `max_documents_per_case`, `max_per_hour`; use the checked [example TOML](../config/listener.example.toml) for current defaults. Image and document counters are separate per-case limits and share upload quota. Uploaded evidence belongs to the configured repository: verify its access before enabling media.
 
-Allowlisted images are signature-checked JPG/PNG/WEBP; document metadata is checked by `attachments.document_extension`. The pipeline downloads into private temporary directories, reuses prepared images for initial vision/upload and deletes temporary files after processing. `gh release upload` uses environment credentials and generated asset names. Followup scope planning reuses stored media provenance; it does not download pixels again. Detailed behavior/limits live in [TG-14..TG-15/TG-22](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md).
+Allowlisted images are signature-checked JPG/PNG/WEBP; document metadata is checked by `attachments.document_extension`. The pipeline downloads into private temporary directories, reuses prepared images for initial vision/upload and deletes temporary files after processing. `gh release upload` uses environment credentials and generated asset names. Followup scope planning reuses stored media provenance; only a new reply photo is prepared for multimodal enrichment, without re-reading old pixels. Detailed behavior/limits live in [TG-14..TG-15/TG-22](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md).
 
 ## Documentation drift check
 
@@ -230,6 +230,8 @@ Run from repository root with the listener venv/user and the reviewed installed 
 For reviewed image-caption fixtures, select `--case image_caption_context --image-path /path/to/reviewed.jpg`; optional `--sources-fixture /path/to/ignored-sources.json` supplies the three source texts/metadata. The JPEG and source export remain local/ignored. The report includes image SHA/transport byte counts and sanitized generated wording so semantic grounding can be reviewed. No real upload, issue, notice or live DB is used. See the QA document for fixed acceptance labels.
 
 Technical vision-partition failures can create `context_pending` notice records for unclassified source components. These are not ticket-root authority. Exact sent-notice/pending-source proof routes a reply into fresh intake; see TG-12/TG-16. Preserve original case/group accounting and do not reset reservations to force a retry.
+
+For the reviewed POS thread and reply photo, use `--case pos_print_context --sources-fixture /path/to/reviewed-sources.json --image-path /path/to/454.jpg`. The smoke uses the daemon startup factory and checks generated environment/error fields, one same-ticket refresh and the exact one-USER image binding. It uses fake tools and never replays historical production ingress.
 
 ## Reformat an existing ticket
 

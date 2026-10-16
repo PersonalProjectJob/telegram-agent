@@ -158,6 +158,12 @@ class FollowupStoreMixin:
                 WHERE job_id=? AND ordinal=? AND status='reserved'""", (number,job['id'],op['ordinal']))
             if changed.rowcount != 1:
                 return
+            if op['kind']=='refresh':
+                payload=json.loads(op['payload'])
+                root=self.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',(job['root_key'],)).fetchone()
+                state=json.loads(root[0]); state['managed_snapshot']=payload['new_snapshot']
+                self.connection.execute('UPDATE followup_roots SET context_state=? WHERE root_key=?',
+                                        (json.dumps(state,ensure_ascii=False),job['root_key']))
             if op['kind']=='create':
                 root=self.connection.execute('SELECT siblings FROM followup_roots WHERE root_key=?', (job['root_key'],)).fetchone()
                 siblings=json.loads(root[0]); siblings.append(number)
@@ -309,3 +315,43 @@ class FollowupStoreMixin:
         return [dict(row) for row in self.connection.execute("""SELECT j.* FROM followup_analysis_retries r
             JOIN followup_jobs j ON j.id=r.job_id WHERE r.edit_status='planned' AND j.status IN ('done','blocked')
             AND j.result IS NOT NULL ORDER BY j.id""")]
+
+    def register_managed_issue(self, first, group_key, case_key, number, repo, issue, analysis, source_ids, images, documents):
+        """Only the actual successful initial renderer/create caller can seed a managed snapshot."""
+        import hashlib
+        from .models import utf8_valid
+        if not utf8_valid(issue.body) or not utf8_valid(issue.title):
+            return False  # injected transports cannot prove an unencodable rendered issue
+        root_key=f"{first.chat_id}:{group_key or case_key}"
+        snapshot=dict(issue_number=number,repo=repo,title=issue.title,body_sha=hashlib.sha256(issue.body.encode('utf-8')).hexdigest(),
+                      source_ids=list(source_ids),analysis=analysis,images=list(images),documents=list(documents),owned_labels=list(issue.labels))
+        with self._lock,self.connection:
+            self.connection.execute("""INSERT OR IGNORE INTO followup_roots
+                (root_key,chat_id,source_message_id,group_key,case_key,issue_number) VALUES (?,?,?,?,?,?)""",
+                (root_key,first.chat_id,first.message_id,group_key,case_key,number))
+            row=self.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',(root_key,)).fetchone()
+            state=json.loads(row[0])
+            if 'managed_snapshot' not in state:
+                state['managed_snapshot']=snapshot
+                self.connection.execute('UPDATE followup_roots SET context_state=? WHERE root_key=?',
+                                        (json.dumps(state,ensure_ascii=False),root_key))
+
+    def materialize_followup_operation(self, job, op, payload):
+        with self._lock,self.connection:
+            changed=self.connection.execute("UPDATE followup_operations SET payload=? WHERE job_id=? AND ordinal=? AND status='planned'",
+                (json.dumps(payload,ensure_ascii=False),job['id'],op['ordinal']))
+            if changed.rowcount!=1:
+                raise RuntimeError('Followup materialization already reserved')
+
+    @_locked
+    def followup_attachment_rows(self, root, message_id):
+        return [dict(row) for row in self.connection.execute('SELECT * FROM attachments WHERE case_key=? AND message_id=? ORDER BY id',
+                (root['group_key'] or root['case_key'],message_id))]
+
+    def record_followup_evidence(self, root_key, message_id, images, documents, available):
+        with self._lock,self.connection:
+            row=self.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',(root_key,)).fetchone()
+            state=json.loads(row[0]); evidence=state.setdefault('media_evidence',{})
+            evidence[str(message_id)]=dict(images=list(images),documents=list(documents),available=available)
+            self.connection.execute('UPDATE followup_roots SET context_state=? WHERE root_key=?',
+                                    (json.dumps(state,ensure_ascii=False),root_key))

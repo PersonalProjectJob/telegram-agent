@@ -9,6 +9,7 @@ from hashlib import sha256
 import json
 import time
 import base64
+from collections import Counter
 
 CURRENT = ContextVar('triage_thinking_turn', default=None)
 POLICY_VERSION = 'TG-01..TG-32/thinking-v1'
@@ -37,6 +38,10 @@ is actionable bug with confidence around .9, missing_info [] when no blocking de
 
 class BudgetExhausted(RuntimeError):
     pass
+
+
+class ContextJSON(str):
+    """Internal serialized context, distinct from arbitrary user-supplied JSON text."""
 
 
 COMPACT_DETAILS = '''Optional details: copy supplied facts only; omit unknowns, never invent a spec.
@@ -70,6 +75,13 @@ def pack_messages(system, sources, images, schema):
     ordered_images=[m for m in sources if m.message_id in images]
     encoded_images=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii')
                     for m in ordered_images]
+    metadata=[dict(reply_ref=f'[{m.reply_to_id}]' if m.reply_to_id is not None else None,
+        reply_to_id=m.reply_to_id,sender_id=m.sender_id,sender_name=m.sender_name[:40],
+        received_at=m.received_at.isoformat(),has_image=m.has_image,has_document=m.has_document,
+        is_forward=m.is_forward,pixels_available=m.message_id in images) for m in sources]
+    defaults={key:Counter(row[key] for row in metadata).most_common(1)[0][0]
+              for key in metadata[0]} if metadata else {}
+    compact=False
     def render(cap):
         packet=dict(source_ids=[m.message_id for m in sources],
             images_order=[dict(image_index=i,message_id=m.message_id,id_ref=f'[{m.message_id}]')
@@ -80,10 +92,20 @@ def pack_messages(system, sources, images, schema):
             received_at=m.received_at.isoformat(),has_image=m.has_image,has_document=m.has_document,
             is_forward=m.is_forward,
             pixels_available=m.message_id in images,text=m.text[:cap],text_truncated=len(m.text)>cap) for m in sources])
-        user=dict(role='user',content=json.dumps(packet,ensure_ascii=False,separators=(',',':')))
+        if compact:
+            # Lossless shared metadata, not fewer sources or a reduced output schema.
+            packet['encoding']='Rows follow source_columns; merge source_defaults with metadata.'
+            packet['source_defaults']=defaults
+            packet['source_columns']=['message_id','id_ref','text','text_truncated','metadata']
+            packet['sources']=[[m.message_id,f'[{m.message_id}]',m.text[:cap],len(m.text)>cap,
+                {key:value for key,value in row.items() if value!=defaults[key]}]
+                for m,row in zip(sources,metadata)]
+        user=dict(role='user',content=ContextJSON(json.dumps(packet,ensure_ascii=False,separators=(',',':'))))
         if encoded_images:
             user['images']=encoded_images
         return [dict(role='system',content=system),user]
+    if request_text_bytes(dict(messages=render(0),format=schema))>8000:
+        compact=True
     if request_text_bytes(dict(messages=render(0),format=schema))>8000:
         if CURRENT.get():
             CURRENT.get().reason='context_budget_exhausted'

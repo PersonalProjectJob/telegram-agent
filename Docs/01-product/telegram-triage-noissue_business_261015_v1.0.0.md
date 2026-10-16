@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.2.1 · **Updated**: 2026-10-16 01:08 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.3.0 · **Updated**: 2026-10-16 09:11 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -98,6 +98,8 @@ Command đủ điều kiện có heart khi nhận; topic issue có heart trướ
 
 Ảnh giữ source ID, được validate signature/size/count rồi upload asset có tên do code tạo. Tài liệu chỉ nhận extension+MIME allowlist; không mở, unpack hay execute. Media lỗi/quá giới hạn ghi chú; không làm mất ticket. Quota upload tách khỏi issue.
 
+Ảnh mới trong reply tới root tin cậy được chuẩn bị cùng caption và hội thoại để phân tích một gói context. Sau khi xác định đúng intent/target, dùng reservation upload hiện có và lưu asset/source provenance bền vững; uploaded/reserved/unknown không tự upload lại. Không đọc lại pixels ảnh cũ chỉ để sửa phạm vi. Ảnh không khả dụng phải nói rõ, không ghi nhận OCR hay báo cập nhật thành công giả.
+
 ### TG-15 — Vision và ảnh thiếu ngữ cảnh
 
 Phân tích ảnh ban đầu phụ thuộc provider/consent/fallback. Ảnh không caption và không yêu cầu có thể pending_review, không tự tạo ticket/hỏi. Vision lỗi hoặc partition mơ hồ của yêu cầu tạo needs_human; câu hỏi thuần túy về ảnh vẫn chat.
@@ -116,11 +118,15 @@ Trước model và trước resume write, issue URL gốc phải canonical khớ
 
 ### TG-18 — Bổ sung và intent
 
-Intent được kiểm tra là update/split/clarify/chat. Update append comment đã sanitize vào issue/ordinal tin cậy; giữ body, nhãn, sửa đổi tay và lịch sử issue gốc. Chat/cảm ơn không ghi GitHub; thiếu intent thì hỏi rõ.
+Intent được kiểm tra là update/split/clarify/chat. Update thông thường append comment đã sanitize vào issue/ordinal tin cậy. Update kèm case_analysis hợp lệ có thể dựng lại cùng ticket bằng `format_issue` khi chỉ có một target/root không tách và có managed snapshot do lần tạo thành công hoặc recovery đã đối chiếu ghi nhận. Nội dung mới giữ facts đã cung cấp và media/source đã chứng minh, cho phép sửa giả thuyết cũ; model không chọn repo/issue/URL hay cấp quyền nguồn. Role IDs của enrichment chỉ thuộc đúng packet đã cung cấp, gồm reply hiện tại; quyền split vẫn giới hạn originals/bindings đã kiểm. Chat/cảm ơn không ghi GitHub; thiếu intent/target thì hỏi rõ.
+
+Refresh reserve trong operation ledger trước ghi, GET kiểm repo/issue/source marker + SHA body + title + tập nhãn triage sở hữu so với snapshot, PATCH đúng issue rồi đọc lại xác minh. Nội dung/title/nhãn sở hữu đã bị sửa thì dừng, giữ sửa đổi đó; nhãn ngoài triage được giữ nguyên. Đây là preflight best-effort, **không phải remote atomic CAS**: sửa tay đồng thời giữa GET và PATCH vẫn có race. PATCH chưa gửi mà hết budget là known-not-sent; sau khi đã gửi nhưng chưa xác minh thì ambiguous và không tự retry. Legacy root chưa có snapshot không tự nhận body hiện tại làm baseline, chỉ comment evidence/hỏi rõ. Không tạo ticket thay thế khi enrichment thất bại.
 
 ### TG-19 — Bộ nhớ có provenance
 
 Context mang reply edge, sender, source IDs và media metadata. Model history giới hạn năm job; binding xác nhận bền vững sống qua trim/restart và được kiểm lại với evidence. Legacy reconstruction giới hạn 100 job; không coi model hypothesis là user confirmation.
+
+Managed snapshot và media_evidence giữ revision đang quản lý, source IDs và asset refs qua history trim; draft của model trong ticket vẫn là giả thuyết có thể sửa, tách khỏi human bindings. Context dài dùng metadata chung/columns để giữ ID/reply/sender/time/flags trong budget; excerpts bị cắt có marker rõ. Redaction chỉ xử lý string trong packet do code đánh dấu nội bộ, không biến numeric source/sender/reply IDs thành phone text; user tự đưa JSON không được nhận dấu nội bộ này.
 
 THINKING đóng gói confirmed facts riêng khỏi model hypotheses, nguồn chưa gán và conflict. Journal `triage.decision/v1` giữ owner AlexChu, version CAS, policy/prompt/model lineage, ID bằng chứng, partition/reply targets và operation refs. Lưu quyết định trước tool và kết quả sau tool, có event theo revision; không lưu transcript, profile, private reasoning hay dùng journal thay quyền reserve hiện hành. Root/sender/repo/partition vẫn phải được code chứng minh.
 
@@ -520,6 +526,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/attachments.py",
           "symbol": "document_extension"
+        },
+        {
+          "path": "listener/src/tg_triage/followup_store.py",
+          "symbol": "FollowupStoreMixin.record_followup_evidence"
         }
       ],
       "tests": [
@@ -534,6 +544,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_documents.py",
           "symbol": "DocumentFailureTests.test_nothing_is_ever_opened_or_unpacked"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_new_photo_is_joint_on_wire_and_refreshes_canonical_bug_once"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_upload_error_is_honest_and_no_reupload_after_ledger_exists"
         }
       ]
     },
@@ -620,6 +638,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/followup_model.py",
           "symbol": "validate_followup"
+        },
+        {
+          "path": "listener/src/tg_triage/github_issues.py",
+          "symbol": "GitHubIssues.refresh_issue"
+        },
+        {
+          "path": "listener/src/tg_triage/followup_store.py",
+          "symbol": "FollowupStoreMixin.register_managed_issue"
         }
       ],
       "tests": [
@@ -630,6 +656,18 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followups.py",
           "symbol": "FollowupTests.test_uncertain_intent_failure_and_chat_never_write"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_existing_manual_body_title_or_owned_label_edits_preserved"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_update_roles_accept_actual_reply_but_reject_unprovided_ids"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_preflight_get_failure_is_not_sent_but_readback_failure_is_ambiguous"
         }
       ],
       "prompts": [
@@ -646,6 +684,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking.py",
           "symbol": "Turn.record"
+        },
+        {
+          "path": "listener/src/tg_triage/thinking.py",
+          "symbol": "pack_messages"
         }
       ],
       "tests": [
@@ -660,6 +702,18 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking.py",
           "symbol": "ThinkingTests.test_screenshot_confirmed_context_survives_restart_and_history_trim"
+        },
+        {
+          "path": "listener/tests/test_thinking_pos_context.py",
+          "symbol": "POSContextTests.test_six_and_twenty_sources_fit_without_losing_mandatory_metadata"
+        },
+        {
+          "path": "listener/tests/test_thinking_pos_context.py",
+          "symbol": "POSContextTests.test_structured_cloud_redaction_preserves_identity_numbers_and_removes_text_contacts"
+        },
+        {
+          "path": "listener/tests/test_followup_enrichment.py",
+          "symbol": "EnrichmentTests.test_packet_marks_source_and_reply_excerpts_as_truncated"
         }
       ]
     },
@@ -907,6 +961,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/thinking_transport.py",
           "symbol": "complete"
+        },
+        {
+          "path": "listener/src/tg_triage/__main__.py",
+          "symbol": "_build_classifier"
         }
       ],
       "tests": [
@@ -941,6 +999,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking_image_context.py",
           "symbol": "ThinkingImageTests.test_two_hosted_format_failures_stop_without_third_or_local_call"
+        },
+        {
+          "path": "listener/tests/test_thinking_pos_context.py",
+          "symbol": "POSContextTests.test_exact_five_pos_messages_use_default_hosted_pipeline_one_bug_first_reply"
+        },
+        {
+          "path": "listener/tests/test_thinking_pos_context.py",
+          "symbol": "POSContextTests.test_previous_startup_default_prompt_injection_exhausted_five_message_budget"
         }
       ]
     },
@@ -1001,33 +1067,33 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
   ],
   "runtime_inventory": {
     "listener/src/tg_triage/__init__.py": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
-    "listener/src/tg_triage/__main__.py": "9a44176792ace330472591d3c21c0e9e220d8c86eb6e24ee05c2c1382c2c558d",
+    "listener/src/tg_triage/__main__.py": "081827c01240834076ec6e313b686577f143b447336506ad913a5e2797f2148e",
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
     "listener/src/tg_triage/attachments.py": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
-    "listener/src/tg_triage/classifier.py": "8e287bc45915559c33f477e5a8955b5afd4e49323f3baa4696dd1b77b6854280",
+    "listener/src/tg_triage/classifier.py": "34c5d87ba3f5bd9a8279d2f3ca659bee6aaa7f425fe5e35bde95a6bff776b0b1",
     "listener/src/tg_triage/config.py": "40391fd623f45a4218e4f2155ff971704f44558e701407b728dcbf6e21c56336",
-    "listener/src/tg_triage/followup_model.py": "5399a704d2cc62a7aa25dc3fd733f04ff8a1464ad6113a7d0df3db4c268eab16",
-    "listener/src/tg_triage/followup_store.py": "aa5eee3d7ef4b961131a96aa3fd184f7411e719e26c74a1477b94bd69c97a7f0",
-    "listener/src/tg_triage/followups.py": "fe230878669cf187f08a9b623cc2027fdc0b62f1a4805f80bfdf2c84118397d0",
-    "listener/src/tg_triage/github_issues.py": "ce65f1d2ce8b573ae5c16f5f42ebe23f8ab4493dfe0b82ae8924c39bb9bbd484",
+    "listener/src/tg_triage/followup_model.py": "7c8933824eab78abcb8934777079ff451eb379dc89e6866234c4d8541e78a029",
+    "listener/src/tg_triage/followup_store.py": "75e3554e24d0decb581dbd2e5c2fa0f3de22e9d16e4cc79de9a06a000a9923d1",
+    "listener/src/tg_triage/followups.py": "03834bfc805b42985c2e61de180196c02347b3816ba4d8210ca3e0322ed87543",
+    "listener/src/tg_triage/github_issues.py": "360489dd34ad6f9080d6dd2b080da3cc192501157bbbf67319b6d5885b803cd3",
     "listener/src/tg_triage/group_notices.py": "8f52a9f1f375191a5374a645da4ae82b1e32b8882ce7e756b7d07ef5f2b91ce8",
     "listener/src/tg_triage/issue_format.py": "04b274fc419a57bb0e4e59636303c8762ec0c295d9029130b85ebb6e7936c3d5",
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
-    "listener/src/tg_triage/pipeline.py": "aafff8a1dec1ec82eb5575c9f3fa3f0d130a6cef049e5fb4f65aab9404f1fdd7",
-    "listener/src/tg_triage/provider.py": "3e59e6a19427510f66e11a798991188823ae9f699788e89f72af3b33b4768ad5",
+    "listener/src/tg_triage/pipeline.py": "73f63b347f9576cb124f8f5b6a2e632411944115ca1eb743d7ae26c971125da8",
+    "listener/src/tg_triage/provider.py": "b72f72d305d738fe183fac3a81a3141b3cdca8bffe88bc181ae04535d2a25f1a",
     "listener/src/tg_triage/reactions.py": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
     "listener/src/tg_triage/receipt.py": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
     "listener/src/tg_triage/rules.py": "93778eef5df2abe88ae4424179ec509595cd6dcf14d5d94ddb70d5852454bccd",
     "listener/src/tg_triage/runtime.py": "558a876aa86f2e2c7be8d54587ea9510e0762686bbf2a3a8dd9742db596b1862",
     "listener/src/tg_triage/store.py": "236f2b42e0ba66af22c6de148cb20661e262534b4e28315bb208c38f4e9b1a6f",
     "listener/src/tg_triage/telegram_io.py": "fdc4233f77571589b0ab551ff577acba58e2c9556bbdcfc7522e277aadef1b76",
-    "listener/src/tg_triage/thinking.py": "74c99ee937298ee41cf224f9128fc37c00fbe7754176cdd4b2530a33bb4a53cc",
+    "listener/src/tg_triage/thinking.py": "3a000d19fe0cadf720e9a6d97ad198b0961a891a713fa3aa6622d5196dd8008d",
     "listener/src/tg_triage/thinking_transport.py": "6a8921188e21c8424c445c03b2ff903f941885b5d4b6930306bbffd3842a6d56",
     "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
     "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
     "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
-    "listener/prompts/followup.md": "94731feaaa1fff33b938b90ad643bb31adc77f71913bcc593bfd5f92ded4c417",
+    "listener/prompts/followup.md": "adf0d2b3bee7cd4dfdb26259cbf56653b6ab4ec2a9854a251d3887e3f1a491eb",
     "listener/prompts/thinking-topics.md": "f3295f8cdf8d3707d8844ffe61c2eeca0efc1763a0f9879c86b375c1a8b15a58",
     "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8"
   },
@@ -1045,7 +1111,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "245e0ecb2e5e2d1f91e19dee91d7e37be06dc338782c9402511e7c247e819c44"
+  "runtime_fingerprint": "764fb4de24bc1f3d404c27aba51b29bf8730cc5025e0983011b30823360fed04"
 }
 ```
 
@@ -1053,6 +1119,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.3.0 | 2026-10-16 09:11 | Codex / owner AlexChu | Sửa startup prompt override, đóng gói/redaction provenance và enrichment ảnh reply vào cùng ticket qua canonical renderer/managed snapshot; kiểm preflight và giới hạn race được nêu rõ. |
 | v1.2.1 | 2026-10-16 01:08 | Codex / owner AlexChu | Chuẩn hóa xử lý lại ticket bằng renderer đang chạy, preview/source-marker/body-SHA guard và provenance thủ công; kiểm thử sửa TASK #46 không tạo trùng. |
 | v1.2.0 | 2026-10-15 23:29 | Codex / owner AlexChu | Compact image/context packing, scoped visual uncertainty/failure và visible pending→fresh intake recovery; real-image proof tách khỏi code tests. |
 | v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Phân biệt essentials ghi nhận bug với debugging extras; thực thi temperature0 classifier trên DeepSeek wire. |

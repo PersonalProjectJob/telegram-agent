@@ -1,6 +1,6 @@
 # Engineering: THINKING controller cho Telegram triage
 
-**Version**: v1.2.0 · **Updated**: 2026-10-15 23:29 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
+**Version**: v1.3.0 · **Updated**: 2026-10-16 09:11 (Asia/Saigon) · **Owner**: AlexChu · **Executor**: Codex
 
 **Status**: User đã yêu cầu triển khai sau nghiên cứu. Controller/budget/journal được triển khai trong code PR #43; kết quả test/review/deploy được ghi trong release evidence. Các mục pilot60/metric/shadow phía dưới vẫn là đề xuất, không phải kết quả đã đạt.
 
@@ -11,6 +11,16 @@
 - [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43) · không có issue riêng.
 
 ## Solution vs codebase
+
+### POS context audit — production entry point and enrichment
+
+Issue47's five short POS messages received zero model calls: the daemon passed its default topics asset as a custom prompt override, disabling THINKING's compact path. `_build_classifier` now validates active assets without setting an override; the configured-model smoke uses this same startup factory. Lossless shared metadata supports longer source windows within the existing byte limit. Internally tagged JSON packets redact textual contacts while retaining numeric provenance; raw user JSON cannot acquire that internal tag.
+
+New reply pixels, caption, original sources and current ticket hypothesis travel in one source-indexed USER packet through existing provider/image consent. Validated enrichment uses the category renderer and an existing-root managed snapshot; uploaded evidence persists separately from the five-turn model history. Fixed-target refresh is reserved and read back, with detected manual edits blocked and unrelated labels preserved. Original case accounting and old followup operations remain unchanged. Explicit empty detail fields may correct an old hypothesis; omitted fields preserve supplied prior facts.
+
+The remote preflight is best-effort, not atomic: GitHub documents conditional unsafe methods as unsupported unless an endpoint explicitly says otherwise. A human edit racing between GET and PATCH remains a limitation. No If-Match guarantee is assumed. See [GitHub REST best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api?apiVersion=2026-03-10#use-conditional-requests). Model decisions retain the two-call/20-second-per-call/40-second turn budget; synchronous Telegram artifact download retains its existing bridge timeout, with pre/post deadline checks. This is not a claim that every artifact tool finishes within40seconds.
+
+An initial real-model POS preview classified the complaint correctly and received the exact reply image, but rejected enrichment because source-role validation allowed only originals. That failed sample remains evidence. Update roles now validate against the actual enrichment packet; split authority remains originals-only. Fresh source/installed samples and independent verification must establish the final revision's observed result; no model accuracy guarantee follows.
 
 ### Hosted format validation repair — post-deploy finding
 
@@ -218,6 +228,7 @@ FE/UI: không thay đổi trong nghiên cứu này. API/DB mới: chưa triển 
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.3.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Production startup parity, bounded source packing/redaction and guarded multimodal canonical enrichment for the POS regression. |
 | v1.2.0 | 2026-10-15 23:29 | Codex / owner AlexChu | Image-envelope root cause, scoped partition fallback/recovery and real-image semantic acceptance. |
 | v1.1.2 | 2026-10-15 22:26 | Codex / owner AlexChu | Generic intake-essential principle and existing temperature0 intent; labels/threshold/budgets unchanged. |
 | v1.1.1 | 2026-10-15 22:19 | Codex / owner AlexChu | Diagnose provider timeouts and explicit DeepSeek disable request; retain20/40, document experiment limits. |

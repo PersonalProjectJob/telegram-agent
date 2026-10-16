@@ -1,6 +1,7 @@
 """Create an issue once, with fixed labels and safe error messages."""
 
 import json
+import hashlib
 import logging
 import re
 from http import HTTPStatus
@@ -14,6 +15,14 @@ LOG = logging.getLogger(__name__)
 
 class GitHubError(RuntimeError):
     """GitHub failure that never contains response bodies or credentials."""
+
+
+class GitHubConflict(GitHubError):
+    """A proven pre-write mismatch: preserve the remotely edited issue."""
+
+
+class GitHubNotSent(GitHubError):
+    """Refresh definitely did not send a PATCH."""
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -94,3 +103,63 @@ class GitHubIssues:
             raise GitHubError("GitHub comment HTTP failure") from None
         except (URLError, OSError, ValueError, TypeError):
             raise GitHubError("GitHub comment result is unknown") from None
+
+    def _issue_request(self, number, method='GET', payload=None, etag=None):
+        if type(number) is not int or number<=0:
+            raise ValueError('Invalid fixed issue target')
+        from .thinking import CURRENT, BudgetExhausted
+        turn=CURRENT.get()
+        if turn and method=='GET':
+            turn.lookup()
+        if turn and turn.is_set():
+            if method=='PATCH': raise GitHubNotSent('Refresh deadline before PATCH')
+            raise BudgetExhausted('decision_deadline_exhausted')
+        headers={"Authorization":f"Bearer {self._token}","Accept":"application/vnd.github+json",
+                 "Content-Type":"application/json","X-GitHub-Api-Version":"2022-11-28"}
+        request=Request(f'https://api.github.com/repos/{self.repo}/issues/{number}',
+            data=json.dumps(payload,ensure_ascii=False).encode() if payload is not None else None,
+            method=method,headers=headers)
+        try:
+            with self.opener(request,timeout=min(15,max(.1,turn.remaining())) if turn else 15) as response:
+                raw=response.read(1024*1024+1)
+                if len(raw)>1024*1024: raise ValueError
+                data=json.loads(raw)
+                response_etag=getattr(response,'headers',{}).get('ETag')
+            if (not isinstance(data,dict) or data.get('number')!=number or type(data.get('number')) is not int
+                    or data.get('html_url','').casefold()!=f'https://github.com/{self.repo}/issues/{number}'.casefold()
+                    or not isinstance(data.get('body'),str) or not isinstance(data.get('title'),str)):
+                raise ValueError
+            return data,response_etag
+        except HTTPError as error:
+            conflict=method=='PATCH' and error.code==412
+            error.close()
+            if conflict: raise GitHubConflict('Issue changed during refresh') from None
+            raise GitHubError('GitHub refresh HTTP failure') from None
+        except (URLError,OSError,ValueError,TypeError,AttributeError):
+            raise GitHubError('GitHub refresh result is unknown') from None
+
+    def refresh_issue(self, number, expected_sha, expected_title, marker, issue, *, expected_labels):
+        """One guarded PATCH and readback; caller reserves the operation before invoking."""
+        if not issue.labels or not set(issue.labels)<=LABELS:
+            raise ValueError('Invalid managed issue labels')
+        from .thinking import BudgetExhausted
+        try:
+            current,etag=self._issue_request(number)
+        except (GitHubError,BudgetExhausted):
+            raise GitHubNotSent('Refresh preflight failed before PATCH') from None
+        digest=hashlib.sha256(current['body'].encode('utf-8')).hexdigest()
+        if digest!=expected_sha or current['title']!=expected_title or marker not in current['body']:
+            raise GitHubConflict('Issue has manual changes or wrong source')
+        labels=[label.get('name') if isinstance(label,dict) else label for label in current.get('labels',[])]
+        labels=[label for label in labels if isinstance(label,str)]
+        if set(labels)&LABELS != set(expected_labels):
+            raise GitHubConflict('Issue owned labels changed')
+        preserved=[label for label in labels if label not in LABELS]
+        desired=list(dict.fromkeys(preserved+list(issue.labels)))
+        self._issue_request(number,'PATCH',dict(title=issue.title,body=issue.body,labels=desired))
+        verified,_=self._issue_request(number)
+        actual={label.get('name') if isinstance(label,dict) else label for label in verified.get('labels',[])}
+        if (verified['body']!=issue.body or verified['title']!=issue.title or marker not in verified['body']
+                or not set(desired)<=actual):
+            raise GitHubError('GitHub refresh readback did not verify')
+        return number

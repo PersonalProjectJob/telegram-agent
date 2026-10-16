@@ -14,13 +14,14 @@ import sys
 import time
 import base64
 import hashlib
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 from tg_triage.config import load_config, AggregationConfig
 from tg_triage.models import IncomingMessage, TopicGroup
 from tg_triage.pipeline import Pipeline
-from tg_triage.provider import build_provider
+from tg_triage.__main__ import _build_classifier
 from tg_triage.store import Store
 from tg_triage.thinking import decision_turn
 from tg_triage import classifier as classifier_module
@@ -29,7 +30,7 @@ from tg_triage import thinking as thinking_module
 from tg_triage.group_notices import clean_question
 
 CASE_NAMES=('all','three_messages_one_request','three_short_independent_requests',
-            'three_clear_independent_requests','ancillary_vs_third_request','image_caption_context')
+            'three_clear_independent_requests','ancillary_vs_third_request','image_caption_context','pos_print_context')
 
 
 @contextmanager
@@ -99,7 +100,7 @@ class DiagnosticJSON:
 
 class FakeGitHub:
     def __init__(self,repo):
-        self.repo=repo; self.created=[]; self.comments=[]
+        self.repo=repo; self.created=[]; self.comments=[];self.updates=[]
 
     def create_issue(self,issue):
         self.created.append(issue)
@@ -109,6 +110,21 @@ class FakeGitHub:
     def add_comment(self,number,body):
         self.comments.append((number,body))
         return 800+len(self.comments)
+
+    def refresh_issue(self,number,expected_sha,expected_title,marker,issue,*,expected_labels):
+        current=next((value for n,value in reversed(self.updates) if n==number),self.created[number-101])
+        if (hashlib.sha256(current.body.encode('utf-8')).hexdigest()!=expected_sha or current.title!=expected_title
+                or marker not in current.body or marker not in issue.body or set(current.labels)!=set(expected_labels)):
+            raise ValueError('Fake managed snapshot conflict')
+        self.updates.append((number,issue));return number
+
+
+def startup_provider(cfg,store,usage=None):
+    provider=_build_classifier(cfg,store)
+    if usage is not None:
+        provider.usage=usage
+        if getattr(provider,'_fallback',None) is not None:provider._fallback.usage=usage
+    return provider
 
 
 class DiagnosticProvider:
@@ -121,12 +137,12 @@ class DiagnosticProvider:
         self.call_latency_ms=[]
         self.image_requests=[]
         self.image_group_wording=[]
+        self.followup_proposals=[]
 
     def __getattr__(self,name):
         return getattr(self.provider,name)
 
-    def classify_topics(self,messages,**options):
-        original=classifier_module.parse_topic_groups
+    def _observe_complete(self,options):
         original_complete=transport_module.complete
         expected_images={mid:hashlib.sha256(Path(path).read_bytes()).hexdigest()
                          for mid,path in (options.get('images') or {}).items()}
@@ -151,6 +167,29 @@ class DiagnosticProvider:
                 expected_source_sha256=expected_images,expected_images_sent=bool(hashes) and set(hashes)==set(expected_images.values()),
                 text_envelope_bytes=thinking_module.request_text_bytes(dict(messages=text_messages,format=args[4]))))
             return original_complete(*args,**kwargs)
+        return complete
+
+    def analyze_followup(self,originals,reply,tickets,history,**options):
+        started=time.monotonic()
+        with patch.object(transport_module,'json',self.transport_json), \
+             patch.object(transport_module,'complete',self._observe_complete(options)):
+            result=self.provider.analyze_followup(originals,reply,tickets,history,**options)
+        self.call_latency_ms.append(round((time.monotonic()-started)*1000,2))
+        analysis=result.get('case_analysis') if isinstance(result,dict) else None
+        self.followup_proposals.append(None if result is None else dict(
+            action=result.get('action'),confidence=result.get('confidence'),
+            source_roles=[dict(message_id=r.get('message_id'),role=r.get('role'),confidence=r.get('confidence'))
+                          for r in result.get('source_roles',[])],
+            case_analysis_present=isinstance(analysis,dict),
+            key_message_ids=analysis.get('key_message_ids',[]) if isinstance(analysis,dict) else [],
+            summary=clean_question(analysis.get('summary','') if isinstance(analysis,dict) else result.get('summary','')),
+            error_text=clean_question(analysis.get('details',{}).get('error_text','')) if isinstance(analysis,dict) else ''))
+        return result
+
+    def classify_topics(self,messages,**options):
+        original=classifier_module.parse_topic_groups
+        expected_images=options.get('images') or {}
+        complete=self._observe_complete(options)
         def parse(content):
             value=original(content)
             event=dict(outcome='valid_groups' if value is not None else 'invalid_output',content_bytes=_size(content))
@@ -190,6 +229,69 @@ def msg(mid,text,**extra):
     return IncomingMessage(**fields)
 
 
+def pos_print_smoke(cfg,image_path,sources_fixture):
+    if image_path is None or sources_fixture is None:
+        raise ValueError('POS smoke requires reviewed image and source fixture')
+    pixels=Path(image_path).read_bytes()
+    if not pixels.startswith(b'\xff\xd8\xff'):raise ValueError('JPEG fixture required')
+    fixture=json.loads(Path(sources_fixture).read_text(encoding='utf-8'))
+    sources=fixture.get('sources',fixture.get('messages',[]))
+    if [s['message_id'] for s in sources]!=[448,449,450,451,452,454]:
+        raise ValueError('Unexpected POS fixture sources')
+    if any(s.get('has_image') for s in sources[:5]) or not sources[-1].get('has_image'):
+        raise ValueError('Unexpected POS fixture media binding')
+    cfg=replace(cfg,aggregation=AggregationConfig(5,5,40))
+    class Upload:
+        def ensure_release(self,tag):pass
+        def upload(self,tag,path,asset):return f'https://github.com/{cfg.gh_repo}/releases/download/synthetic/{asset}'
+    def download(chat,mid,directory):
+        if mid!=454:return None
+        path=Path(directory)/'pos.jpg';path.write_bytes(pixels);return path
+    with closing(Store(':memory:')) as store:
+        usage=DiagnosticUsage();provider=DiagnosticProvider(startup_provider(cfg,store,usage),usage)
+        gh=FakeGitHub(cfg.gh_repo);notices=[]
+        p=Pipeline(cfg,store,provider,gh,downloader=download,uploader=Upload(),
+            notice_sender=lambda c,m,t:notices.append((m,clean_question(t))) or 1000+m)
+        for source in sources:
+            extra=dict(reply_to_id=source.get('reply_to_id'),is_forward=bool(source.get('is_forward')),
+                has_image=bool(source.get('has_image')),image_size=len(pixels) if source.get('has_image') else None,
+                image_mime='image/jpeg' if source.get('has_image') else None)
+            if source.get('received_at'):extra['received_at']=datetime.fromisoformat(source['received_at'])
+            p.process(msg(source['message_id'],source['text'],**extra))
+        initial=gh.created[0] if gh.created else None
+        final=gh.updates[-1][1] if gh.updates else initial
+        job=store.connection.execute('SELECT plan FROM followup_jobs ORDER BY id DESC LIMIT 1').fetchone()
+        analysis=(json.loads(job[0]).get('case_analysis',{}) if job and job[0] else {})
+        environment=analysis.get('details',{}).get('environment','').casefold()
+        generated=(analysis.get('title','')+' '+analysis.get('summary','')).casefold()
+        known=('app' in environment and 'web' in environment and 'có dây' in environment)
+        print_scope=bool(re.search(r'\bpos\b',generated) and re.search(r'\b(?:in|print|printing)\b',generated))
+        error='Nothing was sent to the printer. Try printing again.'
+        error_grounded=bool(final and error.casefold() in final.body.casefold())
+        image_sent=any(r['expected_images_sent'] and r['single_context_bundle'] for r in provider.image_requests)
+        initial_groups=provider.groups[0] if provider.groups else None
+        initial_clear=bool(initial_groups) and sum(g['verdict']=='ticket' for g in initial_groups)==1 and all(
+            g['missing_count']==0 for g in initial_groups if g['verdict']=='ticket')
+        valid=(len(gh.created)==1 and len(gh.updates)==1 and gh.updates[0][0]==101
+            and initial_clear and known and print_scope and error_grounded and image_sent
+            and final is not None and '### 🐞 Lỗi' in final.body and '![' in final.body
+            and [m for m,_ in notices]==[448,454])
+        return dict(case='pos_print_context',pass_=valid,actual_startup_factory=True,
+            tickets=len(gh.created),refreshes=len(gh.updates),comment_count=len(gh.comments),
+            reply_targets=[m for m,_ in notices],known_app_web_wired=known,visible_error_grounded=error_grounded,
+            generated_pos_print_scope=print_scope,
+            generated_title=clean_question(final.title) if final else None,
+            generated_summary=clean_question(analysis.get('summary','')),
+            generated_environment=clean_question(analysis.get('details',{}).get('environment','')),
+            generated_error_text=clean_question(analysis.get('details',{}).get('error_text','')),
+            visible_error_text=error if error_grounded else None,initial_groups=initial_groups,
+            image_requests=provider.image_requests,fixture_image_sha256=hashlib.sha256(pixels).hexdigest(),
+            diagnostics=dict(attempts=usage.attempts,transport_json=provider.transport_json.events,
+                parses=provider.parses,semantic_calls_latency_ms=provider.call_latency_ms,
+                followup_proposals=provider.followup_proposals),
+            reason_codes=[json.loads(r[0])['reason_code'] for r in store.connection.execute('SELECT record FROM thinking_decisions')])
+
+
 def run(config_path,case='all',image_path=None,sources_fixture=None):
     if case not in CASE_NAMES:
         raise ValueError('Unsupported smoke case')
@@ -197,6 +299,7 @@ def run(config_path,case='all',image_path=None,sources_fixture=None):
     cfg=load_config(config_path,validate_only=True)
     cfg=replace(cfg,mode='live',thinking_enabled=True,aggregation=AggregationConfig(5,3,40))
     results=[]
+    if case=='pos_print_context':results.append(pos_print_smoke(cfg,image_path,sources_fixture))
     if case=='image_caption_context' and image_path is None:
         raise ValueError('Image path required')
     # Clear work requires issue; abbreviated requests test partition/reply even when details
@@ -212,7 +315,7 @@ def run(config_path,case='all',image_path=None,sources_fixture=None):
         with closing(Store(':memory:')) as store:
             gh=FakeGitHub(cfg.gh_repo); notices=[]
             usage=DiagnosticUsage()
-            provider=DiagnosticProvider(build_provider(cfg,usage=usage),usage)
+            provider=DiagnosticProvider(startup_provider(cfg,store,usage),usage)
             p=Pipeline(cfg,store,provider,gh,notice_sender=lambda c,m,t:notices.append(m) or 1000+m)
             for i,text in enumerate(texts,1):
                 p.process(msg(i,text))
@@ -235,7 +338,7 @@ def run(config_path,case='all',image_path=None,sources_fixture=None):
                     reason=store.get(-1009999999999,i)['reason'],confidence=store.get(-1009999999999,i)['confidence']) for i in range(1,4)]))
     if case in ('all','ancillary_vs_third_request'):
         with closing(Store(':memory:')) as store:
-            provider=build_provider(cfg)
+            provider=startup_provider(cfg,store)
             p=Pipeline(cfg,store,provider)
             with decision_turn(p,'synthetic-role','synthetic-root',904):
                 value=provider.analyze_source_roles([dict(ordinal=0,message_id=901,text='nên thêm ký tự cho tên biến'),
@@ -262,7 +365,7 @@ def run(config_path,case='all',image_path=None,sources_fixture=None):
             if mid!=442:return None
             target=Path(directory)/'source.jpg';target.write_bytes(pixels);return target
         with closing(Store(':memory:')) as store:
-            usage=DiagnosticUsage();provider=DiagnosticProvider(build_provider(cfg,usage=usage),usage)
+            usage=DiagnosticUsage();provider=DiagnosticProvider(startup_provider(cfg,store,usage),usage)
             gh=FakeGitHub(cfg.gh_repo);notices=[]
             p=Pipeline(cfg,store,provider,gh,downloader=download,uploader=Upload(),
                 notice_sender=lambda c,m,t:notices.append((m,clean_question(t))) or 1000+m)
@@ -292,6 +395,7 @@ def run(config_path,case='all',image_path=None,sources_fixture=None):
                 fixture_image_sha256=hashlib.sha256(pixels).hexdigest()))
     return dict(status='PASS' if all(r['pass_'] for r in results) else 'FAIL',
         kind='small synthetic configured-model smoke, not accuracy benchmark',cases=results,
+        actual_startup_factory=True,
         model=dict(provider=cfg.model.provider,name=cfg.model.name,max_output=cfg.model.max_output,
             configured_timeout_seconds=cfg.model.timeout_seconds,semantic_call_limit_seconds=20,turn_limit_seconds=40),
         real_github_writes=0,real_telegram_messages=0,live_database_opened=False)

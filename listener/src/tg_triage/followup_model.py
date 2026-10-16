@@ -27,6 +27,24 @@ FOLLOWUP_SCHEMA['properties']['bindings']={"type":"array","maxItems":MAX_SPLIT,"
     "message_ids":{"type":"array","items":{"type":"integer"}}},"required":["ordinal","message_ids"]}}
 
 
+def case_analysis_data(value):
+    """JSON-safe validated case projection; no model repo/issue/tool authority crosses here."""
+    from .classifier import parse_case_analysis, CASE_SCHEMA
+    from .models import canonical_category
+    if (not isinstance(value,dict) or any(key not in value for key in CASE_SCHEMA['required'])
+            or value.get('actionable') is not True or canonical_category(value.get('category')) not in ('bug','task','feedback')
+            or canonical_category(value.get('category'))!=canonical_category(value.get('type'))):
+        return None
+    parsed=parse_case_analysis(json.dumps(value,ensure_ascii=False))
+    if parsed is None or parsed.verdict!='ticket' or parsed.classification is None:
+        return None
+    c=parsed.classification
+    return dict(verdict=parsed.verdict,category=parsed.category,type=c.type,confidence=c.confidence,
+                title=c.title[:300],summary=c.summary[:2000],priority=c.priority,actionable=parsed.actionable,
+                key_message_ids=list(parsed.key_message_ids),missing_info=list(parsed.missing_info),
+                reason=parsed.reason or '',details={k:list(v) if isinstance(v,tuple) else v for k,v in parsed.details})
+
+
 def validate_followup(value):
     if not isinstance(value,dict) or value.get('action') not in ('update','split','clarify','chat'):
         return None
@@ -44,6 +62,11 @@ def validate_followup(value):
         return None
     result=dict(action=value['action'],confidence=confidence,target_ordinal=target,
                 summary=summary[:2000],questions=[q[:200] for q in questions[:3]],groups=[])
+    if value.get('case_analysis') is not None:
+        analysis=case_analysis_data(value['case_analysis'])
+        if value['action']!='update' or analysis is None:
+            return None
+        result['case_analysis']=analysis
     roles=value.get('source_roles',[])
     if not isinstance(roles,list) or len(roles)>40:
         return None
@@ -121,3 +144,7 @@ def parse_source_roles(content):
     checked=validate_followup(dict(action='clarify',confidence=1.0,target_ordinal=None,
                                   summary='',questions=[],groups=[],source_roles=data['source_roles']))
     return {'source_roles':checked['source_roles']} if checked is not None else None
+
+# Optional authoritative-shape draft, still untrusted until source/snapshot guards in the engine.
+from .classifier import CASE_SCHEMA
+FOLLOWUP_SCHEMA['properties']['case_analysis']={'anyOf':[CASE_SCHEMA,{'type':'null'}]}

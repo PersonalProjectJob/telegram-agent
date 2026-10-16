@@ -1,6 +1,6 @@
 # QA: Telegram triage THINKING
 
-**Version** v1.1.0 · **Updated** 2026-10-15 23:29 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
+**Version** v1.2.0 · **Updated** 2026-10-16 09:11 Asia/Saigon · **Owner** AlexChu · **Executor** Codex
 
 ## Related Documents
 
@@ -9,6 +9,12 @@
 - [Engineering and research](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md)
 
 ## Test Strategy
+
+POS regression must execute the actual daemon startup factory: five forwarded messages identify one POS printing bug on app and web with a wired printer, without re-asking supplied facts. The old default-prompt override must reproduce zero-call budget failure. Twenty-source packets must preserve identity/reply/time/text and stay bounded; contact redaction must leave internal numeric IDs valid while raw user JSON receives no internal trust.
+
+Reply photo454 must reach the provider in the same USER packet as original context/caption, with its exact SHA and visible error `Nothing was sent to the printer. Try printing again.` A validated update must refresh the same fake ticket through the canonical BUG renderer, include uploaded evidence, and create no extra issue. Test new reply-role acceptance only for update+case_analysis; reject foreign, excluded and split reply-role IDs. Detected manual body/title/owned-label edits, ambiguous siblings, denied/unavailable vision, uncertain uploads, deadline-before-write and unknown-after-write must preserve scope and produce an honest outcome. Restart/repeated ingress must not repeat uploaded/reserved refresh operations. Explicit empty model fields must clear prior hypotheses; omitted fields preserve prior facts.
+
+Use `--case pos_print_context --sources-fixture /path/to/reviewed-sources.json --image-path /path/to/454.jpg` with the configured-model smoke. It uses memory SQLite and fake GitHub/upload/Telegram tools; historical production repair is a separate reviewed operation, never a replay of completed ingress. Retain the initial `invalid_source_roles` real-model failure alongside final source/installed samples.
 
 Hosted repair regression uses the real CloudProvider/Pipeline with fake network/tools: malformed JSON or parser-invalid output then valid partition must use two cloud calls with identical bundle/schema; network failure must use cloud then configured local; two malformed outputs must stop after two calls with honest scoped clarification. Legacy THINKING-off fallback remains covered. Installed malformed-image failure is retained; successful reruns do not erase it or establish model accuracy.
 
@@ -186,6 +192,7 @@ UI/browser/responsive/a11y changes: none. No merge authorization inferred from a
 
 | Version | Date/time | Author | Change |
 |---|---|---|---|
+| v1.2.0 | 2026-10-16 09:11 Asia/Saigon | Codex / owner AlexChu | Actual startup/POS source-context, new reply image, managed refresh, source roles and generated-field smoke assertions. |
 | v1.1.0 | 2026-10-15 23:29 Asia/Saigon | Codex / AlexChu owner | Image-caption/context, privacy, scoped failure and fresh-intake regression with actual-image proof criteria. |
 | v1.0.2 | 2026-10-15 22:26 Asia/Saigon | Codex / AlexChu owner | Intake essentials and DeepSeek sampling wire regression; fixed-label smoke remains required. |
 | v1.0.1 | 2026-10-15 22:19 Asia/Saigon | Codex / AlexChu owner | Wire-level existing think=false contract and fixed-label default-budget verification. |

@@ -100,13 +100,33 @@ class CloudProvider(OllamaProvider):
         """OpenAI-style messages: contact text redacted, images as inline data: parts; None when an
         image cannot be sent as a known type."""
         from .ai_transport import redact
+        from .thinking import ContextJSON
+        def content_for_cloud(message):
+            content=message['content']
+            if message.get('role')=='user' and isinstance(content,ContextJSON):
+                try:
+                    packet=json.loads(content)
+                except (ValueError,TypeError):
+                    packet=None
+                if isinstance(packet,dict) and (
+                        ('source_ids' in packet and 'sources' in packet)
+                        or ('REPLY' in packet and 'ORIGINAL_METADATA' in packet)
+                        or ('confirmed_requests' in packet and 'unresolved' in packet)):
+                    def clean(value):
+                        if isinstance(value,str):return redact(value)
+                        if isinstance(value,list):return [clean(v) for v in value]
+                        if isinstance(value,dict):return {k:clean(v) for k,v in value.items()}
+                        return value
+                    return json.dumps(clean(packet),ensure_ascii=False,separators=(',',':'))
+            return redact(content)
         result = []
         for message in messages:
+            content=content_for_cloud(message)
             images = message.get("images")
             if not images:
-                result.append(dict(message, content=redact(message["content"])))
+                result.append(dict(message, content=content))
                 continue
-            parts = [{"type": "text", "text": redact(message["content"])}]
+            parts = [{"type": "text", "text": content}]
             for encoded in images:
                 mime = _image_mime(encoded)
                 if mime is None:

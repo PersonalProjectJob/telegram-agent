@@ -842,6 +842,15 @@ class Pipeline:
             result = replace(result, decision="error", classification=None, error=diagnostic,
                              reaction_message_id=None, reaction_message_ids=())
         self.store.finish(first, result)
+        if result.issue_number is not None:
+            projection=None
+            if plan.classification is not None and plan.classification.is_valid():
+                c=plan.classification
+                projection=dict(type=c.type,confidence=c.confidence,title=c.title,summary=c.summary,priority=c.priority,
+                    category=c.type,actionable=plan.action=='issue',verdict='ticket' if plan.action=='issue' else 'needs_human',
+                    key_message_ids=list(plan.key_ids),missing_info=list(plan.clarify or ()),details=dict(plan.details or ()))
+            self.store.register_managed_issue(first,plan.key,case_key,result.issue_number,self.config.gh_repo,
+                                             issue,projection,[m.message_id for m in plan.messages],found.images,found.documents)
         group_notices.notify(self.store, self.notice_sender, first, result, plan.clarify,
                              self.config.gh_repo)
         return result

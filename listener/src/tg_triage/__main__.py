@@ -19,6 +19,14 @@ from .usage import UsageRecorder
 from .runtime import AlreadyRunning, ProcessLock, validate_data_directories
 
 
+def _build_classifier(config, store):
+    # Validate installed assets without treating the default prompt as a custom override.
+    load_prompt('topics.md')
+    if config.thinking_enabled:
+        load_prompt('thinking-topics.md')
+    return build_provider(config, usage=UsageRecorder(store, config))
+
+
 def main(argv=None) -> int:
     os.umask(0o077)
     parser = argparse.ArgumentParser(prog="tg-triage")
@@ -58,8 +66,7 @@ def main(argv=None) -> int:
                 try:
                     from .telegram_io import run
                     # Fail at startup, not per window, when the topics prompt is not installed.
-                    classifier = build_provider(config, topics_prompt=load_prompt("topics.md"),
-                                                usage=UsageRecorder(store, config))
+                    classifier = _build_classifier(config, store)
                     github = (GitHubIssues(config.gh_repo, config.gh_token)
                               if config.mode == "live" else None)
                     # Issues use REST; image uploads use the gh CLI (Assistant definition 12.8).

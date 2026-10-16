@@ -2,6 +2,8 @@
 import json
 import logging
 import re
+import hashlib
+import copy
 from .followup_model import validate_followup, MAX_SPLIT
 from .issue_format import Issue, format_issue, redact, sanitize, telegram_link
 from .models import Classification
@@ -130,10 +132,6 @@ def _apply_context(state, entry, originals):
 
 
 def _context(pipeline,job,root,originals,reply):
-    from .thinking import CURRENT
-    turn = CURRENT.get()
-    if turn:
-        turn.lookup()  # root-scoped provenance/evidence batch, never whole-group retrieval
     state=json.loads(root.get('context_state') or '{}')
     state.setdefault('bindings',{}); state.setdefault('evidence',{}); state.setdefault('conflicts',{})
     lookup={m.message_id:m for m in originals}
@@ -217,6 +215,104 @@ def _anchor_split(state, originals):
                 desired_count=count,bindings=[],unresolved_message_ids=unassigned,context_reason='confirmed_anchors')
 
 
+
+def _enrichment_sources(pipeline,root,originals):
+    """Extend only with durable evidence proven by this trusted conversation, never model IDs."""
+    from .store import _to_message
+    state=json.loads(root.get('context_state') or '{}')
+    snapshot=state.get('managed_snapshot',{})
+    ids=list(snapshot.get('source_ids',[]))+[int(i) for i in state.get('media_evidence',{}) if str(i).isdigit()]
+    result=list(originals); present={m.message_id for m in result}
+    for mid in ids:
+        if type(mid) is not int or mid in present: continue
+        row=pipeline.store.get(root['chat_id'],mid)
+        if (row is None or row['decision']!='followup' or row['case_key']!=root['case_key']
+                or row['group_key']!=root['group_key'] or row['issue_number']!=root['issue_number']):
+            raise ValueError('Unproven enrichment source')
+        result.append(_to_message(row)); present.add(mid)
+    if len(result)>39:
+        raise ValueError('Enrichment context exceeds source bound')
+    return sorted(result,key=lambda m:(m.received_at,m.message_id))
+
+
+def _bounded_attachment_processor(pipeline):
+    """Clone only this call's uploader runner; each production subprocess uses remaining time."""
+    from .thinking import CURRENT, BudgetExhausted
+    turn=CURRENT.get()
+    if turn and turn.is_set(): raise BudgetExhausted('decision_deadline_exhausted')
+    processor=copy.copy(pipeline.attachments)
+    uploader=processor.uploader
+    if turn and uploader is not None and hasattr(uploader,'_runner'):
+        processor.uploader=copy.copy(uploader)
+        original_runner=uploader._runner
+        def bounded_runner(*args,**kwargs):
+            if turn.is_set(): raise OSError('Artifact deadline exhausted')
+            kwargs['timeout']=min(kwargs.get('timeout',turn.remaining()),turn.remaining())
+            return original_runner(*args,**kwargs)
+        processor.uploader._runner=bounded_runner
+    return processor
+
+
+def _materialize_update(pipeline,job,root,originals,reply,op,payload):
+    """Semantic plan is already durable; recover proven assets or perform one ledgered upload."""
+    store=pipeline.store
+    images,documents=[],[]
+    note=None
+    if reply.has_attachment:
+        rows=store.followup_attachment_rows(root,reply.message_id)
+        if rows:
+            images,documents=store.followup_media(root,[reply],pipeline.config.gh_repo)
+        else:
+            found=_bounded_attachment_processor(pipeline).process(root['group_key'] or root['case_key'],[reply],live=True,
+                                               prepared=getattr(pipeline,'_followup_prepared_images',None))
+            images,documents=found.images,found.documents
+        if not images and not documents:
+            note='Em chưa xác nhận được ảnh/tài liệu đã tải lên; nhờ Anh/Chị giữ lại bản gốc và hỗ trợ kiểm tra.'
+        store.record_followup_evidence(job['root_key'],reply.message_id,images,documents,bool(images or documents))
+    payload['materialized']=True
+    payload['media_note']=note
+    if op['kind']=='comment':
+        payload['body']+=''.join('\nẢnh bổ sung: '+url for _,url in images)
+        payload['body']+=''.join('\nTài liệu bổ sung: '+url for _,url in documents)
+        if note: payload['body']+='\n'+note
+    else:
+        state=json.loads(store.connection.execute('SELECT context_state FROM followup_roots WHERE root_key=?',
+                                                (root['root_key'],)).fetchone()[0])
+        snapshot=state.get('managed_snapshot')
+        if (snapshot is None or snapshot.get('body_sha')!=payload['expected_sha']
+                or snapshot.get('title')!=payload['expected_title'] or snapshot.get('issue_number')!=payload['number']
+                or payload.get('expected_labels') is None or json.loads(root['siblings']) or root.get('split_plan')):
+            raise ValueError('Managed snapshot changed before refresh')
+        sources=_enrichment_sources(pipeline,root,originals)
+        if reply.message_id not in {m.message_id for m in sources}: sources.append(reply)
+        analysis=payload['analysis']
+        old_details=(snapshot.get('analysis') or {}).get('details',{})
+        analysis['details']={**old_details,**analysis.get('details',{})}
+        all_images=list(snapshot.get('images',[])); all_documents=list(snapshot.get('documents',[]))
+        proven_ids={m.message_id for m in sources}
+        for mid,evidence in state.get('media_evidence',{}).items():
+            if str(mid).isdigit() and int(mid) in proven_ids and evidence.get('available'):
+                for entry in evidence.get('images',[]):
+                    if entry not in all_images: all_images.append(entry)
+                for entry in evidence.get('documents',[]):
+                    if entry not in all_documents: all_documents.append(entry)
+        for entry in images:
+            if entry not in all_images and list(entry) not in all_images: all_images.append(entry)
+        for entry in documents:
+            if entry not in all_documents and list(entry) not in all_documents: all_documents.append(entry)
+        c=Classification(analysis['type'],analysis['confidence'],analysis['title'],analysis['summary'],analysis['priority'])
+        issue=format_issue(sources[0],c,'model',False,pipeline.config.ollama.model,case_messages=sources,
+                           max_quoted=len(sources),key_message_ids=analysis['key_message_ids'],details=analysis['details'],
+                           images=all_images,documents=all_documents,notes=[note] if note else [],clarify=analysis['missing_info'])
+        new_snapshot=dict(issue_number=payload['number'],repo=pipeline.config.gh_repo,title=issue.title,
+                          body_sha=hashlib.sha256(issue.body.encode()).hexdigest(),analysis=analysis,
+                          source_ids=[m.message_id for m in sources],images=all_images,documents=all_documents,owned_labels=list(issue.labels))
+        payload.update(title=issue.title,body=issue.body,labels=list(issue.labels),new_snapshot=new_snapshot,
+                       marker=f'<!-- tg:{sources[0].chat_id}:{sources[0].message_id} -->')
+    store.materialize_followup_operation(job,op,payload)
+    return payload
+
+
 def _plan(pipeline,job,root,originals,reply,history):
     tickets=_tickets(root)
     if not tickets:
@@ -245,6 +341,7 @@ def _plan(pipeline,job,root,originals,reply,history):
     unassigned_text=[m for m in originals if m.message_id in (anchor_plan or {}).get('unresolved_message_ids',[]) and m.text.strip()]
     ask=getattr(pipeline.classifier,'analyze_followup',None)
     raw=None
+    analysis_sources=originals
     try:
         # Scope corrections use the original text and media provenance. No pixel re-read:
         # this keeps the configured provider/consent path and never reuploads attachments.
@@ -266,7 +363,17 @@ def _plan(pipeline,job,root,originals,reply,history):
                 raw=(dict(action='clarify',confidence=1.0,target_ordinal=None,summary='',questions=[],groups=[],
                           source_roles=response.get('source_roles')) if isinstance(response,dict) else None)
         else:
-            raw=ask(originals,reply,mapping,history) if ask else None
+            analysis_sources=_enrichment_sources(pipeline,root,originals)
+            options={}
+            if reply.has_image:
+                if not getattr(pipeline.classifier,'supports_vision',False):
+                    return dict(action='clarify',questions=['Em chưa đọc được ảnh mới theo quyền/công cụ hiện có. Anh/Chị ghi lại thông báo lỗi trong ảnh giúp Em nhé.'],context_reason='vision_unavailable'),[]
+                prepared=pipeline.attachments.prepare_images(root['group_key'] or root['case_key'],[reply])
+                pipeline._followup_prepared_images=prepared
+                options['images']=prepared.for_messages([reply])
+                if reply.message_id not in options['images']:
+                    return dict(action='clarify',questions=['Em chưa tải/đọc được ảnh mới. Anh/Chị gửi lại hoặc ghi thông báo lỗi giúp Em nhé.'],context_reason='vision_unavailable'),[]
+            raw=ask(analysis_sources,reply,mapping,history,**options) if ask else None
         value=validate_followup(raw)
     except Exception as error:
         LOG.warning('Followup classifier failed exception=%s',type(error).__name__)
@@ -275,7 +382,10 @@ def _plan(pipeline,job,root,originals,reply,history):
     LOG.info('Followup analysis job_id=%s status=%s confirmed_bindings=%s',job['id'],status,len(state['bindings']))
     expected_ids={m.message_id for m in originals}
     roles={r['message_id']:r for r in (value or {}).get('source_roles',[])}
-    valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=expected_ids
+    role_ids=expected_ids
+    if value is not None and value['action']=='update' and value.get('case_analysis') is not None:
+        role_ids={m.message_id for m in analysis_sources}|{reply.message_id}
+    valid_roles=(len(roles)==len((value or {}).get('source_roles',[])) and set(roles)<=role_ids
                  and (anchor_plan is None or not unassigned_text or set(roles)=={m.message_id for m in unassigned_text}))
     if value is not None and not valid_roles:
         return dict(action='clarify',ack=ack,questions=_context_questions(state,originals) or [SCOPE_QUESTION],
@@ -323,6 +433,21 @@ def _plan(pipeline,job,root,originals,reply,history):
         body='### Bổ sung từ hội thoại Telegram\n'+_safe(value['summary'])+'\n\nPhản hồi của người gửi:\n> '+_safe(reply.text).replace('\n','\n> ')
         if telegram_link(reply):
             body+='\n\nNguồn phản hồi: '+telegram_link(reply)
+        analysis=value.get('case_analysis')
+        sources=_enrichment_sources(pipeline,root,originals)+[reply]
+        allowed={m.message_id for m in sources}
+        if analysis is not None and (set(analysis['key_message_ids'])-allowed or analysis['confidence']<pipeline.config.ollama.confidence_threshold):
+            return dict(action='clarify',questions=['Anh/Chị xác nhận lại phạm vi và thông tin cần bổ sung giúp Em nhé.'],context_reason='invalid_enrichment_sources'),[]
+        snapshot=state.get('managed_snapshot')
+        if analysis is not None and snapshot is not None:
+            if len(tickets)!=1 or root.get('split_plan') is not None or snapshot.get('issue_number')!=tickets[0] or str(snapshot.get('repo','')).casefold()!=pipeline.config.gh_repo.casefold():
+                return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='ambiguous_enrichment'),[]
+            return value,[('refresh',dict(number=tickets[0],analysis=analysis,reply_id=reply.message_id,
+                   expected_sha=snapshot['body_sha'],expected_title=snapshot['title'],expected_labels=snapshot.get('owned_labels'),materialized=False))]
+        if reply.has_attachment:
+            if len(tickets)!=1:
+                return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='ambiguous_enrichment'),[]
+            return value,[('comment',dict(number=tickets[target],body=body,reply_id=reply.message_id,materialized=False))]
         return value,[('comment',dict(number=tickets[target],body=body))]
     ids=[m.message_id for m in originals]
     assigned=[i for g in value['groups'] for i in g['message_ids']]
@@ -380,7 +505,13 @@ def _plan(pipeline,job,root,originals,reply,history):
 def _run(pipeline,job):
     from .thinking import decision_turn
     with decision_turn(pipeline,'followup:'+str(job['id']),job['root_key'],job['message_id']) as turn:
-        _run_inner(pipeline,job)
+        try:
+            _run_inner(pipeline,job)
+        finally:
+            prepared=getattr(pipeline,'_followup_prepared_images',None)
+            if prepared is not None:
+                prepared.close()
+                pipeline._followup_prepared_images=None
         if turn:
             with pipeline.store._lock:
                 current = pipeline.store.connection.execute('SELECT status FROM followup_jobs WHERE id=?',(job['id'],)).fetchone()
@@ -413,7 +544,7 @@ def _run_inner(pipeline,job):
             and (source is None or source['issue_number']!=number or not isinstance(source_url,str)
                  or source_url.casefold()!=expected.casefold())):
         _result(pipeline,job,root,reply,'blocked',
-                'Em cần Owner xác nhận lại repo và ticket gốc trước khi xử lý phản hồi này nhé. Em chưa chỉnh hoặc tạo thêm ticket.',
+                'Em cần Owner kiểm tra/xác nhận lại repo và ticket gốc trước khi xử lý phản hồi này nhé. Em chưa chỉnh hoặc tạo thêm ticket.',
                 include_links=False)
         return
     if job['status']=='ambiguous':
@@ -459,13 +590,29 @@ def _run_inner(pipeline,job):
         if op['status']!='planned':
             _result(pipeline,job,root,reply,'blocked','Em chưa xác nhận được kết quả thao tác GitHub. Nhờ Owner kiểm tra trước khi thử lại nhé.',completed)
             return
+        payload=json.loads(op['payload'])
+        if payload.get('materialized') is False:
+            try:
+                payload=_materialize_update(pipeline,job,root,originals,reply,op,payload)
+                op['payload']=json.dumps(payload,ensure_ascii=False)
+            except Exception as error:
+                LOG.warning('Followup enrichment preparation failed exception=%s',type(error).__name__)
+                _result(pipeline,job,root,reply,'blocked','Em chưa hoàn tất việc bổ sung ảnh/thông tin. Anh/Chị hỗ trợ kiểm tra trước khi thử lại nhé.')
+                return
         if not store.reserve_followup_operation(job,op['ordinal'],pipeline.config.max_issues_per_hour):
             _result(pipeline,job,root,reply,'blocked','Em đã chạm giới hạn tạo ticket nên chưa hoàn tất việc tách. Các ticket đã xác nhận được giữ lại bên dưới; nhờ Owner hỗ trợ phần còn lại nhé.',completed)
             return
         payload=json.loads(op['payload'])
         number=None
         try:
-            if op['kind']=='create':
+            if op['kind']=='refresh':
+                number=pipeline.github.refresh_issue(payload['number'],payload['expected_sha'],payload['expected_title'],
+                                                     payload['marker'],Issue(payload['title'],payload['body'],tuple(payload['labels'])),
+                                                     expected_labels=payload['expected_labels'])
+                if type(number) is not int or number!=payload['number']:
+                    raise ValueError('Unverified managed refresh result')
+                store.finish_followup_operation(job,op,number)
+            elif op['kind']=='create':
                 number,_=pipeline.github.create_issue(Issue(payload['title'],payload['body'],tuple(payload['labels'])))
                 if type(number) is not int or number<=0:
                     raise ValueError('Invalid created issue number')
@@ -480,6 +627,15 @@ def _run_inner(pipeline,job):
                     raise ValueError('Invalid comment number')
                 store.finish_followup_operation(job,op,number)
         except Exception as error:
+            from .github_issues import GitHubConflict,GitHubNotSent
+            if isinstance(error,(GitHubConflict,GitHubNotSent)):
+                with store._lock,store.connection:
+                    store.connection.execute("UPDATE followup_operations SET status=? WHERE job_id=? AND ordinal=? AND status='reserved'",
+                                             ('not_sent' if isinstance(error,GitHubNotSent) else 'conflict',job['id'],op['ordinal']))
+                _result(pipeline,job,root,reply,'blocked',
+                        'Em chưa kiểm tra được phiên bản hiện tại của ticket nên chưa gửi thay đổi; nội dung được giữ nguyên. Nhờ Anh/Chị hỗ trợ kiểm tra nhé.' if isinstance(error,GitHubNotSent) else
+                        'Em giữ nguyên nội dung ticket vì có chỉnh sửa ngoài bản Em đang quản lý. Nhờ Anh/Chị xác nhận cách gộp thông tin mới nhé.')
+                return
             LOG.warning('Followup operation outcome unknown exception=%s',type(error).__name__)
             if type(number) is int and number>0:
                 store.remember_followup_result(job,op,number)
@@ -490,6 +646,7 @@ def _run_inner(pipeline,job):
     text=('Em đã tách các yêu cầu thành từng ticket riêng rồi nhé 😊' if plan['action']=='split'
           else 'Em đã bổ sung thông tin vào ticket rồi nhé 😊')
     questions=plan.get('questions',[])+[q for g in plan.get('groups',[]) for q in g['missing_info']]
+    questions += [json.loads(o['payload'])['media_note'] for o in store.followup_operations(job) if json.loads(o['payload']).get('media_note')]
     if questions:
         text+='\n'+_clarify(questions)
     _result(pipeline,job,root,reply,'done',text,completed)
