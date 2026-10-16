@@ -1,6 +1,6 @@
 # Telegram Triage Agent
 
-**Documentation version**: v1.4.0 · **Updated**: 2026-10-16 12:16 (Asia/Saigon) · **Owner**: AlexChu
+**Documentation version**: v1.5.0 · **Updated**: 2026-10-16 14:43 (Asia/Saigon) · **Owner**: AlexChu
 
 Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
@@ -283,11 +283,21 @@ Offline checks: `python scripts/test_reformat_telegram_issue.py`.
 
 | Version | Date/time (Asia/Saigon) | Author | Change |
 |---|---|---|---|
+| v1.5.0 | 2026-10-16 14:43 | Codex / owner AlexChu | Record the approved DeepSeek release choice and unsuccessful isolated Gemini evaluation; preserve production provider and context safeguards. |
+| v1.4.0 | 2026-10-16 12:16 | Codex / owner AlexChu | Document 30/60-second conversation pacing, late-context retrieval and durable clarification suppression. |
 | v1.3.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous activation/isolated model smoke and current topic/episode tracing; business DOCS remains canonical. |
 | v1.2.0 | 2026-10-16 10:13 | Codex / owner AlexChu | Opt-in durable topic projection and local read-only trace operations; deployment evidence separate. |
 | v1.1.1 | 2026-10-16 09:57 | Codex / owner AlexChu | Link storage and debug operations to the canonical business procedure. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | THINKING feature switch, additive journal operations and isolated configured-model smoke. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Keep technical operations; replace evolving duplicated business descriptions with canonical rule links. |
+
+### Installed provider decision — 2026-10-16
+
+The Owner approved retaining DeepSeek after the isolated Gemini Free-tier trial. Preserve the existing installed DeepSeek model, endpoint, scoped credentials, consent and fallback settings during this release. The local example profile remains Ollama; it is not the THINKPAD production profile.
+
+Gemini 3.8 Flash access was available, but the project returned HTTP 429 for its daily Free-tier request quota. Gemini 3.7 Flash returned HTTP 503 under load; one successful response through the existing JSON-object path also had the wrong top-level structure and was rejected. An isolated JSON Schema experiment passed one grouping case, but the complete seven-case experiment did not pass. These results do not establish Gemini's semantic accuracy, and the experimental transport is not part of this release. A future provider switch requires complete context regressions against the actual proposed transport and installed verification first. Never interpret a listed model or one successful probe as release readiness.
+
+The DeepSeek baseline for unchanged runtime `416390d` passed all seven configured-model scenarios: three messages to one ticket, three independent tickets, image/caption #46, POS evidence #47, closed-ticket recurrence, login with competing history, and a pending reply after 90 seconds. Test side effects were isolated from GitHub, Telegram and the live database. Each subsequent deployment must record its own commit-bound package and installed health evidence; the provider decision does not change the 30/60-second collection contract or late-context rules.
 
 ### Autonomous operations
 
