@@ -1,6 +1,6 @@
 # Telegram Triage Agent
 
-**Documentation version**: v1.0.0 · **Updated**: 2026-10-15 21:12 (Asia/Saigon) · **Owner**: AlexChu
+**Documentation version**: v1.1.1 · **Updated**: 2026-10-16 09:57 (Asia/Saigon) · **Owner**: AlexChu
 
 Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Current reviewed runtime baseline is `9746ef2`, deployed on THINKPAD and read-only compared during documentation normalization. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
@@ -192,6 +192,8 @@ Reconnect reference: [Telethon client documentation](https://docs.telethon.dev/e
 
 ## Storage and operator recovery APIs
 
+For storage locations, table/key mapping, read-only SQL, failure diagnosis and recovery evidence, use the canonical [memory and debug procedure](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md#bộ-nhớ-truy-vấn-và-debug-vận-hành). Confirm the active host/config before using deployment-specific paths.
+
 See [TG-16..TG-27](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md) for trusted routing, binding, split, ambiguity and recovery eligibility. `cases`, `groups` and `reconciliation` preserve original accounting; additive `followup_roots`, `followup_jobs`, `followup_operations` and `followup_analysis_retries` hold conversation state and auditable operations. Main SQLite contains original text and context; usage/log privacy does not mean the main database is content-free.
 
 `Store.ensure_followup_job(chat_id, message_id)` is the explicit, single-message legacy seed API. `Store.retry_followup_analysis(chat_id, message_id, configured_repo, expected_notice_id)` is the narrowly guarded terminal-analysis retry API. Neither is a global replay command. Read the eligibility and no-POST-retry restrictions in the canonical rules before operator use. Preserve backups, original IDs and external-operation evidence; never reset original cases to recover uncertain GitHub outcomes.
@@ -254,5 +256,6 @@ Offline checks: `python scripts/test_reformat_telegram_issue.py`.
 
 | Version | Date/time (Asia/Saigon) | Author | Change |
 |---|---|---|---|
+| v1.1.1 | 2026-10-16 09:57 | Codex / owner AlexChu | Link storage and debug operations to the canonical business procedure. |
 | v1.1.0 | 2026-10-15 21:47 | Codex / owner AlexChu | THINKING feature switch, additive journal operations and isolated configured-model smoke. |
 | v1.0.0 | 2026-10-15 21:12 | Codex / owner AlexChu | Keep technical operations; replace evolving duplicated business descriptions with canonical rule links. |
