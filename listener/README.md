@@ -1,6 +1,6 @@
 # Telegram Triage Agent
 
-**Documentation version**: v1.5.0 · **Updated**: 2026-10-16 14:43 (Asia/Saigon) · **Owner**: AlexChu
+**Documentation version**: v1.6.0 · **Updated**: 2026-10-16 15:10 (Asia/Saigon) · **Owner**: AlexChu
 
 Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
@@ -283,6 +283,7 @@ Offline checks: `python scripts/test_reformat_telegram_issue.py`.
 
 | Version | Date/time (Asia/Saigon) | Author | Change |
 |---|---|---|---|
+| v1.6.0 | 2026-10-16 15:10 | Codex / owner AlexChu | Source-scoped ingress vision and bounded semantic review for incident grouping; model/release proof required separately. |
 | v1.5.0 | 2026-10-16 14:43 | Codex / owner AlexChu | Record the approved DeepSeek release choice and unsuccessful isolated Gemini evaluation; preserve production provider and context safeguards. |
 | v1.4.0 | 2026-10-16 12:16 | Codex / owner AlexChu | Document 30/60-second conversation pacing, late-context retrieval and durable clarification suppression. |
 | v1.3.0 | 2026-10-16 11:31 | Codex / owner AlexChu | Autonomous activation/isolated model smoke and current topic/episode tracing; business DOCS remains canonical. |
@@ -316,3 +317,11 @@ This uses the actual startup provider and configured consent; it does not open t
 In autonomous mode, `[thinking] context_quiet_seconds=30` and `context_max_wait_seconds=60` are defaults; allowed integers satisfy30 <= quiet <= max <=60. Each chat collects independently, then processes sealed batches sequentially. No early model/clarification for each arriving message. Context retrieval still applies to messages arriving after60 seconds; the collection deadline does not expire stored topic/reply/question history. Pending clarification reservations suppress normalized repeats across restart. See canonical Business DOCS for late-context and technical fallback behavior.
 
 For repeated generic questions, inspect message reason and the decision journal's model_calls_used first: zero calls/context_budget_exhausted is a packing failure, not proof of semantic uncertainty. Trace packing metadata exposes optional candidates omitted and text-byte bounds; original sources remain in SQLite. The new clarification table contains conversation text and needs the same private database protection; default trace exports metadata only.
+
+### Debug: one collected batch became several wrong tickets
+
+Check installed `agentfleet.json`, config/provider and service PID first, then compare `ingress_candidates.source_ids`, `ingress_packing`, cached `autonomous_plans` and final ingress results. A shared batch means collection succeeded; it does not prove model topic grouping or pixel attribution was correct. In the observed463..466 case, the photo was assigned to oldpending457 and a reaction invented a hung-system bug. Preserve that evidence before corrections.
+
+Current-source pixels take priority; optional retrieved candidate images are not automatically sent with a new incident. Exact-reply evidence remains eligible, and per-source metadata distinguishes supplied pixels from unavailable imagery. Unlinked-image multi-group proposals are reviewed before plans/tool writes even without historical candidates using the same two-call/40-second turn. Inspect `ingress_review` metadata and model-call counts; rejected review remains visible pending. A journal hash or unit-test pass alone is not configured-model semantic evidence. Existing completed plans/routes must not be silently replayed or overwritten to repair old issues.
+
+Operator clarification (2026-10-16): old content is updated only through an actual Reply to its source or proven bot notice. Retrieval/similarity alone cannot continue an old pending/ticket. Inspect each group's own reply_source_ids and cached/recovery guards when debugging accidental old-case updates. A current-image multi-group proposal still gets semantic review without historical candidates.

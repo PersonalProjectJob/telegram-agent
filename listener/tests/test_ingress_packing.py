@@ -13,6 +13,7 @@ from tests.helpers import config, message, classification, FakeHTTP, FakeGitHub,
 def candidate(key, count, *, exact=False, start=1, pressure=0):
     ids=list(range(start,start+count))
     return dict(candidate_id=key,pending=False,exact_reply=exact,split=False,
+        reply_source_ids=[900] if exact else [],
         current_scopes=[dict(ordinal=0,issue_number=44,source_ids=ids,human_bindings={},
             unresolved_ids=[],scope_status='known')],pending_questions=['Known question '+('x'*pressure)] if pressure else [],
         messages=[message(i,text='Previously discussed interface context. '*20) for i in ids])

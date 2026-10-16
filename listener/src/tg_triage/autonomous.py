@@ -7,6 +7,15 @@ from .thinking import CURRENT, decision_turn
 TECHNICAL_CONTEXT_QUESTION=group_notices.TECHNICAL_CONTEXT_QUESTION
 
 
+def _has_reply_authority(group,sources,candidate):
+    """Only this group's actual reply may authorize this historical target."""
+    if not candidate or not candidate.get('exact_reply'):
+        return False
+    bound=set(candidate.get('reply_source_ids',()))
+    own=set(group.get('message_ids',()))
+    return any(m.message_id in own and m.message_id in bound and m.reply_to_id is not None for m in sources)
+
+
 def _validate(groups,sources,candidates,threshold):
     if not isinstance(groups,list) or not groups:
         return None
@@ -22,6 +31,8 @@ def _validate(groups,sources,candidates,threshold):
         if group.get('candidate_id') is not None and candidate is None:
             return None
         if action=='CONTINUE' and (candidate is None or group['confidence']<threshold):
+            return None
+        if candidate is not None and not _has_reply_authority(group,sources,candidate):
             return None
         if action=='NEW' and candidate is not None:
             return None
@@ -96,10 +107,12 @@ def process(pipeline,message,start):
     key=f'{message.chat_id}:{message.message_id}'
     with decision_turn(pipeline,'ingress:'+key,key,message.message_id):
         candidates=[]
-        ordered=[m for m in sources if m.reply_to_id is not None][:6] or sources[:1]
+        ordered=[m for m in sources if m.reply_to_id is not None][:6]
         for source in ordered:
             found=pipeline.store.autonomy_candidates(source,pipeline.config.gh_repo)
             for candidate in found:
+                if not candidate['exact_reply']:
+                    continue  # No implicit historical target, even for matching text.
                 existing=next((c for c in candidates if c['source']['root_key']==candidate['source']['root_key']),None)
                 if existing:
                     if candidate['exact_reply']:
@@ -110,8 +123,6 @@ def process(pipeline,message,start):
                     continue
                 candidate['reply_source_ids']=[source.message_id] if candidate['exact_reply'] else []
                 candidates.append(candidate)
-            if not any(m.reply_to_id is not None for m in ordered):
-                break
         for i,candidate in enumerate(candidates,1):
             candidate['candidate_id']=f'c{i}'
         turn=CURRENT.get()
@@ -119,24 +130,30 @@ def process(pipeline,message,start):
             turn.record('ingress_candidates',dict(source_ids=[m.message_id for m in sources],
                 candidates=[dict(candidate_id=c['candidate_id'],case_key=c['source']['case_key'],
                     exact_reply=c['exact_reply'],pending=c['pending']) for c in candidates]))
-        all_sources={m.message_id:m for m in sources}
+        # New evidence gets the download slots first. Optional historical pictures
+        # can bias scope and exhaust the cap before the current picture is read.
+        # Historical pixels require an actual reply edge; text/proofs stay intact.
+        vision_sources={m.message_id:m for m in sources}
         for candidate in candidates:
-            for old in candidate['messages']:
-                all_sources.setdefault(old.message_id,old)
+            if candidate['exact_reply']:
+                for old in candidate['messages']:
+                    vision_sources.setdefault(old.message_id,old)
         try:
-            if any(m.has_image for m in all_sources.values()) and getattr(pipeline.classifier,'supports_vision',False):
-                pipeline._prepared_images=pipeline.attachments.prepare_images(key,list(all_sources.values()))
+            if any(m.has_image for m in vision_sources.values()) and getattr(pipeline.classifier,'supports_vision',False):
+                pipeline._prepared_images=pipeline.attachments.prepare_images(key,list(vision_sources.values()))
             ask=getattr(pipeline.classifier,'analyze_ingress',None)
             if cached:
                 groups=[cached]
                 candidate=cached.get('candidate')
+                if candidate is not None and not _has_reply_authority(cached,sources,candidate):
+                    return _quarantine(pipeline,message,'cached_reply_authority_revoked')
                 if candidate and not candidate['pending']:
                     proof=candidate['source']; stored=pipeline.store.get(message.chat_id,proof['source_message_id'])
                     if (proof['chat_id']!=message.chat_id or stored is None
                             or stored['issue_url']!=f"https://github.com/{pipeline.config.gh_repo}/issues/{proof['issue_number']}"):
                         raise ValueError('Cached ingress target proof changed')
             else:
-                answer=ask(sources,candidates,**pipeline._vision_options(list(all_sources.values()))) if ask else None
+                answer=ask(sources,candidates,**pipeline._vision_options(list(vision_sources.values()))) if ask else None
                 groups=_validate(answer,sources,candidates,pipeline.config.ollama.confidence_threshold)
             if groups is None:
                 # No guessed membership on provider/schema failure, even adjacent messages.
@@ -235,6 +252,8 @@ def resume_case(pipeline,case_key):
     if not pipeline.store.begin_analysis(case_key):
         return None
     members=pipeline.store.case_messages(case_key)
+    if cached.get('candidate') is not None and not _has_reply_authority(cached,members,cached['candidate']):
+        return _quarantine(pipeline,members[0],'cached_reply_authority_revoked',case_key)
     first=min(members,key=lambda m:m.message_id); group_key=f'{first.chat_id}:{first.message_id}'
     pipeline.store.plan_groups(case_key,[(group_key,[m.message_id for m in members])])
     action=cached['action']; analysis=cached['analysis']
@@ -271,6 +290,8 @@ def _quarantine(pipeline,message,reason,case_key=None):
     if pipeline.config.mode!='dry-run':
         group_notices.notify(pipeline.store,pipeline.notice_sender,message,
             Decision('needs_human','none',case_key=case_key),
-            ('Repository đã thay đổi từ lần phân tích trước. Nhờ Owner xác nhận nơi ghi nhận yêu cầu này giúp Em nhé.',),
+            (('Để bổ sung nội dung cũ, Anh/Chị reply đúng tin gốc hoặc tin xác nhận ticket giúp Em nhé.'
+              if reason=='cached_reply_authority_revoked' else
+              'Repository đã thay đổi từ lần phân tích trước. Nhờ Owner xác nhận nơi ghi nhận yêu cầu này giúp Em nhé.'),),
             pipeline.config.gh_repo)
     return result

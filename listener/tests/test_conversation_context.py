@@ -171,16 +171,18 @@ class ConversationContextTests(TestCase):
 
     def test_two_unvalidated_old_topics_late_photo_does_not_fake_merge(self):
         sent=[]
-        p=self.build(Router(None,[route([461],'CLARIFY',question='Ảnh này bổ sung cho lỗi đăng nhập hay yêu cầu tính tiền?')]),
+        p=self.build(Router(None,[route([461],'CLARIFY',question='Anh/Chị muốn team xử lý lỗi gì trong ảnh này?')]),
                      sender=lambda c,m,t:sent.append(m) or 900+m)
         p.store.enqueue(message(458,text='Sao tính tiền'))
         p.process(message(457,text='Login đúng pass mà không login được'))
+        historical={i:dict(p.store.get(message().chat_id,i)) for i in (457,458)}
         p.process(message(461,text='Ảnh bổ sung',has_image=True,received_at=NOW+timedelta(minutes=5)))
         keys=[p.store.get(message().chat_id,i)['case_key'] for i in (457,458,461)]
         self.assertEqual(3,len(set(keys)))
         self.assertFalse(p.github.calls)
         self.assertEqual([457,461],sent)
-        self.assertEqual(2,len(p.classifier.calls[1][1]))
+        self.assertEqual([],p.classifier.calls[1][1])
+        self.assertEqual(historical,{i:dict(p.store.get(message().chat_id,i)) for i in (457,458)})
 
     def test_host_rejected_foreign_ids_never_record_ok_failure_reason(self):
         router=Router([route([1],analysis=draft([999]))])

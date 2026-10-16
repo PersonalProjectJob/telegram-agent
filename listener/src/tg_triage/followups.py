@@ -621,6 +621,26 @@ def _run_inner(pipeline,job):
         turn.lookup()
     store=pipeline.store
     root,originals,reply,history=store.followup_context(job)
+    # Recovery is not permission: old persisted autonomous jobs may have been
+    # selected without a Telegram reply. Read original stored edges, never the
+    # synthetic reply target in followup_context or this job's assigned membership.
+    members=store.followup_job_messages(job)
+    member_ids={m.message_id for m in members}
+    authorized=False
+    for actual in members:
+        if actual.reply_to_id is None or actual.reply_to_id in member_ids:
+            continue
+        target=store.followup_source(actual)
+        if target is not None and target['root_key']==job['root_key']:
+            authorized=True
+            break
+    if not authorized:
+        if turn:
+            turn.reason='reply_authority_required'
+        _result(pipeline,job,root,reply,'blocked',
+                'Để bổ sung nội dung cũ, Anh/Chị reply đúng tin gốc hoặc tin xác nhận ticket giúp Em nhé.',
+                include_links=False)
+        return
     # A stored URL is only proof that the original issue belongs to the CURRENT configured
     # repo. It never selects an API destination. Check before model calls and planned resumes.
     source=store.get(root['chat_id'],root['source_message_id'])

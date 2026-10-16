@@ -407,18 +407,33 @@ class Classifier:
         selected=list(candidates)
         omitted=[]
         new_ids={m.message_id for m in sources}
+        pixel_ids=new_ids|{m.message_id for c in candidates if c['exact_reply'] for m in c['messages']}
+        images={mid:path for mid,path in images.items() if mid in pixel_ids}
+        encoded_images={}
+        review=None
         def render(cap,old_cap=30,*,pixels=False):
-            all_sources={m.message_id:m for c in selected for m in c['messages']}
-            all_sources.update({m.message_id:m for m in sources})
+            all_sources={m.message_id:m for m in sources}
+            for candidate in selected:
+                for old in candidate['messages']:
+                    all_sources.setdefault(old.message_id,old)
             ordered=[m for m in all_sources.values() if m.message_id in images]
+            time_base=sources[0].received_at
             def source(m):
                 limit=cap if m.message_id in new_ids else old_cap
+                try:
+                    delta=m.received_at-time_base
+                    offset=(delta.days*86400+delta.seconds)*1000000+delta.microseconds
+                except TypeError:
+                    # Mixed naive/aware timestamps have no proven shared zone.
+                    offset=m.received_at.isoformat()
                 return [m.message_id,m.reply_to_id,m.sender_id,m.text[:limit],len(m.text)>limit,
-                        m.has_image,m.message_id in images]
+                        m.has_image,m.message_id in images,offset,m.is_forward]
             packet=dict(NEW_SOURCE_IDS=[m.message_id for m in sources],
-                source_columns=['message_id','reply_to_id','sender_id','text','text_truncated','has_image','pixels_available'],
+                source_columns=['message_id','reply_to_id','sender_id','text','text_truncated','has_image','pixels_available','received_at_offset_us','is_forward'],
+                source_defaults=dict(received_at=time_base.isoformat()),
                 sources=[source(m) for m in sources],candidates=[dict(candidate_id=c['candidate_id'],
                     pending=c['pending'],exact_reply=c['exact_reply'],split=c.get('split',False),
+                    reply_source_ids=c.get('reply_source_ids',[]),
                     current_scopes=c.get('current_scopes',[]),
                     pending_questions=c.get('pending_questions',[]),
                     clarification_outcomes=c.get('clarification_outcomes',[]),
@@ -426,12 +441,17 @@ class Classifier:
                 candidate_context_truncated=bool(omitted) or any(len(m.text)>old_cap for c in selected for m in c['messages']),
                 omitted_candidate_ids=list(omitted),
                 images_order=[dict(image_index=i,message_id=m.message_id) for i,m in enumerate(ordered)])
+            if review is not None:
+                packet['PROPOSED_ROUTES_FOR_REVIEW']=review
             user=dict(role='user',content=ContextJSON(json.dumps(packet,ensure_ascii=False,separators=(',',':'))))
             if ordered:
                 # Byte accounting excludes image data, but includes every image slot.
                 # Read pixels only once after final eviction and excerpt decisions.
-                user['images']=[base64.b64encode(images[m.message_id].read_bytes()).decode('ascii')
-                                if pixels else '' for m in ordered]
+                if pixels:
+                    for m in ordered:
+                        if m.message_id not in encoded_images:
+                            encoded_images[m.message_id]=base64.b64encode(images[m.message_id].read_bytes()).decode('ascii')
+                user['images']=[encoded_images[m.message_id] if pixels else '' for m in ordered]
             return [dict(role='system',content=system),user]
         # Protect useful new text and exact replies before optional older candidates.
         # Candidate IDs remain opaque and are never renumbered after eviction.
@@ -440,33 +460,33 @@ class Classifier:
             if optional is None:
                 break
             selected.remove(optional); omitted.append(optional['candidate_id'])
-        low,high=30,700
-        while low<high:
-            mid=(low+high+1)//2
-            if request_text_bytes(dict(messages=render(mid),format=INGRESS_SCHEMA))<=8000:
-                low=mid
-            else:
-                high=mid-1
-        new_cap=low
-        low,high=30,700
-        while low<high:
-            mid=(low+high+1)//2
-            if request_text_bytes(dict(messages=render(new_cap,mid),format=INGRESS_SCHEMA))<=8000:
-                low=mid
-            else:
-                high=mid-1
-        rendered=render(new_cap,low)
-        self.last_ingress_context=dict(candidate_context_truncated=bool(omitted) or any(len(m.text)>low for c in selected for m in c['messages']),
-            omitted_candidate_ids=list(omitted),retained_candidate_ids=[c['candidate_id'] for c in selected],
-            new_text_cap=new_cap,candidate_text_cap=low,text_bytes=request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA)))
-        from .thinking import CURRENT
-        if CURRENT.get() is not None:
-            CURRENT.get().record('ingress_packing',self.last_ingress_context)
-        if request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA))>8000:
-            self.last_ingress_outcome='context_budget_exhausted'
-            return None
-        rendered=render(new_cap,low,pixels=True)
-        self.last_ingress_outcome='provider_unavailable'
+        def packed():
+            low,high=30,700
+            while low<high:
+                mid=(low+high+1)//2
+                if request_text_bytes(dict(messages=render(mid),format=INGRESS_SCHEMA))<=8000:
+                    low=mid
+                else:
+                    high=mid-1
+            new_cap=low
+            low,high=30,700
+            while low<high:
+                mid=(low+high+1)//2
+                if request_text_bytes(dict(messages=render(new_cap,mid),format=INGRESS_SCHEMA))<=8000:
+                    low=mid
+                else:
+                    high=mid-1
+            rendered=render(new_cap,low)
+            self.last_ingress_context=dict(candidate_context_truncated=bool(omitted) or any(len(m.text)>low for c in selected for m in c['messages']),
+                omitted_candidate_ids=list(omitted),retained_candidate_ids=[c['candidate_id'] for c in selected],
+                new_text_cap=new_cap,candidate_text_cap=low,text_bytes=request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA)))
+            from .thinking import CURRENT
+            if CURRENT.get() is not None:
+                CURRENT.get().record('ingress_packing',self.last_ingress_context)
+            if request_text_bytes(dict(messages=rendered,format=INGRESS_SCHEMA))>8000:
+                self.last_ingress_outcome='context_budget_exhausted'
+                return None
+            return render(new_cap,low,pixels=True)
         def parse(content):
             value=parse_ingress(content)
             allowed={c['candidate_id'] for c in selected}
@@ -474,8 +494,44 @@ class Classifier:
                 value=None
             self.last_ingress_outcome='ok' if value is not None else 'invalid_output'
             return value
-        return self._ask(dict(model=self.settings.model,stream=False,think=self.think,
-            options=dict(temperature=0),messages=rendered,format=INGRESS_SCHEMA),parse,attempts=1)
+        def ask():
+            rendered=packed()
+            if rendered is None:
+                return None
+            self.last_ingress_outcome='provider_unavailable'
+            return self._ask(dict(model=self.settings.model,stream=False,think=self.think,
+                options=dict(temperature=0),messages=rendered,format=INGRESS_SCHEMA),parse,attempts=1)
+        result=ask()
+        optional={c['candidate_id'] for c in selected if not c['exact_reply']}
+        if (result is not None and any(m.has_image and m.reply_to_id is None for m in sources)
+                and (len(result)>1 or any(g['candidate_id'] in optional for g in result))):
+            # A second bounded semantic judgment precedes all plans/tool effects.
+            # It grants no merge authority and shares the turn's two-call deadline.
+            review=[{k:g[k] for k in ('message_ids','action','candidate_id')} for g in result]
+            from .thinking import CURRENT
+            turn=CURRENT.get()
+            if turn is not None:
+                turn.record('ingress_review',dict(source_ids=[m.message_id for m in sources],
+                    groups=review,outcome='proposed',reason='unlinked_image_partition'))
+            system+='\nReview this provisional partition before execution. Reassess current incident vs optional history; no inherited visual labels, invented standalone emotional bugs, or unnecessary symptom splitting. Preserve truly independent requests. Return the full schema, not approval text.'
+            result=ask()
+            from .autonomous import _validate
+            if result is not None:
+                result=_validate(result,sources,selected,self.settings.confidence_threshold)
+                if result is None:
+                    self.last_ingress_outcome='invalid_ingress_output'
+            if turn is not None:
+                turn.record('ingress_review',dict(source_ids=[m.message_id for m in sources],
+                    groups=[{k:g[k] for k in ('message_ids','action','candidate_id')} for g in result] if result is not None else [],
+                    outcome='accepted' if result is not None else 'rejected',
+                    reason='host_validated' if result is not None else turn.reason or self.last_ingress_outcome),
+                    status='verified' if result is not None else 'blocked')
+        elif result is not None:
+            from .autonomous import _validate
+            result=_validate(result,sources,selected,self.settings.confidence_threshold)
+            if result is None:
+                self.last_ingress_outcome='invalid_ingress_output'
+        return result
 
     def analyze_followup(self, originals, reply, tickets, history, *, images=None):
         """One joint source/reply/pixel packet through the existing consent/provider boundary."""
