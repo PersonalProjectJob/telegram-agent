@@ -1,0 +1,93 @@
+# Copy to /etc/nailblog/nailblog.toml; NAILBLOG_CONFIG overrides the default.
+# No API key ever goes in this file: only paths to mode-0600 key files.
+[telegram]
+session = "/var/lib/agentfleet/nailblog/nailblog.session"
+# TG_API_ID and TG_API_HASH are supplied only through the service environment.
+
+[service]
+mode = "preview"                      # preview never writes to the website; live needs a verified contract.
+db_path = "/var/lib/agentfleet/nailblog/nailblog.sqlite3"
+owner_username = "SotaThao"
+owner_ids = []                        # REQUIRED: exactly one numeric ID; loading fails until you fill it in.
+timezone = "Asia/Ho_Chi_Minh"
+slots = ["06:00", "19:00"]
+late_window_minutes = 15
+
+[schedule]
+image_mode = "fixed"                  # fixed | random | adaptive
+fixed_at = "01:00"
+window_start_hours = 24
+window_end_hours = 3
+approve_deadline_hours = 2
+
+[text_model]
+provider = "ollama"                   # ollama | deepseek | gemini
+model = "qwen3.5:9b"
+url = "http://127.0.0.1:11434"        # Ollama must be on localhost.
+think = false                         # Must stay false.
+num_predict = 3000                    # Upper bound of output tokens per call (writer/planner pass smaller limits).
+timeout_seconds = 900                 # Per call; a CPU-only local model is slow, the writer calls it once per section.
+# key_file = "/etc/nailblog/private/model-key.json"   # Required for deepseek and gemini (scoped JSON, scope "gemini|https://generativelanguage.googleapis.com").
+# provider = "gemini" also needs model (for example a Flash model) and a price entry in [budget.text_prices] (0.0 on the free tier).
+section_thinking = "low"              # gemini only: thinking level of the section and repair calls; "" = provider default.
+
+[image]
+provider = "gemini"                   # gemini | openai
+model_body = ""                       # Pick from ListModels; required in live mode.
+model_cover = ""
+review_model = ""
+# key_file = "/etc/nailblog/private/image-key.json"   # Required in live mode.
+candidates = 2
+max_rounds = 2
+
+[sources]
+# RSS/Atom feeds read by plan-week: https only, at most 30, at most 2 MB each. Add only feeds you have checked.
+# A feed that fails is skipped and named in the topics DM; the published-post list comes from [contract] api_origin.
+feeds = []
+timeout_seconds = 15
+
+[budget]
+daily_usd = 3.0
+# Prices are USD per 1M tokens (text) or USD per image. Ollama is free; every other model needs a price.
+# [budget.text_prices."deepseek-chat"]
+# input_per_m = 0.0
+# output_per_m = 0.0
+# [budget.image_prices]
+# "your-image-model" = 0.0
+
+[contract]
+api_origin = "https://api.nailhub.ai"
+site_origin = "https://nailhub.ai"
+verified = false
+verification_ref = ""                 # Required with verified=true before live.
+
+[console]
+revision = ""
+
+[trends]
+# Google Trending RSS, geo US only (TD-8). The host is pinned; this is the only URL accepted.
+rss_url = "https://trends.google.com/trending/rss?geo=US"
+poll_hours = 3                        # snapshot every N hours (Vietnam clock: 00:00, 03:00, ...).
+# Watched nail keywords: their trend score uses the daily frequency kept in trend_snapshots.
+keywords = ["chrome nails", "cat eye nails", "velvet nails", "burgundy nails", "chocolate nails", "french tip nails",
+            "halloween nails", "christmas nails", "thanksgiving nails", "winter nails", "glitter nails", "gel x",
+            "builder gel", "nail art", "short nails", "almond nails", "square nails", "coffin nails", "aura nails",
+            "jelly nails"]
+# A Google trending item (or news title) is relevant only when it holds an anchor word, as a whole word in any case.
+anchor_terms = ["nail", "nails", "manicure", "pedicure", "mani", "pedi", "nail art", "nail salon", "nail polish",
+                "nail tech"]
+# Context words never make an item relevant; they only label an item that already matched an anchor.
+context_terms = ["polish", "gel", "acrylic", "chrome", "french tip", "cat eye", "salon", "beauty", "makeup", "glitter"]
+api_enabled = false                   # Official Google Trends API (alpha): not implemented, true is refused.
+
+[daily]
+# Vietnam time. propose_at < pick_deadline < preview_at.
+propose_at = "10:00"                  # trend table + 4 candidates for tomorrow (2 per slot).
+pick_deadline = "13:00"               # /nailblog pick <06|19> <n> until here; then backlog or best candidate.
+preview_at = "20:00"                  # DM with tomorrow's articles to approve.
+
+[links]
+# Internal CTA targets of an article (https, nailhub.ai only). TODO Phase 0: the real URLs are not fixed yet.
+jobs = "https://nailhub.ai/"          # cta.target = jobs: see job posts
+salon_sale = "https://nailhub.ai/"    # cta.target = salon_sale: see salons for sale
+app = "https://nailhub.ai/"           # cta.target = app: get the app

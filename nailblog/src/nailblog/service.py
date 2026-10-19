@@ -1,0 +1,356 @@
+"""Service loop (observe only: nothing is written to the website) and the preview-mode pipelines.
+
+Step B adds `plan_week` (sources, planner, topics) and `preview` (write one article to files). Neither has any
+website write path: sources are read with GET only and preview reads no website at all.
+"""
+
+import asyncio
+import html
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+from . import daily, facts
+from .commands import execute
+from .model_lock import MODEL_LOCK
+from .notices import notice_key, send_once, uncertain_notice
+from .planner import format_topics_dm, next_week_start, propose, store_topics, topic_meta, week_label
+from .quality import gate
+from .schedule import VN_TZ, is_due_for_publish
+from .sources import SourceError, fetch_feeds, fetch_posts
+from .state import State
+from .text import TextModel, TextModelError
+from .usage import UsageRecorder, text_cost, write_atomic
+from .writer import build_jsonld, placeholder_images, render_html, repair_article, word_count, write_article
+
+LOG = logging.getLogger(__name__)
+TICK_SECONDS = 60
+CACHE_NAME = "blog-cache.json"
+OCCUPYING_STATES = ("writing", "review", "scheduled", "before_publish", "published", "uncertain")
+MIN_WEEK_TOPICS = 14
+# Preview only: an image that is not made yet shows as an empty dashed frame with its brief as the note.
+PREVIEW_STYLE = ("<style>figure:has(img[src^=\"placeholder-\"]){border:2px dashed #999;padding:1em;min-height:12em;"
+                 "margin:1em 0}img[src^=\"placeholder-\"]{display:none}figure:has(img[src^=\"placeholder-\"]) "
+                 "figcaption{color:#666;font-style:italic}</style>")
+
+
+class PreviewError(RuntimeError):
+    """The requested topic cannot be previewed."""
+
+
+@dataclass
+class PlanOutcome:
+    text: str
+    topic_ids: list = field(default_factory=list)
+    sent: bool = False
+    created: bool = True
+
+
+@dataclass
+class PreviewOutcome:
+    verdict: str
+    words: int
+    issues: list
+    json_path: str
+    html_path: str
+    repaired: list = field(default_factory=list)
+
+
+@dataclass
+class Draft:
+    """One written article with everything the gate and facts check said about it."""
+    article: dict
+    content: str
+    images: list
+    ungrounded: list
+    result: object
+    words: int
+    repaired: list
+
+
+async def wait_for_stop(stop, seconds):
+    """Interruptible pacing; return whether shutdown was requested."""
+    try:
+        await asyncio.wait_for(stop.wait(), seconds)
+    except TimeoutError:
+        pass
+    return stop.is_set()
+
+
+class _Meter:
+    """Token counts reported by ai_transport.complete through its `usage_sink` hook."""
+
+    def __init__(self):
+        self.calls = self.prompt = self.completion = 0
+
+    def add(self, usage):
+        self.calls += 1
+        self.prompt += int(usage.get("prompt_tokens", 0))
+        self.completion += int(usage.get("completion_tokens", 0))
+
+
+class Service:
+    def __init__(self, config, *, state=None, clock=time.time):
+        self.config = config
+        self.state = state or State(config.db_path, image_mode=config.schedule.image_mode)
+        self.clock = clock
+        self.usage = UsageRecorder(self.state, config, clock=clock)
+        self.notice_send = None  # Bound only after the existing client verifies the Owner.
+        self.notice_owner_id = None
+        self._announced = set()
+        self._bad_rows = set()
+        self.opener = None       # injected by tests; None means the real network openers
+        self.text = None         # injected by tests; None means a TextModel on this service's model_call
+        self.job_failures = {}   # (day, step) -> (failures, retry not before)
+        self.refresh_trends = True  # False: a CLI run for a past day (--date) must not fetch today's real trends
+        self._jobs = None
+
+    def command(self, name, args=()):
+        return execute(self.state, name, args, now=self.clock(), config=self.config)
+
+    def due_posts(self, now=None):
+        now = self.clock() if now is None else now
+        moment = datetime.fromtimestamp(now, VN_TZ)
+        due = []
+        for row in self.state.list_posts(("scheduled",)):
+            try:
+                if is_due_for_publish(moment, datetime.fromisoformat(row["slot_at"]), self.config.late_window_minutes):
+                    due.append(row)
+            except (TypeError, ValueError):
+                # One corrupt row must never block the others; say so once per process.
+                if row["id"] not in self._bad_rows:
+                    self._bad_rows.add(row["id"])
+                    LOG.warning("NailBlog skipped post %s: slot_at is not a timezone-aware ISO datetime", row["id"])
+        return due
+
+    def tick(self, now=None):
+        """One scheduler pass. Step A never publishes: due posts are only logged and keep their state."""
+        if self.state.control()["paused"]:
+            return []
+        due = self.due_posts(now)
+        for row in due:
+            if row["id"] not in self._announced:
+                self._announced.add(row["id"])
+                if self.config.mode == "preview":
+                    LOG.info("preview: would publish %s", row["id"])
+                else:
+                    LOG.warning("live publishing is not implemented in step A; would publish %s", row["id"])
+        self.usage.publish()
+        return [row["id"] for row in due]
+
+    async def model_call(self, function, *args, stop=None, provider=None, model=None):
+        """Every model call yields to triage through the shared lock.
+
+        With `provider`/`model` the call is accounted: a paid provider (anything but ollama) is refused when the
+        daily budget is spent or the model has no price, BEFORE the request; usage is recorded AFTER it, even when
+        the call failed. `function` then receives a keyword `usage_sink` (as ai_transport.complete does)."""
+        paid = provider is not None and provider != "ollama"
+        meter = _Meter() if provider is not None else None
+        if paid:
+            self.usage.check()
+            text_cost(self.config.budget, provider, model, 0, 0)  # unpriced model: refuse before spending
+
+        def run():
+            with MODEL_LOCK.enter(background=True, stop=stop):
+                return function(*args, usage_sink=meter.add) if meter is not None else function(*args)
+        # Cancelling to_thread does not stop the call; finish it before releasing resources.
+        task = asyncio.create_task(asyncio.to_thread(run))
+        try:
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+        finally:
+            if meter is not None and (paid or meter.calls):
+                usd = text_cost(self.config.budget, provider, model, meter.prompt, meter.completion)
+                self.usage.record(provider, model, meter.prompt + meter.completion, usd)
+
+    async def notify(self):
+        if self.notice_send is None:
+            return
+        for row in self.state.list_posts(("uncertain",)):
+            notice = uncertain_notice(row)
+            if notice:
+                await send_once(self.state, self.notice_send, *notice, now=self.clock())
+
+    def text_model(self, stop=None):
+        return self.text or TextModel(self.config, self.model_call, stop=stop)
+
+    def _start_jobs(self, stop):
+        """Trend poll and daily steps run in their own task so a long article never delays the minute tick.
+        Only after the Owner is verified (a sender is bound) and not while paused; never two passes at once."""
+        if self.notice_send is None or self.state.control()["paused"] or (self._jobs and not self._jobs.done()):
+            return
+        self._jobs = asyncio.create_task(daily.run_due(self, stop))
+
+    async def scheduler(self, stop):
+        try:
+            while not stop.is_set():
+                try:
+                    self.tick()
+                    self.usage.prune()
+                    await self.notify()
+                    self._start_jobs(stop)
+                except Exception as error:
+                    LOG.warning("NailBlog scheduler pass failed exception=%s", type(error).__name__)
+                await wait_for_stop(stop, TICK_SECONDS)
+        finally:
+            if self._jobs is not None:
+                await asyncio.gather(self._jobs, return_exceptions=True)
+
+    # Local cache of what the last plan-week read, so preview needs no network and a failing source has a fallback.
+    @property
+    def cache_path(self):
+        return Path(self.config.db_path).parent / CACHE_NAME
+
+    def load_cache(self):
+        try:
+            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get("posts"), list) else None
+
+    def save_cache(self, items, posts):
+        write_atomic(self.cache_path, {"savedAt": datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(),
+                                       "items": items, "posts": posts})
+
+    def read_material(self, opener, cache, today=None):
+        """Feeds + published posts (GET only), falling back to `cache` when a source fails. -> (items, posts, notes)."""
+        notes = []
+        timeout = self.config.sources.timeout_seconds
+        if self.config.sources.feeds:
+            items, feed_notes = fetch_feeds(self.config.sources.feeds, opener=opener, timeout=timeout)
+            notes += feed_notes
+        else:
+            items = []
+            notes.append("chưa cấu hình nguồn RSS ([sources] feeds)")
+        if not items and cache.get("items"):
+            items = cache["items"]
+            notes.append("dùng tư liệu đã lưu từ lần trước")
+        try:
+            posts = fetch_posts(self.config.contract.api_origin, opener=opener, timeout=timeout, today=today)
+        except SourceError as error:
+            if not cache.get("posts"):
+                raise SourceError(f"cannot read published posts and no cache exists: {error}") from None
+            posts = cache["posts"]
+            notes.append(f"không đọc được bài đã đăng ({error}), dùng danh sách đã lưu")
+        return items, posts, notes
+
+    def save_articles_as_snapshots(self, items, now):
+        """Keep each beauty-RSS article once in trend_snapshots (source rss:<host>) so its words count as daily
+        mentions in the trend score."""
+        by_host = {}
+        for item in items:
+            host = (urlparse(item["url"]).hostname or "").removeprefix("www.")
+            news = [{"title": item.get("snippet", "")[:300], "url": item["url"]}] if item.get("snippet") else []
+            by_host.setdefault(host, []).append((item["title"], 0, news))
+        for host, rows in by_host.items():
+            self.state.add_trend_snapshots(now, "rss:" + host, rows, skip_known=True)
+
+    async def plan_week(self, text, *, opener=None, dry_run=False, today=None):
+        """Read sources, ask the planner, store `proposed` topics and build the DM.
+
+        The DM goes out through the bound Telegram sender; without one (CLI) it is returned for printing.
+        `dry_run` never sends."""
+        today = today or datetime.fromtimestamp(self.clock(), VN_TZ).date()
+        week_start = next_week_start(today)
+        label = week_label(week_start)
+        if any(row["week"] == label for row in self.state.list_topics(("proposed", "approved"))):
+            return PlanOutcome(f"NailBlog: tuần {label} đã có chủ đề, không tạo lại. Dùng /nailblog topics để xem.",
+                               created=False)
+        items, posts, notes = self.read_material(opener, self.load_cache() or {}, today)
+        self.save_cache(items, posts)
+        topics, dropped = await propose(text, items, posts, week_start, today)
+        if dropped:
+            notes.append(f"đã loại {len(dropped)} chủ đề (nguồn không có trong tư liệu hoặc trùng bài 90 ngày)")
+        if len(topics) < MIN_WEEK_TOPICS:
+            notes.append(f"chỉ còn {len(topics)} chủ đề, chưa đủ 14 slot")
+        placed = sum(1 for topic in topics if topic["slot_at"])
+        if topics and placed < MIN_WEEK_TOPICS:
+            notes.append(f"{placed}/14 slot đã có chủ đề")
+        ids = store_topics(self.state, week_start, topics, items)
+        message = format_topics_dm([self.state.get_topic(i) for i in ids], week_start, notes)
+        self.state.set_last_result(f"plan-week {label}: {len(ids)} chủ đề")
+        sent = False
+        if not dry_run and self.notice_send is not None:
+            sent = await send_once(self.state, self.notice_send, notice_key("topics", label), message,
+                                   now=self.clock())
+        return PlanOutcome(message, ids, sent)
+
+    def _occupied_slots(self):
+        rows = []
+        for post in self.state.list_posts(OCCUPYING_STATES):
+            try:
+                promo = bool(json.loads(post["draft_json"]).get("product_promo"))
+            except (ValueError, AttributeError):
+                promo = False
+            rows.append({"slot_at": post["slot_at"], "product_promo": promo})
+        return rows
+
+    def _assess(self, article, topic, promo, sources, posts, today):
+        site = self.config.contract.site_origin
+        images = placeholder_images(article)
+        content = render_html(article, images, site_origin=site)
+        ungrounded = facts.check(article, sources)
+        result = gate(article, category=topic["category"], slot_at=topic["slot_at"], product_promo=promo,
+                      existing_slugs=[post.get("slug") for post in posts] if posts is not None else None,
+                      others=self._occupied_slots(), ungrounded=ungrounded, site_origin=site, posts=posts,
+                      today=today, content=content)
+        return images, content, ungrounded, result
+
+    async def draft(self, topic, text, *, posts, today):
+        """Write one article for a topic row and judge it. When the gate finds only `fixable` issues the model gets
+        exactly ONE repair round for those fields and the gate and facts check run once more; `hold` issues are
+        never repaired."""
+        sources, promo, _scores = topic_meta(topic)
+        article = await write_article(
+            text, {"title": topic["title"], "category": topic["category"], "product_promo": promo}, sources,
+            site_origin=self.config.contract.site_origin, today=today, related_posts=posts or [],
+            links=self.config.links)
+        images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
+        repaired = []
+        if result.verdict == "fixable":
+            try:
+                article, repaired = await repair_article(text, article, result.fixable)
+            except TextModelError as error:
+                LOG.warning("NailBlog repair failed reason=%s", error)
+            else:
+                images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
+        article = {**article, "jsonld": build_jsonld(article, self.config.contract.site_origin, topic["slot_at"])}
+        return Draft(article, content, images, ungrounded, result, word_count(article), repaired)
+
+    @staticmethod
+    def document(draft, topic):
+        return {**draft.article, "topic_id": topic["id"], "slot_at": topic["slot_at"], "content_html": draft.content,
+                "images": draft.images, "facts": {"ungrounded": draft.ungrounded}, "quality": draft.result.as_dict(),
+                "words": draft.words, "mode": "preview", "repaired": draft.repaired}
+
+    @staticmethod
+    def write_files(draft, document, out_dir):
+        """article.json and article.html in `out_dir`; returns their paths as text."""
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        json_path, html_path = out / "article.json", out / "article.html"
+        json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+        html_path.write_text(
+            '<!doctype html>\n<html lang="vi"><head><meta charset="utf-8"><title>' + html.escape(draft.article["title"])
+            + "</title>" + PREVIEW_STYLE + "</head><body>\n<h1>" + html.escape(draft.article["title"]) + "</h1>\n" + draft.content
+            + "\n</body></html>\n", encoding="utf-8")
+        return str(json_path), str(html_path)
+
+    async def preview(self, topic_id, out_dir, text):
+        """Write one article for a topic to `out_dir`: article.json and article.html. No website call, no images."""
+        topic = self.state.get_topic(topic_id)
+        if topic is None or topic["state"] == "dropped":
+            raise PreviewError(f"topic {topic_id} not found or dropped")
+        cache = self.load_cache()
+        today = datetime.fromtimestamp(self.clock(), VN_TZ).date()
+        draft = await self.draft(topic, text, posts=cache["posts"] if cache else None, today=today)
+        json_path, html_path = self.write_files(draft, self.document(draft, topic), out_dir)
+        return PreviewOutcome(draft.result.verdict, draft.words, [issue.as_dict() for issue in draft.result.issues],
+                              json_path, html_path, draft.repaired)
