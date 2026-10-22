@@ -1,5 +1,63 @@
 # THINKPAD: isolated services, cutover and rollback
 
+## NailBlog strict rollout (2026-10-19)
+
+NailBlog is now a separate supported deployment target: `--service nailblog`,
+`/opt/agentfleet/nailblog`, `/etc/nailblog/nailblog.toml`,
+`/var/lib/agentfleet/nailblog`, `tg-nailblog`, user `tgnailblog`.
+Its database is `[service].db_path`; readiness is `NailBlog ready owner_verified=1`.
+The unit starts paused on every start through `pause-install`. Enabling recurring
+publication requires a separate explicit resume after successful canary acceptance.
+
+First inventory the confirmed THINKPAD, existing services, Python, dependency wheel
+cache, exact Playwright version and browser revision. `deploy/nailblog_bootstrap.py`
+prints a first-install command plan by default; `--apply` is an explicit mutation.
+Pass the reviewed exact dependency versions through `--telethon-version`,
+`--playwright-version`, `--pillow-version` and `--tzdata-version`. The observed rollout
+set is `1.45.0`, `1.63.0`, `13.0.0` and `2026.5` respectively; offline preflight and
+installation both use those exact pins. Record the resolved wheel inventory before apply.
+Private config/env/production-credential inputs stay outside Git. It creates only
+NailBlog identity/config/state and an independent copy of the observed browser cache;
+it never starts/enables a service or copies another worker's Telegram session/DB.
+Offline dependency resolution must succeed before provisioning. Missing Pillow/tzdata
+wheels must be supplied before apply. Provision Telegram interactively as `tgnailblog`
+before the guarded installer starts the service. Do not borrow another service session.
+
+Keep the complete Cloudflare account ledger, baseline imports, used/uncertain intents
+and original run caps during any machine migration. Merely creating the destination
+directory does not authorize a fresh ledger. Renew the Owner-controlled Free proof
+for the exact new shared ledger path only after a verified complete migration and
+exclusive account-use check. No bootstrap/deployment step enables image generation.
+
+The normal `build_wheel.py --commit` path remains commit-based. For explicitly reviewed
+uncommitted sources, compute `snapshot_digest(repo, 'nailblog')`, review that exact
+inventory, then use `--service nailblog --repo REPO --stage OUT
+--reviewed-snapshot-sha256 SHA`. The archive, staged source and wheel must revalidate
+byte-for-byte. Manifest `commit` is null, provenance `reviewed_worktree_snapshot` and
+revision `snapshot:SHA`; do not describe this as a committed release. Package source,
+tests, own config/unit fixtures and the two NailHub parity reference files are included;
+private data, profiles, sessions and credentials are excluded.
+
+`python -m nailblog one-post --action prepare --run-id ID --topic N --out PRIVATE_DIR`
+needs either `--images-document FILE` (complete, SHA/review/provenance-bound image
+pipeline document for the exact article) or an explicit paid/free generation enable
+and its immutable run ceiling. `--article FILE` can supply a previously reviewed
+writer article; otherwise the configured text provider writes it. Manual-curated or
+HELD image documents are refused. Preparation creates `approval.json`, without upload.
+Review the actual images and use `--action accept-images --snapshot SHA`; then
+`--action draft --category-id OBSERVED_GUID` saves via the guarded UI and readback.
+Review the new Draft artifact and use `--action approve --snapshot SHA`. Publication
+uses `--action publish` only within the ordinary slot/window and approval deadline;
+it does not waive schedule, image, HTML, quota or one-per-day rules. Preserve run ID,
+DB and output on recovery. Unknown Create/Publish outcomes reconcile read-only.
+
+Before any production write require the strict staging flow, authenticated
+environment-bound production probe, offset-aware timestamp/visibility DTO fix and
+observed production media origin. A prior article exception/manual image collage is
+not strict acceptance. A publish proof includes anonymous actual image loading and
+a real homepage card click. Preserve existing worker services and take stopped-target
+SQLite/code/config backups; code/config rollback keeps live DB after start was issued.
+
 Owner/controller commands only. Nothing below has been executed on production by the
 agent. Use a reviewed split commit and finish the independent production gate first.
 Keep configs, credentials, sessions, browser profiles and backups outside Git.

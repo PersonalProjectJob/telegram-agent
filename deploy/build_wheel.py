@@ -13,10 +13,12 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
-SERVICES = {'listener': 'tg_triage', 'nailhub': 'nailhub'}
+SERVICES = {'listener': 'tg_triage', 'nailhub': 'nailhub', 'nailblog': 'nailblog'}
 TEST_ROOT_FILES = {
     'listener': ('.env.example', 'config/listener.example.toml', 'systemd/tg-triage.service'),
     'nailhub': ('config/nailhub.example.toml', 'systemd/tg-nailhub.service'),
+    'nailblog': ('config/nailblog.example.toml', 'systemd/tg-nailblog.service',
+                'nailhub/src/nailhub/ai_transport.py', 'nailhub/src/nailhub/model_lock.py'),
 }
 OPTIONAL_TEST_ROOT_FILES = ('systemd/agentfleet-tmpfiles.conf',)
 
@@ -85,7 +87,9 @@ def wheel_bytes(source, service, commit):
     files[dist_info + '/METADATA'] = ('\n'.join(headers) + '\n\n').encode()
     files[dist_info + '/WHEEL'] = b'Wheel-Version: 1.0\nGenerator: agentfleet-stdlib\nRoot-Is-Purelib: true\nTag: py3-none-any\n'
     files[dist_info + '/top_level.txt'] = (package + '\n').encode()
-    files[dist_info + '/agentfleet.json'] = (json.dumps({'commit': commit, 'service': service}, sort_keys=True) + '\n').encode()
+    provenance = {'commit': commit if re.fullmatch(r'[0-9a-f]{40}', commit) else None,
+                  'service': service, 'source_revision': commit}
+    files[dist_info + '/agentfleet.json'] = (json.dumps(provenance, sort_keys=True) + '\n').encode()
     record = dist_info + '/RECORD'
     rows = [[name, record_hash(data), str(len(data))] for name, data in sorted(files.items())]
     rows.append([record, '', ''])
@@ -127,8 +131,8 @@ def verify_record(wheel_data):
 
 
 def archive_sources(archive, service, commit):
-    if not re.fullmatch(r'[0-9a-f]{40}', commit):
-        raise ValueError('Full commit SHA required')
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|snapshot:[0-9a-f]{64})', commit):
+        raise ValueError('Full commit SHA or reviewed snapshot SHA required')
     result = {}
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:') as tar:
         if tar.pax_headers.get('comment') != commit:
@@ -136,7 +140,8 @@ def archive_sources(archive, service, commit):
         for member in tar.getmembers():
             name = PurePosixPath(member.name)
             allowed_root = member.name in (*TEST_ROOT_FILES[service], *OPTIONAL_TEST_ROOT_FILES)
-            allowed_directory = member.isdir() and member.name.rstrip('/') in ('config', 'systemd')
+            fixture_parents = {parent.as_posix() for name in TEST_ROOT_FILES[service] for parent in PurePosixPath(name).parents}
+            allowed_directory = member.isdir() and member.name.rstrip('/') in ('config', 'systemd', *fixture_parents)
             if (name.is_absolute() or '..' in name.parts or '\\' in member.name or not name.parts
                     or (name.parts[0] != service and not allowed_root and not allowed_directory)):
                 raise ValueError('Unexpected source archive path')
@@ -169,11 +174,55 @@ def stage_archive(service, stage, archive, commit):
     verify_record(data)
     (stage / filename).write_bytes(data)
     (stage / 'source.tar').write_bytes(archive)
-    manifest = {'service': service, 'commit': commit, 'wheel': filename,
+    manifest = {'service': service, 'commit': commit if re.fullmatch(r'[0-9a-f]{40}', commit) else None,
+                'source_revision': commit, 'provenance': 'reviewed_worktree_snapshot' if commit.startswith('snapshot:') else 'git_commit',
+                'wheel': filename,
                 'wheel_sha256': sha256(data), 'source_archive_sha256': sha256(archive),
                 'source_files': {name: sha256(content) for name, content in sorted(files.items())}}
     (stage / 'build.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     return manifest
+
+
+def snapshot_files(repo, service):
+    """Only package source/tests and named fixture files; no config/state/private trees."""
+    repo = Path(repo)
+    result = {service+'/pyproject.toml': (repo/service/'pyproject.toml').read_bytes()}
+    for directory in ('src', 'tests'):
+        result.update({service+'/'+directory+'/'+name: value
+                       for name, value in inventory(repo/service/directory).items()})
+    for name in (*TEST_ROOT_FILES[service], *OPTIONAL_TEST_ROOT_FILES):
+        path = repo/name
+        if path.is_file():
+            if path.is_symlink():
+                raise ValueError('Snapshot fixture symlink refused')
+            result[name] = path.read_bytes()
+        elif name in TEST_ROOT_FILES[service]:
+            raise ValueError('Missing snapshot fixture: '+name)
+    return result
+
+
+def snapshot_digest(repo, service):
+    files = snapshot_files(repo, service)
+    return sha256(json.dumps({name:sha256(value) for name,value in sorted(files.items())},
+                             separators=(',', ':'), sort_keys=True).encode())
+
+
+def build_snapshot_stage(service, stage, *, repo, reviewed_sha256):
+    """Explicit reviewed dirty-source artifact; never label its bytes as a Git commit."""
+    files = snapshot_files(repo, service)
+    actual = sha256(json.dumps({name:sha256(value) for name,value in sorted(files.items())},
+                              separators=(',', ':'), sort_keys=True).encode())
+    if actual != reviewed_sha256:
+        raise ValueError('Reviewed source snapshot changed')
+    revision = 'snapshot:'+actual
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w', format=tarfile.PAX_FORMAT, pax_headers={'comment':revision}) as archive:
+        for name,value in sorted(files.items()):
+            member = tarfile.TarInfo(name)
+            member.size = len(value)
+            member.mode = 0o644
+            archive.addfile(member, io.BytesIO(value))
+    return stage_archive(service, stage, stream.getvalue(), revision)
 
 
 def build_stage(service, stage, *, repo=None, commit='HEAD'):
@@ -200,13 +249,20 @@ def verify_stage(stage, service):
     archive = (stage / 'source.tar').read_bytes()
     if sha256(archive) != manifest['source_archive_sha256']:
         raise ValueError('Source archive checksum mismatch')
-    archived = archive_sources(archive, service, manifest['commit'])
+    revision = manifest.get('source_revision') or manifest['commit']
+    if not revision.startswith('snapshot:') and manifest['commit'] != revision:
+        raise ValueError('Git archive commit differs from recorded commit')
+    archived = archive_sources(archive, service, revision)
     source = stage / 'source' / service
     staged = inventory(stage / 'source')
     hashes = {name: sha256(content) for name, content in sorted(staged.items())}
     if archived != staged or hashes != manifest['source_files']:
         raise ValueError('Staged source differs from recorded git archive')
-    filename, expected = wheel_bytes(source, service, manifest['commit'])
+    if revision.startswith('snapshot:'):
+        expected_digest = sha256(json.dumps(hashes, separators=(',', ':'), sort_keys=True).encode())
+        if revision != 'snapshot:'+expected_digest or manifest['commit'] is not None:
+            raise ValueError('Reviewed snapshot provenance mismatch')
+    filename, expected = wheel_bytes(source, service, revision)
     if manifest['wheel'] != filename:
         raise ValueError('Wheel name differs from source metadata')
     data = (stage / filename).read_bytes()
@@ -222,8 +278,15 @@ def main(argv=None):
     parser.add_argument('--stage', required=True, type=Path)
     parser.add_argument('--commit', default='HEAD', help='Committed sources only; ignores working-tree edits')
     parser.add_argument('--repo', type=Path)
+    parser.add_argument('--reviewed-snapshot-sha256', help='Explicitly reviewed source inventory SHA; dirty provenance retained')
     args = parser.parse_args(argv)
-    manifest = build_stage(args.service, args.stage, repo=args.repo, commit=args.commit)
+    if args.reviewed_snapshot_sha256:
+        if not args.repo or args.commit != 'HEAD':
+            parser.error('reviewed snapshot requires --repo and cannot name a commit')
+        manifest = build_snapshot_stage(args.service, args.stage, repo=args.repo,
+                                        reviewed_sha256=args.reviewed_snapshot_sha256)
+    else:
+        manifest = build_stage(args.service, args.stage, repo=args.repo, commit=args.commit)
     print(json.dumps(manifest, indent=2, sort_keys=True))
     return 0
 

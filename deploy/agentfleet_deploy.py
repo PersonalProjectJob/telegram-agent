@@ -36,6 +36,8 @@ DEFAULTS = {
                      state_dir=Path('/var/lib/agentfleet/tg'), unit='tg-triage', other_unit='tg-nailhub'),
     'nailhub': dict(code_dir=Path('/opt/agentfleet/nailhub'), config=Path('/etc/nailhub/nailhub.toml'),
                     state_dir=Path('/var/lib/agentfleet/nailhub'), unit='tg-nailhub', other_unit='tg-triage'),
+    'nailblog': dict(code_dir=Path('/opt/agentfleet/nailblog'), config=Path('/etc/nailblog/nailblog.toml'),
+                    state_dir=Path('/var/lib/agentfleet/nailblog'), unit='tg-nailblog', other_unit='tg-triage'),
 }
 
 
@@ -246,7 +248,7 @@ class Settings:
         if self.service == 'listener':
             return self.state_dir / 'triage.sqlite3'
         data = tomllib.loads(self.config.read_text(encoding='utf-8'))
-        return Path(data['worker']['db_path'])
+        return Path(data['service' if self.service == 'nailblog' else 'worker']['db_path'])
 
     def validate(self):
         if not self.test_paths:
@@ -447,7 +449,8 @@ class Deployment:
         result['journal_error_lines']=len(errors)
         if errors:
             raise DeploymentError('Target unit has error journal lines since start')
-        return any('NailHub ready owner_verified=1' in line for line in lines)
+        label = 'NailBlog' if self.settings.service == 'nailblog' else 'NailHub'
+        return any(label+' ready owner_verified=1' in line for line in lines)
 
     def report_other(self, result):
         try:
@@ -459,6 +462,10 @@ class Deployment:
             warning='Other unit MainPID/NRestarts/ActiveState changed; target is not rolled back for this warning'
             result.setdefault('warnings',[]).append(warning)
             print('WARNING: '+warning)
+        if self.settings.service == 'nailblog' and 'nailhub_before' in result:
+            result['nailhub_after'] = self.snapshot('tg-nailhub')
+            if result['nailhub_after'] != result['nailhub_before']:
+                result.setdefault('warnings', []).append('NailHub changed during NailBlog deployment; no other-unit mutation issued')
 
     def deploy(self):
         settings=self.settings
@@ -476,9 +483,13 @@ class Deployment:
         database=settings.database()
         if not database.is_absolute() or not database.resolve().is_relative_to(settings.state_dir.resolve()):
             raise DeploymentError('SQLite path must belong to this service state directory')
-        result={'service':settings.service,'commit':manifest['commit'],'wheel_sha256':manifest['wheel_sha256'],
+        result={'service':settings.service,'commit':manifest['commit'],
+                'source_revision':manifest.get('source_revision',manifest['commit']),
+                'provenance':manifest.get('provenance','git_commit'),'wheel_sha256':manifest['wheel_sha256'],
                 'backup_path':None,'tests':tests,'guard':guard,'before':before,'other_before':other_before,
                 'warnings':[],'success':False,'start_issued':False,'allowed_removed':guard['allowed_removed']}
+        if settings.service == 'nailblog':
+            result['nailhub_before'] = self.snapshot('tg-nailhub')
         backup=None
         stopped=False
         try:
@@ -500,14 +511,15 @@ class Deployment:
             result['start_issued']=True  # Even a failed start request may have launched a writer.
             self.system('start')
             self.sleep(settings.health_wait)
-            if settings.service=='nailhub':
+            if settings.service in ('nailhub','nailblog'):
                 while True:
                     if self.check_journal(self.journal_since(started),result):
                         result['owner_ready']=True
                         break
                     remaining=deadline-self.clock()
                     if remaining<=0:
-                        raise DeploymentError('NailHub ready owner_verified=1 missing within 60s')
+                        raise DeploymentError(('NailBlog' if settings.service == 'nailblog' else 'NailHub')+
+                                              ' ready owner_verified=1 missing within 60s')
                     self.sleep(min(settings.ready_poll,remaining))
             self.check_journal(self.journal_since(started),result)
             result['after']=self.snapshot(settings.unit)
@@ -579,13 +591,12 @@ def main(argv=None):
     if args.site_packages and {site.resolve() for site in args.site_packages} != actual_sites:
         parser.error('--site-packages must match the running target interpreter')
     service = args.service
-    config = Path('/etc/tg-triage/listener.toml' if service == 'listener' else '/etc/nailhub/nailhub.toml')
+    defaults = DEFAULTS[service]
     site_paths = args.site_packages or sorted({Path(sysconfig.get_path('purelib')), Path(sysconfig.get_path('platlib'))})
     settings = Settings(service, args.stage.resolve(), args.code_dir or Path('/opt/agentfleet') / service,
-                        args.config or config, args.state_dir or Path('/var/lib/agentfleet') / ('tg' if service == 'listener' else 'nailhub'),
+                        args.config or defaults['config'], args.state_dir or defaults['state_dir'],
                         args.backup_root, args.python, tuple(site_paths), args.prefix,
-                        args.unit or ('tg-triage' if service == 'listener' else 'tg-nailhub'),
-                        args.other_unit or ('tg-nailhub' if service == 'listener' else 'tg-triage'),
+                        args.unit or defaults['unit'], args.other_unit or defaults['other_unit'],
                         args.db_path, args.systemctl, args.journalctl, args.health_wait, test_paths=args.test_paths, allow_removed=tuple(args.allow_removed))
     os.umask(0o077)
     try:
