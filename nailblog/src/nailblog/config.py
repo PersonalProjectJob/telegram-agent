@@ -283,7 +283,8 @@ def _schedule(table):
         _fail("schedule.fixed_at must be HH:MM")
     start = _int(table.get("window_start_hours", 24), "schedule.window_start_hours", 1, 72)
     end = _int(table.get("window_end_hours", 3), "schedule.window_end_hours", 1, 72)
-    approve = _int(table.get("approve_deadline_hours", 2), "schedule.approve_deadline_hours", 1, 72)
+    # 0 = approval allowed until the slot itself (staging immediate tests only; default stays 2).
+    approve = _int(table.get("approve_deadline_hours", 2), "schedule.approve_deadline_hours", 0, 72)
     if not approve < end < start:
         _fail("schedule hours must satisfy approve_deadline < window_end < window_start")
     return ScheduleConfig(mode, fixed_at, start, end, approve)

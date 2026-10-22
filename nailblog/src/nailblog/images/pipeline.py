@@ -497,7 +497,9 @@ class ImagePipeline:
                     size = cfg.cover_size if index == 0 else cfg.body_size
                     output_cap = cfg.output_ceiling if index == 0 else cfg.body_output_ceiling
                     prompt = generation_prompt(slot['brief'],index,slot['subject'])
-                    review_bound=self.provider.forecast(cfg.review_model,self.provider.review(b'',prompt,cfg.review_output_ceiling)) if is_cloudflare else 0
+                    # A bypassed review is never sent; outside a two-article day slot there is no pair hold to reserve.
+                    skip_hold=bypass and not self.config.cloudflare.two_article_free_day
+                    review_bound=self.provider.forecast(cfg.review_model,self.provider.review(b'',prompt,cfg.review_output_ceiling)) if is_cloudflare and not skip_hold else 0
                     found = None
                     for round_number in range(cfg.max_rounds):
                         candidates = []
