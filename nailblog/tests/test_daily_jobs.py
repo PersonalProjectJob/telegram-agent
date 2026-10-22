@@ -2,6 +2,7 @@
 failure isolation and backoff. Fake transport, opener and sender only."""
 import asyncio
 import unittest
+from nailblog.writer import OUTLINE_ATTEMPTS
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -156,7 +157,7 @@ class FailureTests(DailyBase):
         self.model.fail_articles = True
         await self.run_at("13:05")
         attempts = self.model.outlines
-        self.assertEqual(attempts, 4)                      # two chosen slots, each tried twice (the model layer re-asks once)
+        self.assertEqual(attempts, 2 * OUTLINE_ATTEMPTS)   # two chosen slots, each tried OUTLINE_ATTEMPTS times by the model layer
         await self.run_at("13:10")
         self.assertEqual(self.model.outlines, attempts)                        # inside the backoff
         self.model.fail_articles = False
@@ -171,7 +172,7 @@ class FailureTests(DailyBase):
         await self.run_at("13:05")
         for hour in range(14, 22):
             await self.run_at(f"{hour}:30")
-        self.assertEqual(self.model.outlines, 4 * daily.MAX_ATTEMPTS)      # four passes of two slots, then it gives up
+        self.assertEqual(self.model.outlines, 2 * OUTLINE_ATTEMPTS * daily.MAX_ATTEMPTS)   # four passes of two slots, then it gives up
         self.assertIsNone(self.state.daily_get("2026-10-16", "write"))
         self.assertIsNotNone(self.state.daily_get("2026-10-16", "preview"))
 

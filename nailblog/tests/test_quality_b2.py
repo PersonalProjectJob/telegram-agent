@@ -105,7 +105,7 @@ class DraftRepairTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_hold_issue_is_never_repaired_and_blocks_the_round(self):
         long_seo = LONG_SEO
-        unsupported = {1: {"paragraphs": ["Một bộ gel thường có giá $50. " + fakes.prose(40), fakes.prose(40)]}}
+        unsupported = {1: {"paragraphs": ["Một bộ gel thường có giá $50. " + fakes.prose(40, 0, fakes.KEYWORD), fakes.prose(40)]}}
         draft, calls = await self.draft(self.reply(title_seo="x" * 20), outline_override={"title_seo": long_seo},
                                         section_override=unsupported)
         self.assertEqual(len(calls), 6)                       # no seventh call
@@ -121,7 +121,7 @@ class DraftRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((sorted(draft.repaired), draft.result.verdict), (["title", "title_seo"], "pass"))
 
     async def test_only_one_round_even_when_the_article_is_still_fixable(self):
-        short = {index: {"paragraphs": [fakes.prose(10, index)]} for index in range(5)}
+        short = {index: {"paragraphs": [fakes.prose(10, index, fakes.KEYWORD)]} for index in range(5)}
         draft, calls = await self.draft(self.reply(body={"paragraphs": [fakes.prose(12)], "claims": []}),
                                         section_override=short)
         self.assertEqual(len(calls), 7)

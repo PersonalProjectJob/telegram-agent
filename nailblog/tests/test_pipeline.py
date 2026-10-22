@@ -249,7 +249,7 @@ class CliTests(unittest.TestCase):
     def test_preview_holds_a_number_without_support_and_still_writes_the_files(self):
         topic = self.add_topic()
         self.write_cache(TWO_POSTS)
-        transport = fakes.article_transport(section_override={1: {"paragraphs": ["Một bộ gel thường có giá $50. " + "chữ " * 20,
+        transport = fakes.article_transport(section_override={1: {"paragraphs": ["Một bộ gel thường có giá $50. màu nail merlot " + "chữ " * 20,
                                                                                  fakes.prose(40)]}})
         code, output, _ = self.preview(topic, transport)
         self.assertEqual(code, 0)
@@ -262,7 +262,7 @@ class CliTests(unittest.TestCase):
     def test_preview_accepts_a_number_that_a_verbatim_claim_supports(self):
         topic = self.add_topic()
         self.write_cache(TWO_POSTS)
-        paragraph = "Một bộ gel thường có giá $50. " + fakes.prose(40)
+        paragraph = "Một bộ gel thường có giá $50. " + fakes.prose(40, 0, fakes.KEYWORD)
         transport = fakes.article_transport(section_override={1: {"paragraphs": [paragraph, fakes.prose(40)],
                                                                   "claims": [fakes.claim()]}})
         self.preview(topic, transport)
@@ -271,7 +271,7 @@ class CliTests(unittest.TestCase):
     def test_preview_never_lets_model_markup_through(self):
         topic = self.add_topic()
         self.write_cache([])
-        transport = fakes.article_transport(section_override={0: {"paragraphs": ["<script>alert(1)</script> " + "chữ " * 20]}})
+        transport = fakes.article_transport(section_override={0: {"paragraphs": ["<script>alert(1)</script> màu nail merlot " + "chữ " * 20]}})
         self.preview(topic, transport)
         self.assertNotIn("<script", (self.out / "article.html").read_text(encoding="utf-8"))
         self.assertNotIn("<script", self.article()["content_html"])

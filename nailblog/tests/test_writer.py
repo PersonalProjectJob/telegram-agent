@@ -6,7 +6,7 @@ from datetime import date
 
 from nailblog.service import Service
 from nailblog.text import TextModel, TextModelError
-from nailblog.writer import (LIMITS, cut, fit_fields, normalize_hashtag, placeholder_images, render_html, slugify_vi,
+from nailblog.writer import (LIMITS, OUTLINE_TOKENS, SECTION_TOKENS, cut, fit_fields, normalize_hashtag, placeholder_images, render_html, slugify_vi,
                              word_count, write_article)
 from tests import fakes
 from tests.fakes import FakeTransport, ollama_envelope
@@ -201,7 +201,8 @@ class WriteArticleTests(unittest.IsolatedAsyncioTestCase):
         article = await self.write(transport)
         self.assertEqual(len(transport.calls), 1 + 5)
         limits = [call["payload"]["options"]["num_predict"] for call in transport.calls]
-        self.assertEqual(limits, [2400] + [900] * 5)
+        cap = self.config.text_model.num_predict   # TextModel sends min(num_predict, the call's own max_tokens)
+        self.assertEqual(limits, [min(cap, OUTLINE_TOKENS)] + [min(cap, SECTION_TOKENS)] * 5)
         first, second = transport.calls[0]["payload"]["messages"], transport.calls[1]["payload"]["messages"]
         self.assertIn("Chủ đề: Màu nail merlot", first[1]["content"])
         self.assertIn("[s1] Winter nail trends", first[1]["content"])
@@ -241,7 +242,7 @@ class WriteArticleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(article["claims"], [outline_claim, section_claim])
 
     async def test_html_from_the_model_is_kept_as_text_never_as_markup(self):
-        transport = fakes.article_transport(section_override={0: {"paragraphs": ["<script>alert(1)</script> " + "chữ " * 20]}})
+        transport = fakes.article_transport(section_override={0: {"paragraphs": ["<script>alert(1)</script> màu nail merlot " + "chữ " * 20]}})
         article = await self.write(transport)
         self.assertIn("<script>", article["sections"][0]["paragraphs"][0])
         self.assertNotIn("<script", render_html(article, placeholder_images(article)))

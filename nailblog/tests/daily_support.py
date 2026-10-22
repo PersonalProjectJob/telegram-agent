@@ -74,7 +74,7 @@ class Model:
             self.sections += 1
             self.section_index += 1
             if self.hold_article == self.outlines and self.section_index == 1:
-                return ollama_envelope(fakes.section(0, paragraphs=["Một bộ gel thường có giá $50. " + fakes.prose(40),
+                return ollama_envelope(fakes.section(0, paragraphs=["Một bộ gel thường có giá $50. " + fakes.prose(40, 0, fakes.KEYWORD),
                                                                     fakes.prose(40)]))
             return ollama_envelope(fakes.section(self.section_index))
         raise AssertionError("unexpected model call: " + ",".join(props))

@@ -33,6 +33,14 @@ WORD_RANGES = {"hot-trend": (600, 1000), "did-you-know": (600, 1000), "nail-job"
 DEFAULT_WORDS = (800, 1200)
 INTRO_WORDS, TAKEAWAY_WORDS, CTA_WORDS, FAQ_ITEM_WORDS = 70, 55, 45, 55
 MIN_SECTION_WORDS = 90
+MAX_SECTIONS, MIN_KEPT_SECTIONS = 5, 4
+MAX_OUTLINE_SECTIONS_ACCEPTED = 6   # looser than MAX_SECTIONS: a 6-section reply is capped by code, not retried
+MAX_REPAIR_SECTIONS = 3
+KEYWORD_FLOOR, KEYWORD_STOP = 0.6, 1.0   # running density (percent) that steers the section prompts
+OUTLINE_ATTEMPTS = 3
+WORDS_REPAIR_MARGIN = 80
+MIN_LIST_ITEMS = 3
+REPAIR_TOKENS_PER_EXTRA_SECTION = 600
 TAKEAWAYS_H2, FAQ_H2, SOURCES_H2 = "Tóm tắt nhanh", "Câu hỏi thường gặp", "Nguồn tham khảo"
 
 # Content standard section 1 and 9: phrases the writer must not use (the gate checks the same list).
@@ -83,7 +91,7 @@ OUTLINE_SCHEMA = object_schema({
     "key_takeaways": array_schema(string_schema(8, 200), 3, 4),
     "sections": array_schema(optional(object_schema({
         "h2": string_schema(5, 70), "kind": {"type": "string", "enum": list(SECTION_KINDS)},
-        "points": array_schema(string_schema(5, 300), 1, 6), "image_slot": IMAGE_SLOT}), "image_slot"), 4, 6),
+        "points": array_schema(string_schema(5, 300), 1, 6), "image_slot": IMAGE_SLOT}), "image_slot"), 4, MAX_SECTIONS),
     "faq": array_schema(object_schema({"q": string_schema(10, 200), "a": string_schema(60, 600)}), 3, 5),
     "cta": object_schema({"text": string_schema(20, 400), "target": {"type": "string", "enum": list(CTA_TARGETS)}}),
     "hashtags": array_schema(string_schema(2, 50), 3, 5),
@@ -126,7 +134,7 @@ OUTLINE_SYSTEM = (
     "primary_keyword, nói rõ người đọc được gì, kết bằng động từ hành động. summary 140 đến 160 ký tự. slug không dấu, "
     "chữ thường, nối bằng dấu gạch, tối đa 60 ký tự, chứa primary_keyword, bỏ từ thừa. intro đúng 2 đoạn, TỔNG 50 đến "
     "90 từ: câu đầu nói thẳng vấn đề hoặc tin chính (không mở bằng tên sản phẩm), primary_keyword xuất hiện trong đoạn "
-    "đầu, đoạn 2 nói bài giúp gì. key_takeaways 3 đến 4 dòng, mỗi dòng tối đa 20 từ. sections 5 đến 6 mục theo khuôn "
+    "đầu, đoạn 2 nói bài giúp gì. key_takeaways 3 đến 4 dòng, mỗi dòng tối đa 20 từ. sections đúng 5 mục theo khuôn "
     "danh mục (thường 5 mục): h2 là câu hỏi hoặc ý rõ, tối đa 70 ký tự, ít nhất một h2 chứa primary_keyword hoặc một từ khóa phụ; kind "
     "là paragraphs, steps (các bước), list (danh sách) hoặc mixed; points là 2 đến 5 ý chính của mục. image_slot "
     "{brief, alt, caption?} cho đúng 3 mục, KHÔNG đặt cho hai mục liên tiếp (bỏ trường image_slot ở mục còn lại): brief "
@@ -144,7 +152,7 @@ SECTION_SYSTEM = (
     "kind=paragraphs: 2 đoạn; kind=steps: một đoạn dẫn 40 đến 90 từ rồi steps (3 đến 7 dòng, mỗi dòng tối đa 25 từ); "
     "kind=list: một đoạn dẫn 40 đến 90 từ rồi bullets (3 đến 7 dòng, mỗi dòng tối đa 25 từ); kind=mixed: paragraphs kèm "
     "bullets, steps hoặc h3 (mỗi h3 có title và paragraphs). Đạt ngân sách từ: không viết ngắn hơn 80% ngân sách. "
-    "Dùng NGUYÊN VĂN primary_keyword đúng một lần cho cả mục, đặt tự nhiên trong nội dung; không nhồi. Không nhắc đến chính tư liệu. "
+    "Quy tắc từ khóa chính nằm ở dòng 'Từ khóa chính' của yêu cầu; không nhồi từ khóa. Không nhắc đến chính tư liệu. "
     + CLAIM_RULE + "Chỉ trả JSON đúng schema.")
 
 
@@ -211,6 +219,29 @@ def word_budget(category, sections=5):
     return {"ceiling": ceiling, "target": target, "intro": INTRO_WORDS, "faq_items": faq_items,
             "faq_item": FAQ_ITEM_WORDS, "section": max(MIN_SECTION_WORDS, (target - fixed) // sections),
             "sections": sections}
+
+
+def rolling_section_budget(budget, written, sections_left):
+    """Words for the next section: what is left of the target after the words already written and the reserved
+    CTA + FAQ allowance, shared by the sections still to write (never below MIN_SECTION_WORDS)."""
+    reserved = CTA_WORDS + budget["faq_items"] * budget["faq_item"]
+    remaining = budget["target"] - written - reserved
+    return max(MIN_SECTION_WORDS, remaining // max(1, sections_left))
+
+
+def cap_outline_sections(outline, limit=MAX_SECTIONS):
+    """At most `limit` sections: keep every section that carries an image slot first, then fill in order."""
+    sections = outline["sections"]
+    if len(sections) <= limit:
+        return outline, []
+    slotted = [i for i, section in enumerate(sections) if section.get("image_slot")]
+    keep = set(slotted[:limit])
+    for i in range(len(sections)):
+        if len(keep) >= limit:
+            break
+        keep.add(i)
+    capped = {**outline, "sections": [section for i, section in enumerate(sections) if i in keep]}
+    return capped, [f"outline_sections_capped:{len(sections)}"]
 
 
 def _as_list(value):
@@ -666,6 +697,30 @@ def _section_slot(planned):
             "caption": " ".join(str(slot.get("caption", "")).split())}
 
 
+KEYWORD_ASK = ("Từ khóa chính: đặt NGUYÊN VĂN (đúng từng chữ, không rút gọn) trong đoạn paragraphs ĐẦU TIÊN của mục, "
+               "đúng một lần cho cả mục, tự nhiên.")
+KEYWORD_NEUTRAL = "Từ khóa chính: dùng tối đa một lần nếu tự nhiên; không bắt buộc."
+KEYWORD_AVOID = ("Từ khóa chính đã xuất hiện đủ nhiều: KHÔNG nhắc lại NGUYÊN VĂN từ khóa chính trong mục này; "
+                 "dùng từ khóa phụ hoặc đại từ.")
+
+
+def _running_density(outline, sections, keyword, extra=None):
+    """Keyword density (percent) of the article as written so far, counted like quality.gate (outline text that is
+    already final, such as the intro, takeaways, FAQ and CTA, is included)."""
+    from .quality import _keyword_count
+    partial = {"intro": outline["intro"], "key_takeaways": outline["key_takeaways"],
+               "sections": list(sections) + ([extra] if extra else []), "faq": outline["faq"],
+               "cta": outline["cta"]}
+    body = " ".join(text for path, text in article_texts(partial) if path.startswith(BODY_PREFIXES))
+    return _keyword_count(body, keyword) * 100 / max(1, word_count(partial))
+
+
+def _first_paragraph_has_keyword(piece, keyword):
+    from .quality import _keyword_count
+    paragraphs = piece.get("paragraphs") if isinstance(piece, dict) else None
+    return bool(paragraphs) and isinstance(paragraphs[0], str) and bool(_keyword_count(paragraphs[0], keyword))
+
+
 async def write_article(text, topic, sources, *, site_origin, today, related_posts=(), links=None):
     """Outline call, then one call per section. `topic`: {title, category, product_promo}."""
     budget = word_budget(topic["category"], 5)
@@ -675,33 +730,57 @@ async def write_article(text, topic, sources, *, site_origin, today, related_pos
         schema['properties'][name] = ({'type': 'string', 'enum': [value]} if name == 'primary_keyword'
                                       else {**array_schema({'type': 'string', 'enum': value}, len(value), len(value)),
                                             'enum': [value]})
+    schema['properties']['sections'] = {**schema['properties']['sections'], 'maxItems': MAX_OUTLINE_SECTIONS_ACCEPTED}
     request = _category_brief(topic, budget, sources, today)
     if hints:
         request += '\nTừ khóa đã duyệt, giữ nguyên văn (dữ liệu): ' + str(hints)
     outline = await text.ask("outline", OUTLINE_SYSTEM, request, schema,
-                             max_tokens=OUTLINE_TOKENS)
+                             max_tokens=OUTLINE_TOKENS, attempts=OUTLINE_ATTEMPTS)
+    outline, cap_audit = cap_outline_sections(outline)
     outline, image_audit = plan_image_slots(outline)
+    image_audit = cap_audit + image_audit
     budget = word_budget(topic["category"], len(outline["sections"]))
+    written = (sum(len(part.split()) for part in outline["intro"])
+               + sum(len(item.split()) for item in outline["key_takeaways"]))
+    section_count = len(outline["sections"])
     headings = "\n".join(f"- {section['h2']}" for section in outline["sections"])
     claims = list(outline["claims"])
-    sections = []
+    sections, reask_audit = [], []
     for index, planned in enumerate(outline["sections"]):
+        allowance = rolling_section_budget(budget, written, section_count - index)
+        density = _running_density(outline, sections, outline["primary_keyword"])
+        keyword_rule = (KEYWORD_AVOID if density >= KEYWORD_STOP else KEYWORD_ASK if density < KEYWORD_FLOOR
+                        else KEYWORD_NEUTRAL)
         request = (f"Bài: {outline['title']}\nTừ khóa chính: {outline['primary_keyword']} "
                    f"(phụ: {', '.join(outline['secondary_keywords'])})\nDanh mục: {topic['category']}\n"
                    f"Các mục của bài:\n{headings}\n\n"
                    f"Viết mục {index + 1}: {planned['h2']}\nkind: {planned['kind']}\n"
                    f"Ý chính: {'; '.join(planned['points'])}\n"
-                   f"Ngân sách: viết khoảng {budget['section']} từ cho cả mục (không dưới {int(budget['section'] * 0.8)}, "
-                   f"không quá {budget['section']}; paragraphs, bullets, steps và h3 cộng lại). Mỗi đoạn khoảng "
-                   f"{min(90, max(40, round(budget['section'] * 0.45)))} từ.\n\n"
-                   f"Tư liệu:\n{_sources_block(sources)}")
+                   f"Ngân sách: viết khoảng {allowance} từ cho cả mục (không dưới {int(allowance * 0.8)}, "
+                   f"không quá {allowance}; paragraphs, bullets, steps và h3 cộng lại). Mỗi đoạn khoảng "
+                   f"{min(90, max(40, round(allowance * 0.45)))} từ.\n\n"
+                   f"{keyword_rule}\n\nTư liệu:\n{_sources_block(sources)}")
         piece = await text.ask(f"section {index + 1}", SECTION_SYSTEM, request, SECTION_SCHEMA,
                                max_tokens=SECTION_TOKENS, light=True)
+        if (not _first_paragraph_has_keyword(piece, outline["primary_keyword"])
+                and _running_density(outline, sections, outline["primary_keyword"],
+                                     {"h2": planned["h2"], "paragraphs": piece["paragraphs"],
+                                      "bullets": piece.get("bullets", []), "steps": piece.get("steps", []),
+                                      "h3": piece.get("h3", [])}) < KEYWORD_FLOOR):
+            reask_audit.append(f"keyword_reask:{index}")
+            again = await text.ask(
+                f"section {index + 1} keyword", SECTION_SYSTEM,
+                request.replace(keyword_rule, KEYWORD_ASK + " Lần trước thiếu từ khóa chính: BẮT BUỘC đoạn paragraphs "
+                                "đầu tiên phải chứa NGUYÊN VĂN " + outline["primary_keyword"]),
+                SECTION_SCHEMA, max_tokens=SECTION_TOKENS, light=True)
+            if _first_paragraph_has_keyword(again, outline["primary_keyword"]):
+                piece = again
         claims += piece["claims"]
         sections.append({"h2": " ".join(planned["h2"].split()), "kind": planned["kind"],
                          "paragraphs": [paragraph.strip() for paragraph in piece["paragraphs"]],
                          "bullets": piece.get("bullets", []), "steps": piece.get("steps", []),
                          "h3": piece.get("h3", []), "image_slot": _section_slot(planned)})
+        written += section_words(sections[-1])
     cta = {"text": outline["cta"]["text"].strip(), "target": outline["cta"]["target"]}
     known = {source["id"] for source in sources}
     article = {
@@ -721,12 +800,98 @@ async def write_article(text, topic, sources, *, site_origin, today, related_pos
     }
     article["sources"], article["sources_updated"] = build_sources(article, sources, today)
     if han_fields(article):
-        article['writer_audit'] = image_audit + ['unexpected_han_requires_review']
+        article['writer_audit'] = image_audit + reask_audit + ['unexpected_han_requires_review']
         return article
     article, fit_audit = safe_fit_fields(article, sources)
     article, keyword_audit = repair_keyword_fields(article, sources)
-    article['writer_audit'] = image_audit + fit_audit + keyword_audit
-    return article
+    article['writer_audit'] = image_audit + reask_audit + fit_audit + keyword_audit
+    return trim_to_ceiling(article, sources)
+
+
+def _remove_section(article, index):
+    """Copy of the article without section `index`; related links keep a valid `after` anchor."""
+    result = deepcopy(article)
+    del result["sections"][index]
+    for link in result.get("links", []) or []:
+        after = link.get("after") if isinstance(link, dict) else None
+        if isinstance(after, int) and not isinstance(after, bool):
+            if after == index:
+                link["after"] = max(0, index - 1)
+            elif after > index:
+                link["after"] = after - 1
+    return result
+
+
+def trim_to_ceiling(article, sources=()):
+    """No model call: drop whole image-less H2 sections, longest first, until the body is within the ceiling.
+
+    Keeps at least MIN_KEPT_SECTIONS and the category word floor, never makes two image sections adjacent and never loses a number or claim."""
+    floor, ceiling = word_range(article.get("category"))
+    if word_count(article) <= ceiling or han_fields(article):
+        return article
+    result, audit = article, []
+    while word_count(result) > ceiling and len(result["sections"]) > MIN_KEPT_SECTIONS:
+        order = sorted((i for i, section in enumerate(result["sections"]) if slot_of(section) is None),
+                       key=lambda i: (-section_words(result["sections"][i]), i))
+        for index in order:
+            candidate = _remove_section(result, index)
+            kept = candidate["sections"]
+            if any(slot_of(a) is not None and slot_of(b) is not None for a, b in zip(kept, kept[1:])):
+                continue
+            if word_count(candidate) < floor or not safe_editorial_change(result, candidate, sources):
+                continue
+            audit.append("trim_section:" + result["sections"][index].get("h2", ""))
+            result = candidate
+            break
+        else:
+            break
+    if not audit:
+        return article
+    return {**result, "writer_audit": list(article.get("writer_audit", [])) + audit}
+
+
+_COUNT_WORDS = {2: "hai", 3: "ba", 4: "bốn", 5: "năm", 6: "sáu", 7: "bảy", 8: "tám", 9: "chín", 10: "mười"}
+
+
+def _states_count(section, count):
+    """True when the section's paragraphs (or H3 paragraphs) name `count` as a digit or Vietnamese number word."""
+    texts = _as_list(section.get("paragraphs", []))
+    for sub in section.get("h3", []) or []:
+        if isinstance(sub, dict):
+            texts += _as_list(sub.get("paragraphs", []))
+    wanted = [str(count)] + ([_COUNT_WORDS[count]] if count in _COUNT_WORDS else [])
+    pattern = r"(?<!\w)(?:" + "|".join(map(re.escape, wanted)) + r")(?!\w)"
+    return any(re.search(pattern, unicodedata.normalize("NFC", text).casefold()) for text in texts)
+
+
+def trim_list_items(article, sources=()):
+    """No model call, used after the one repair round: drop trailing bullets (longest sections first, at least
+    MIN_LIST_ITEMS left) until the body is within the ceiling. Steps (an ordered procedure) are never trimmed, nor a
+    bullets list whose current item count the section's prose states ("4 lý do", "ba gợi ý"). Paragraphs, claims and
+    numbers are never touched. Audit: trim_items:<section index>:<removed count>."""
+    floor, ceiling = word_range(article.get("category"))
+    if word_count(article) <= ceiling or han_fields(article):
+        return article
+    result, audit = article, []
+    for index in sorted(range(len(result.get("sections", []))), key=lambda i: (-section_words(result["sections"][i]), i)):
+        removed = 0
+        while word_count(result) > ceiling:
+            section = result["sections"][index]
+            items = section.get("bullets")
+            if (not isinstance(items, list) or len(items) <= MIN_LIST_ITEMS or _states_count(section, len(items))):
+                break
+            candidate = deepcopy(result)
+            candidate["sections"][index]["bullets"] = items[:-1]
+            if word_count(candidate) < floor or not safe_editorial_change(result, candidate, sources):
+                break
+            result, removed = candidate, removed + 1
+        if removed:
+            audit.append(f"trim_items:{index}:{removed}")
+        if word_count(result) <= ceiling:
+            break
+    if not audit:
+        return article
+    return {**result, "writer_audit": list(article.get("writer_audit", [])) + audit}
 
 
 # Field -> (min, max) characters, the exact limits the quality gate enforces.
@@ -918,18 +1083,42 @@ def _editorial_targets(article, issues):
     return targets
 
 
-def _body_target(article, issue):
-    """(section index, direction, word budget) of the section to rewrite for a length issue ("N từ, cần LOW-HIGH")."""
-    counts = [section_words(section) for section in article.get("sections", [])]
+def _body_targets(article, issue, prefer=()):
+    """[(section index, direction, word budget)] for a length issue: the shortest section when too short, otherwise
+    up to MAX_REPAIR_SECTIONS longest sections whose budgets together remove the excess plus WORDS_REPAIR_MARGIN words."""
     found = re.search(r"(\d+) từ, cần (\d+)-(\d+)", issue.message)
+    counts = [section_words(section) for section in article.get("sections", [])]
     if not counts or not found:
-        return None
+        return []
     words, low, high = (int(found.group(i)) for i in (1, 2, 3))
     if words < low:
         index = counts.index(min(counts))
-        return index, "dài hơn", counts[index] + (low - words) + 20
-    index = counts.index(max(counts))
-    return index, "ngắn hơn", max(MIN_SECTION_WORDS, counts[index] - (words - high) - 40)
+        return [(index, "dài hơn", counts[index] + (low - words) + 20)]
+    need = words - high + WORDS_REPAIR_MARGIN
+    order = sorted(range(len(counts)), key=lambda i: (-counts[i], i))[:MAX_REPAIR_SECTIONS]
+    if prefer and prefer[0] not in order:     # keep the section with the most keyword hits among the targets
+        order[-1] = prefer[0]
+    room = {i: max(0, counts[i] - MIN_SECTION_WORDS) for i in order}
+    chosen, total = [], 0
+    for i in order:
+        chosen.append(i)
+        total += room[i]
+        if total >= need:
+            break
+    cuts = dict.fromkeys(chosen, 0)
+    left = need
+    while left > 0 and any(cuts[i] < room[i] for i in chosen):
+        open_ = [i for i in chosen if cuts[i] < room[i]]
+        share = max(1, -(-left // len(open_)))
+        for i in open_:
+            take = min(share, room[i] - cuts[i], left)
+            cuts[i] += take
+            left -= take
+    return [(i, "ngắn hơn", max(MIN_SECTION_WORDS, counts[i] - cuts[i])) for i in sorted(chosen)]
+
+
+def _body_key(number):
+    return "body" if number == 0 else f"body_{number + 1}"
 
 
 def _section_text(section):
@@ -946,22 +1135,31 @@ async def repair_article(text, article, issues, *, sources=()):
     """ONE repair round: the model rewrites only the fields named by the fixable `issues`.
 
     Returns (article, repaired field names). Fields: title_seo, title, summary, meta_title, meta_description, and
-    `body` (one section: the shortest when the article is too short, the longest when it is over the ceiling, with a
-    word budget that removes the excess). The caller runs the gate (and the facts check) again on the result."""
+    `body` (body_2, body_3: the shortest section when the article is too short, up to three of the longest when it is
+    over the ceiling, each with a word budget that together removes the excess). The caller runs the gate (and the facts check) again on the result."""
     if han_fields(article):
         return {**article, 'writer_audit': list(article.get('writer_audit', [])) +
                 ['repair_skipped_unexpected_han_requires_review']}, []
     if any(repair_disposition(issue, article)[0] == 'hold' for issue in issues):
         return article, []
-    wanted, notes, body = {}, [], None
+    wanted, notes, bodies, stuffing = {}, [], [], False
+    prefer = []
+    if article.get('sections') and any(i.code == 'kw_density' and 'nhồi' in i.message for i in issues):
+        from .quality import _keyword_count
+        hits = [_keyword_count(' '.join(_section_text(section)), article.get('primary_keyword', ''))
+                for section in article['sections']]
+        prefer = [i for i in sorted(range(len(hits)), key=lambda i: (-hits[i], i)) if hits[i] > 0]
+    with_words = any(i.code == 'words' for i in issues)
     for issue in issues:
         if issue.code in ('para_len', 'sentence_len', 'cliche', 'image_alt'):
             notes.append(f'- {issue.code}, {issue.field}: {issue.message}.')
         if issue.code == "words":
-            body = _body_target(article, issue)
-            if body:
-                notes.append(f"- Độ dài bài: {issue.message}. Viết lại mục {body[0] + 1} cho {body[1]}, tối đa "
-                             f"{body[2]} từ cho cả mục.")
+            bodies = _body_targets(article, issue, prefer)
+            if bodies:
+                notes.append(f"- Độ dài bài: {issue.message}.")
+                for number, (at, direction, limit) in enumerate(bodies):
+                    notes.append(f"- Viết lại mục {at + 1} cho {direction}, tối đa {limit} từ cho cả mục "
+                                 f"(trả trong trường {_body_key(number)}).")
         elif issue.field in REPAIR_LIMITS:
             wanted[issue.field] = REPAIR_LIMITS[issue.field]
             notes.append(f"- {issue.field}: {issue.message}.")
@@ -970,40 +1168,53 @@ async def repair_article(text, article, issues, *, sources=()):
             counts = [_keyword_count(' '.join(_section_text(section)), article.get('primary_keyword', ''))
                       for section in article['sections']]
             high = 'nhồi' in issue.message
-            index = counts.index(max(counts) if high else min(counts))
-            if body is None:
-                body = (index, 'giữ nguyên độ dài', section_words(article['sections'][index]))
+            if high:
+                stuffing = True
+                ranked = prefer
+                if not bodies:
+                    bodies = [(i, 'giữ nguyên độ dài', section_words(article['sections'][i]))
+                              for i in sorted(ranked[:MAX_REPAIR_SECTIONS])]
+                length = ('rút ngắn theo ngân sách từ VÀ ' if with_words else '') + 'thay một số lần nhắc NGUYÊN VĂN từ ' \
+                         'khóa chính bằng từ khóa phụ hoặc đại từ' + ('' if with_words else ', giữ nguyên độ dài')
+                notes.append('- Mật độ từ khóa: ' + issue.message + '. Trong các mục được sửa, ' + length + ' và ý; '
+                             'mỗi mục còn từ khóa chính ít nhất một lần; giữ nguyên mọi câu có số liệu và claims.')
+                continue
+            index = counts.index(min(counts))
+            if not bodies:
+                bodies = [(index, 'giữ nguyên độ dài', section_words(article['sections'][index]))]
             notes.append('- Mật độ từ khóa: ' + issue.message + '. Trong mục được sửa, dùng NGUYÊN VĂN từ khóa '
                          'chính đúng một lần ở nội dung; giữ nguyên mọi câu có số liệu và claims.')
     targets, deferred = {}, []
-    # Estimated preferred output words, not provider token accounting. The hard 1200-token cap is unchanged.
-    preferred_words = sum((limits[1] + 4) // 5 for limits in wanted.values()) + (min(body[2], 180) if body else 0)
-    if preferred_words > 240 or len(wanted) + (1 if body else 0) > 8:
+    # Estimated preferred output words, not provider token accounting. Output cap: REPAIR_TOKENS plus
+    # REPAIR_TOKENS_PER_EXTRA_SECTION for each section after the first.
+    capacity = 240 + 180 * max(0, len(bodies) - 1)
+    preferred_words = sum((limits[1] + 4) // 5 for limits in wanted.values()) + sum(min(b[2], 180) for b in bodies)
+    if preferred_words > capacity or len(wanted) + len(bodies) > 8:
         return {**article, 'writer_audit': list(article.get('writer_audit', [])) +
                 ['repair_capacity_unrepairable:scalar_body']}, []
     for path, kind in _editorial_targets(article, issues).items():
         if path in REPAIR_LIMITS:
             if path not in wanted:
                 cost = (REPAIR_LIMITS[path][1] + 4) // 5
-                if len(wanted) + len(targets) + (1 if body else 0) < 8 and preferred_words + cost <= 240:
+                if len(wanted) + len(targets) + len(bodies) < 8 and preferred_words + cost <= capacity:
                     wanted[path] = REPAIR_LIMITS[path]
                     preferred_words += cost
                 else:
                     deferred.append('repair_deferred_capacity:' + path)
-        elif not (body and (kind == 'paragraph' or
-                           path.startswith(f'sections[{body[0]}].') and '.image_slot.' not in path)):
+        elif not (bodies and (kind == 'paragraph' or
+                             any(path.startswith(f'sections[{b[0]}].') for b in bodies) and '.image_slot.' not in path)):
             try:
                 _leaf(article, path)
             except (KeyError, IndexError, TypeError, ValueError):
                 continue
             cost = {'paragraph': 60, 'intro': 40, 'faq': 45, 'takeaway': 20, 'heading': 15,
                     'alt': 12, 'cta': 45, 'listitem': 25, 'editorial': 45}[kind]
-            if len(wanted) + len(targets) + (1 if body else 0) < 8 and preferred_words + cost <= 240:
+            if len(wanted) + len(targets) + len(bodies) < 8 and preferred_words + cost <= capacity:
                 targets[path] = kind
                 preferred_words += cost
             else:
                 deferred.append('repair_deferred_capacity:' + path)
-    if not wanted and not body and not targets:
+    if not wanted and not bodies and not targets:
         return ({**article, 'writer_audit': list(article.get('writer_audit', [])) + deferred} if deferred else article), []
     properties = {field: string_schema(*limits) for field, limits in wanted.items()}
     lines = [f"Chủ đề: {article.get('topic', '')}", f"Danh mục: {article.get('category', '')}",
@@ -1061,13 +1272,17 @@ async def repair_article(text, article, issues, *, sources=()):
             section = article['sections'][int(match.group(1))]
             lines.append(f"Context H2: {section.get('h2', '')}; brief ảnh: "
                          f"{(section.get('image_slot') or {}).get('brief', '')}")
-    if body:
-        properties["body"] = SECTION_SCHEMA
+    if bodies and article.get('primary_keyword') and not stuffing:
+        lines.append('Khi viết lại mục, giữ NGUYÊN VĂN từ khóa chính "' + article['primary_keyword'] + '" ở mọi chỗ '
+                     'đang có và trong đoạn paragraphs đầu tiên của mỗi mục được viết lại.')
+    for number, body in enumerate(bodies):
+        properties[_body_key(number)] = SECTION_SCHEMA
         section = article["sections"][body[0]]
-        lines += [f"Mục {body[0] + 1} (H2: {section['h2']}, kind: {section.get('kind', 'paragraphs')}) hiện tại:",
-                  *_section_text(section)]
+        lines += [f"Mục {body[0] + 1} (H2: {section['h2']}, kind: {section.get('kind', 'paragraphs')}, trả trong "
+                  f"trường {_body_key(number)}, tối đa {body[2]} từ) hiện tại:", *_section_text(section)]
     fixed = await text.ask("repair", REPAIR_SYSTEM, "\n".join(lines), object_schema(properties),
-                           max_tokens=REPAIR_TOKENS, light=True)
+                           max_tokens=REPAIR_TOKENS + REPAIR_TOKENS_PER_EXTRA_SECTION * max(0, len(bodies) - 1),
+                           light=True)
     if not isinstance(fixed, dict) or set(fixed) != set(properties):
         return {**article, 'writer_audit': list(article.get('writer_audit', [])) +
                 ['repair_rejected_field_set']}, []
@@ -1093,22 +1308,24 @@ async def repair_article(text, article, issues, *, sources=()):
             rejected.append('repair_rejected_assertion_change:' + field)
     if "title_seo" in wanted and "meta_title" not in wanted and article.get("meta_title") == article.get("title_seo"):
         result["meta_title"] = result["title_seo"]   # already constrained, never truncate an assertion
-    if body:
-        piece = fixed["body"]
-        sections = [dict(section) for section in article["sections"]]
+    for number, body in enumerate(bodies):
+        piece = fixed[_body_key(number)]
+        label = _body_key(number)
+        sections = [dict(section) for section in result["sections"]]
         sections[body[0]].update(paragraphs=[paragraph.strip() for paragraph in piece["paragraphs"]],
                                  bullets=piece.get("bullets", []), steps=piece.get("steps", []),
                                  h3=piece.get("h3", []))
         candidate = {**result, 'sections': sections}
         if han_fields(candidate):
-            rejected.append('repair_rejected_unexpected_han:body')
+            rejected.append('repair_rejected_unexpected_han:' + label)
         elif any(claim not in article.get('claims', []) for claim in piece.get('claims', [])):
-            rejected.append('repair_rejected_new_claim:body')
+            rejected.append('repair_rejected_new_claim:' + label)
         elif candidate != result and safe_editorial_change(result, candidate, sources):
             result = candidate
-            accepted.append('body')
+            if 'body' not in accepted:
+                accepted.append('body')
         elif candidate != result:
-            rejected.append('repair_rejected_assertion_change:body')
+            rejected.append('repair_rejected_assertion_change:' + label)
     from .quality import ALT_WORDS, PARAGRAPH_SENTENCES, PARAGRAPH_WORDS, sentences_of, words_of
     for index, (path, kind) in enumerate(targets.items()):
         if not isinstance(fixed[f'edit_{index}'], str):

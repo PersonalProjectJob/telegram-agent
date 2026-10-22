@@ -138,19 +138,22 @@ class TextModel:
         return complete("deepseek", DEEPSEEK_BASE, cfg.model, messages, schema, key=key, timeout=cfg.timeout_seconds,
                         max_output=output, transport=bounded_transport, usage_sink=usage_sink)
 
-    async def ask(self, purpose, system, user, schema, *, max_tokens, context=8192, light=False):
-        """One JSON object matching `schema`; at most one repair call that carries only a short error note.
+    async def ask(self, purpose, system, user, schema, *, max_tokens, context=8192, light=False, attempts=2):
+        """One JSON object matching `schema`; by default one repair call that carries only a short error note.
+
+        `attempts` (default 2) is the total number of tries; the outline call asks for 3 and each retry then carries
+        the concrete validation errors (field path + message).
 
         `light` marks a section/repair call: Gemini then runs at [text_model] section_thinking (low by default)."""
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        for attempt in (1, 2):
+        for attempt in range(1, attempts + 1):
             started = time.monotonic()
             try:
                 result = await self.call(self._complete, messages, schema, max_tokens, context, light,
                                          provider=self.config.provider, model=self.config.model, stop=self.stop)
             except ProviderError as error:
                 outcome = error.code
-                if error.code != "invalid_json" or attempt == 2:
+                if error.code != "invalid_json" or attempt == attempts:
                     LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
                     raise TextModelError(f"model call failed: {error.code}") from None
                 note = "đầu ra không phải JSON đọc được"
@@ -160,10 +163,10 @@ class TextModel:
                 if not problems:
                     LOG.info("text purpose=%s attempt=%d ms=%d outcome=valid", purpose, attempt, _ms(started))
                     return result
-                if attempt == 2:
+                if attempt == attempts:
                     LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
                     raise TextModelError("model JSON does not match the schema: " + "; ".join(problems[:3]))
-                note = "; ".join(problems[:3])
+                note = "; ".join(problems[:(3 if attempts <= 2 else 6)])
             LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
             messages = messages + [{"role": "user", "content": (
                 f"Kết quả trước không hợp lệ ({note}). Trả lại duy nhất một JSON đúng schema, sửa các lỗi trên.")}]

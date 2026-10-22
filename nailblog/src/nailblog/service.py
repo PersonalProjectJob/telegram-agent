@@ -26,7 +26,7 @@ from .state import State
 from .text import TextModel, TextModelError
 from .usage import UsageRecorder, text_cost, write_atomic
 from .writer import (annotate_repair_outcome, build_jsonld, editorial_repair_issues, rebalance_paragraphs, han_fields, hold_unexpected_han, placeholder_images, render_html,
-                     repair_article, word_count, write_article)
+                     repair_article, trim_list_items, word_count, write_article)
 
 LOG = logging.getLogger(__name__)
 TICK_SECONDS = 60
@@ -469,6 +469,11 @@ class Service:
                 article = {**article, "writer_audit": list(article.get("writer_audit", [])) +
                            ["repair_model_error:TextModelError"]}
             else:
+                images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
+            trimmed = trim_list_items(article, sources)
+            if trimmed is not article:
+                article = trimmed
+                repaired += ['trim_items']
                 images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
         article = annotate_repair_outcome(article, result)
         article = {**article, "jsonld": build_jsonld(article, self.config.contract.site_origin, topic["slot_at"])}
