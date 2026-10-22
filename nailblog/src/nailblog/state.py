@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -295,6 +295,18 @@ class State:
             row = db.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
             return dict(row) if row else None
 
+    def set_post_document(self, post_id, document):
+        """Materialize a reviewed local article before its durable Create intent exists."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT state,admin_id FROM posts WHERE id=?', (post_id,)).fetchone()
+            if not row or row['state'] != 'writing' or row['admin_id']:
+                raise StateError('post document is immutable after Draft')
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='admin_operations'").fetchone():
+                if db.execute('SELECT 1 FROM admin_operations WHERE post_id=?', (post_id,)).fetchone():
+                    raise StateError('post document has a durable Create intent')
+            db.execute('UPDATE posts SET draft_json=? WHERE id=?', (json.dumps(document, ensure_ascii=False), post_id))
+
     def posts_for_topic(self, topic_id):
         with self.connection() as db:
             return [dict(row) for row in db.execute("SELECT * FROM posts WHERE topic_id=? ORDER BY id", (topic_id,))]
@@ -313,13 +325,14 @@ class State:
         with self.connection() as db:
             return [dict(row) for row in db.execute(sql + " ORDER BY slot_at,id", args)]
 
-    def transition(self, post_id, new_state, reason="", details=None, *, evidence=None):
+    def transition(self, post_id, new_state, reason="", details=None, *, evidence=None, _db=None):
         """Move a post along the lifecycle graph atomically; raise InvalidTransition otherwise.
 
         `published` reached from before_publish/uncertain needs non-empty readback `evidence`,
         stored under details["evidence"]."""
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with (self.connection() if _db is None else nullcontext(_db)) as db:
+            if _db is None:
+                db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT state FROM posts WHERE id=?", (post_id,)).fetchone()
             if row is None:
                 raise InvalidTransition("unknown post")

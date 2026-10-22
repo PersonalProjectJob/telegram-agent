@@ -125,8 +125,10 @@ def usage_of(envelope):
     zero = {"prompt_tokens": 0, "completion_tokens": 0, "cache_hit_tokens": 0, "thought_tokens": 0}
     try:
         meta = envelope.get("usageMetadata")
-        if not isinstance(meta, dict):
-            return zero
+        if (not isinstance(meta, dict) or any(type(meta.get(name)) is not int or meta[name] < 0
+                for name in ('promptTokenCount','candidatesTokenCount')) or
+                ('thoughtsTokenCount' in meta and (type(meta['thoughtsTokenCount']) is not int or meta['thoughtsTokenCount'] < 0))):
+            return {**zero, '_uncertain': True}
         thoughts = _count(meta.get("thoughtsTokenCount"))
         return {"prompt_tokens": _count(meta.get("promptTokenCount")),
                 "completion_tokens": _count(meta.get("candidatesTokenCount")) + thoughts,
@@ -200,6 +202,8 @@ def complete(model, messages, schema, *, key, timeout=60, max_output=2048, think
         except ProviderError as error:
             if error.code not in RETRY_CODES or attempt == 2:
                 raise
+            if usage_sink is not None:
+                usage_sink({'_uncertain': True})
             (sleep or time.sleep)((delay or retry_delay)())
     if usage_sink is not None:
         try:

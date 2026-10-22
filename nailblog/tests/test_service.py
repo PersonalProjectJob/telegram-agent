@@ -64,12 +64,12 @@ class ServiceTests(unittest.TestCase):
         self.state.set_paused(True)
         self.assertEqual(self.service.tick(), [])
 
-    def test_live_mode_still_does_not_publish_in_step_a(self):
+    def test_live_tick_announces_but_does_not_bypass_guarded_publish(self):
         service = Service(replace(self.config, mode="live"), state=self.state, clock=lambda: self.now)
         post = self.state.add_post(SLOT_TEXT, state="scheduled")
-        with self.assertLogs("nailblog.service", "WARNING") as logs:
+        with self.assertLogs("nailblog.service", "INFO") as logs:
             self.assertEqual(service.tick(), [post])
-        self.assertIn("not implemented in step A", logs.output[0])
+        self.assertIn("awaits guarded publish pass", logs.output[0])
         self.assertEqual(self.state.get_post(post)["state"], "scheduled")
 
     def test_tick_refreshes_the_usage_summary_file(self):
@@ -189,7 +189,7 @@ class ReceiptAndCliTests(unittest.TestCase):
 
     def test_unknown_subcommand_is_rejected_by_the_parser(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            cli.main(["login", "--config", "/x"])
+            cli.main(["not-a-command", "--config", "/x"])
         self.assertEqual(raised.exception.code, 2)
 
 

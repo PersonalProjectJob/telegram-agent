@@ -11,3 +11,6 @@ dependencies = ["telethon>=1.45,<2", "playwright>=1.48,<2", "Pillow>=10", "tzdat
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"nailblog.images" = ["templates/*.html"]

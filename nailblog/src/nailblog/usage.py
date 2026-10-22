@@ -124,6 +124,7 @@ def write_atomic(path, payload):
 class UsageRecorder:
     def __init__(self, state, config, *, clock=time.time, interval=SUMMARY_INTERVAL_SECONDS):
         self.state = state
+        self.config = config
         self.budget = config.budget
         self.clock = clock
         self.interval = interval
@@ -136,8 +137,8 @@ class UsageRecorder:
 
     def check(self):
         """Call before every paid request: refuse once today's total reaches the ceiling."""
-        if self.total_today() >= self.budget.daily_usd:
-            raise BudgetExceeded("daily USD budget reached")
+        from .paid import PaidLedger
+        PaidLedger(self.state, self.config, self.clock).check()
 
     def record(self, provider, model, units, usd):
         self.state.add_usage(self.clock(), provider, model, units, usd)
@@ -162,7 +163,7 @@ class UsageRecorder:
             try:
                 start = day_bounds(now)[0] - (DAILY_DAYS - 1) * 86400
                 write_atomic(self.path, build_summary(self.state.usage_between(start, now + 1), now,
-                                                      image_models=frozenset(self.budget.image_prices)))
+                                                      image_models=frozenset(self.budget.image_prices) | frozenset(self.budget.image_output_prices)))
             except Exception as error:
                 LOG.warning("Usage summary write failed exception=%s", type(error).__name__)
                 return False

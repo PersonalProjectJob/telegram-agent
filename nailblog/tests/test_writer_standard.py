@@ -357,7 +357,12 @@ class OverCeilingRepairTests(unittest.IsolatedAsyncioTestCase):
         claim = fakes.claim()
         reply = {"body": {"paragraphs": [fakes.prose(45, 1), fakes.prose(45, 2)], "claims": [claim]}}
         draft, _ = await self.draft(reply)
-        self.assertEqual(draft.article["claims"], [claim])
+        # A repair must not append an orphan assertion absent from the original body/claims.
+        self.assertEqual(draft.article["claims"], [])
+        self.assertEqual(draft.article["sections"][3]["paragraphs"],
+                         [fakes.prose(90, 3, fakes.KEYWORD), fakes.prose(90, 4)])
+        self.assertEqual(draft.repaired, [])
+        self.assertIn("repair_rejected_new_claim:body", draft.article["writer_audit"])
         self.assertEqual(draft.article["sections"][0]["paragraphs"][0][:15], fakes.prose(85, 0, fakes.KEYWORD)[:15])
 
 

@@ -29,6 +29,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((config.text_model.provider, config.text_model.model, config.text_model.think),
                          ("ollama", "qwen3.5:9b", False))
         self.assertEqual((config.image.candidates, config.image.max_rounds, config.budget.daily_usd), (2, 2, 3.0))
+        self.assertIs(config.image.review_bypass, False)
         self.assertEqual((config.contract.api_origin, config.contract.site_origin, config.contract.verified),
                          ("https://api.nailhub.ai", "https://nailhub.ai", False))
 
@@ -129,6 +130,7 @@ class ConfigTests(unittest.TestCase):
     def test_image_validation(self):
         self.invalid("image.provider", image='provider = "stability"')
         self.invalid("image.candidates", image="candidates = 0")
+        self.invalid("image.review_bypass", image='review_bypass = "yes"')
         self.invalid("image.candidates", image="candidates = 9")
         self.invalid("image.max_rounds", image="max_rounds = 0")
         self.invalid("image.model_body", image="model_body = 7")
@@ -167,6 +169,8 @@ class ConfigTests(unittest.TestCase):
             path.write_text(text.replace("owner_ids = []", f"owner_ids = [{OWNER}]"), encoding="utf-8")
             config = load_config(path)
         self.assertEqual((config.mode, config.owner_ids, config.slots), ("preview", (OWNER,), ("06:00", "19:00")))
+        self.assertIn("review_bypass = false", text)
+        self.assertIs(config.image.review_bypass, False)
 
 
 if __name__ == "__main__":

@@ -32,13 +32,24 @@ timeout_seconds = 900                 # Per call; a CPU-only local model is slow
 section_thinking = "low"              # gemini only: thinking level of the section and repair calls; "" = provider default.
 
 [image]
-provider = "gemini"                   # gemini | openai
+provider = "gemini"                   # gemini | openai (reserved) | cloudflare (explicit Free-only CLI)
 model_body = ""                       # Pick from ListModels; required in live mode.
 model_cover = ""
 review_model = ""
 # key_file = "/etc/nailblog/private/image-key.json"   # Required in live mode.
 candidates = 2
 max_rounds = 2
+cover_size = "2K"
+body_size = "1K"
+input_ceiling = 4096
+output_ceiling = 2048                 # Entire cover candidate, INCLUDING image and thinking tokens.
+body_output_ceiling = 1536            # Entire body candidate. Truncation holds the reservation.
+review_input_ceiling = 16384
+review_output_ceiling = 1024
+timeout_seconds = 180
+review_bypass = false                 # TEMPORARY Owner decision: true skips the model image review (deterministic gates + both Owner approvals stay). See nailblog/AGENTS.md.
+# Local generation is ONLY explicit: images --article FILE --out DIR --run-id STABLE --run-usd APPROVED --paid-enabled.
+# This command does not upload/publish or enable preview/daily image calls. Reuse the SAME run-id on resume.
 
 [sources]
 # RSS/Atom feeds read by plan-week: https only, at most 30, at most 2 MB each. Add only feeds you have checked.
@@ -54,12 +65,46 @@ daily_usd = 3.0
 # output_per_m = 0.0
 # [budget.image_prices]
 # "your-image-model" = 0.0
+# Real images require positive [budget.text_prices."configured-image-model"] input/output token rates,
+# positive reviewer text prices, and the conservative maximum USD/1M generation output rate below.
+# Every image/text/thinking output token is reserved at that maximum rate, not a rounded per-image estimate.
+# [budget.image_output_prices]
+# "configured-image-model" = 60.0      # Example ONLY: verify current provider pricing before enabling paid calls.
+
+[cloudflare]
+# Cloudflare image.model_cover/model_body must be "@cf/black-forest-labs/flux-2-klein-4b";
+# image.review_model must be "@cf/qwen/qwen3.8-27b"; same account-bound scoped key_file for both.
+# key JSON scope: cloudflare|https://api.cloudflare.com|ACCOUNT, key value outside Git only.
+account_id = ""
+# free_proof_file = "/etc/nailblog/private/cloudflare-free-proof.json"
+# quota_db_path = "/var/lib/agentfleet/nailblog-cloudflare-quota/neurons.sqlite3" # ONE shared path per account.
+daily_neurons = 10000.0
+review_input_allowance = 32768         # Estimated allocation, NOT a verified vision token count.
+# Optional local geometry aid (not an accepted final image): path and expected source SHA256 are required together.
+# reference_image_file = "/var/lib/agentfleet/nailblog/reference/single-ended-nail-stick.png"
+# reference_image_sha256 = "<64 lowercase hex characters>"
+# Adapter downsizes to <=510px, binds source/processed hashes, and adds 5.37 neurons per input-image tile.
+# images --article FILE --out DIR --run-id STABLE --free-enabled --run-neurons 9000
+# Fresh proof <=1h: account_id, plan="Workers Free", observed_at/expires_at epoch, utc_day,
+# baseline_neurons, exclusive_use=true, quota_db_path (exact shared path). No automatic plan upgrade.
+# UTC days; failed/uncertain reservations survive midnight. Workers Free server hard stop prevents paid overage.
 
 [contract]
+environment = "production"           # Phase 2 build/test: set staging AND use the staging origins below.
+media_origin = "https://vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com" # Observed 2026-10-19; bind into authenticated verification report.
 api_origin = "https://api.nailhub.ai"
 site_origin = "https://nailhub.ai"
+# staging pair: https://api-staging.nailhub.ai + https://staging.nailhub.ai
+# All [links] must follow the selected site_origin. Never mix environments.
 verified = false
 verification_ref = ""                 # Required with verified=true before live.
+
+[admin]
+# Environment-bound login/probe work without enabling live or image generation.
+# credential_file = "/etc/nailblog/private/staging-admin.json"  # {email,password}, service-owned 0600.
+# profile_path = "/var/lib/agentfleet/nailblog-staging/browser" # Separate from all production/service profiles.
+timeout_seconds = 30
+headless = true
 
 [console]
 revision = ""

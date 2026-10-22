@@ -221,6 +221,7 @@ def complete(provider, base_url, model, messages, schema, *, key='', timeout=60,
     else:
         headers['Authorization'] = 'Bearer ' + key
         body.update(response_format={'type':'json_object'})
+        if provider == 'deepseek':body['thinking'] = {'type':'disabled'}
         body['max_completion_tokens' if provider=='openai' else 'max_tokens'] = max_output
         body['messages'] = [{'role':'system','content':'Return JSON matching this schema: '+json.dumps(schema)}]+messages
         path = '/chat/completions'

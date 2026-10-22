@@ -5,11 +5,12 @@ job, checks the daily budget for paid providers and records usage. Prompts, sour
 are never logged.
 """
 
+import json
 import logging
 import time
 
 from . import gemini_text
-from .ai_transport import ENDPOINTS, ProviderError, complete, read_key, request_json
+from .ai_transport import ENDPOINTS, TEXT_INPUT_LIMIT, ProviderError, complete, read_key, request_json
 
 LOG = logging.getLogger(__name__)
 DEEPSEEK_BASE = ENDPOINTS["deepseek"]
@@ -93,29 +94,49 @@ def check_schema(schema, value, path="$"):
 class TextModel:
     """`call` is an async callable with Service.model_call's signature."""
 
-    def __init__(self, config, call, *, transport=request_json, key_reader=read_key, stop=None):
+    def __init__(self, config, call, *, transport=request_json, key_reader=read_key, stop=None, before_dispatch=None):
         self.config = config.text_model
         self.call = call
         self.transport = transport
         self.key_reader = key_reader
         self.stop = stop
+        self.before_dispatch = before_dispatch
 
     def _complete(self, messages, schema, max_tokens, context, light=False, usage_sink=None):
         cfg = self.config
         output = min(cfg.num_predict, max_tokens)
+        raw_transport = gemini_text.request_gemini if cfg.provider == 'gemini' and self.transport is request_json else self.transport
+        dispatched = 0
+        def bounded_transport(url, payload, headers, timeout, provider):
+            nonlocal dispatched
+            if len(json.dumps(payload).encode()) > TEXT_INPUT_LIMIT:
+                raise ProviderError('input_too_large')
+            if self.before_dispatch is not None:
+                try:
+                    self.before_dispatch()
+                except Exception:
+                    from .images.pipeline import DispatchPaused
+                    raise DispatchPaused('workflow_paused_before_dispatch', dispatched=dispatched>0) from None
+            dispatched += 1
+            envelope = raw_transport(url,payload,headers,timeout,provider)
+            if provider == 'deepseek' and usage_sink is not None:
+                reported = envelope.get('usage',{})
+                if (not isinstance(reported,dict) or any(type(reported.get(name)) is not int or reported[name] < 0
+                        for name in ('prompt_tokens','completion_tokens'))):
+                    usage_sink({'_uncertain':True})
+            return envelope
         if cfg.provider == "gemini":
             key = self.key_reader(cfg.key_file, gemini_text.KEY_SCOPE, group_name=KEY_GROUP)
-            transport = gemini_text.request_gemini if self.transport is request_json else self.transport
             return gemini_text.complete(cfg.model, messages, schema, key=key, timeout=cfg.timeout_seconds,
                                         max_output=output, thinking=(cfg.section_thinking or None) if light else None,
-                                        transport=transport, usage_sink=usage_sink)
+                                        transport=bounded_transport, usage_sink=usage_sink)
         if cfg.provider == "ollama":
             return complete("ollama", cfg.url, cfg.model, messages, schema, timeout=cfg.timeout_seconds,
-                            max_output=output, think=False, context=context, transport=self.transport,
+                            max_output=output, think=False, context=context, transport=bounded_transport,
                             usage_sink=usage_sink)
         key = self.key_reader(cfg.key_file, "deepseek|" + DEEPSEEK_BASE, group_name=KEY_GROUP)
         return complete("deepseek", DEEPSEEK_BASE, cfg.model, messages, schema, key=key, timeout=cfg.timeout_seconds,
-                        max_output=output, transport=self.transport, usage_sink=usage_sink)
+                        max_output=output, transport=bounded_transport, usage_sink=usage_sink)
 
     async def ask(self, purpose, system, user, schema, *, max_tokens, context=8192, light=False):
         """One JSON object matching `schema`; at most one repair call that carries only a short error note.

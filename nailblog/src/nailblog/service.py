@@ -1,4 +1,4 @@
-"""Service loop (observe only: nothing is written to the website) and the preview-mode pipelines.
+"""Service loop, preview pipelines and staging publication guarded by durable approval.
 
 Step B adds `plan_week` (sources, planner, topics) and `preview` (write one article to files). Neither has any
 website write path: sources are read with GET only and preview reads no website at all.
@@ -25,7 +25,8 @@ from .sources import SourceError, fetch_feeds, fetch_posts
 from .state import State
 from .text import TextModel, TextModelError
 from .usage import UsageRecorder, text_cost, write_atomic
-from .writer import build_jsonld, placeholder_images, render_html, repair_article, word_count, write_article
+from .writer import (annotate_repair_outcome, build_jsonld, editorial_repair_issues, rebalance_paragraphs, han_fields, hold_unexpected_han, placeholder_images, render_html,
+                     repair_article, word_count, write_article)
 
 LOG = logging.getLogger(__name__)
 TICK_SECONDS = 60
@@ -86,8 +87,12 @@ class _Meter:
 
     def __init__(self):
         self.calls = self.prompt = self.completion = 0
+        self.uncertain = False
 
     def add(self, usage):
+        if usage.get('_uncertain'):
+            self.uncertain = True
+            return
         self.calls += 1
         self.prompt += int(usage.get("prompt_tokens", 0))
         self.completion += int(usage.get("completion_tokens", 0))
@@ -138,11 +143,11 @@ class Service:
                 if self.config.mode == "preview":
                     LOG.info("preview: would publish %s", row["id"])
                 else:
-                    LOG.warning("live publishing is not implemented in step A; would publish %s", row["id"])
+                    LOG.info("live: post %s awaits guarded publish pass", row["id"])
         self.usage.publish()
         return [row["id"] for row in due]
 
-    async def model_call(self, function, *args, stop=None, provider=None, model=None):
+    async def model_call(self, function, *args, stop=None, provider=None, model=None, before_dispatch=None):
         """Every model call yields to triage through the shared lock.
 
         With `provider`/`model` the call is accounted: a paid provider (anything but ollama) is refused when the
@@ -150,12 +155,31 @@ class Service:
         the call failed. `function` then receives a keyword `usage_sink` (as ai_transport.complete does)."""
         paid = provider is not None and provider != "ollama"
         meter = _Meter() if provider is not None else None
+        from .images.pipeline import DispatchPaused
+        def check_dispatch():
+            if before_dispatch is not None:
+                try:
+                    before_dispatch()
+                except Exception:
+                    raise DispatchPaused('workflow_paused_before_dispatch') from None
+        check_dispatch()
+        cancelled_before_dispatch = False
         if paid:
             self.usage.check()
             text_cost(self.config.budget, provider, model, 0, 0)  # unpriced model: refuse before spending
+            from .paid import PaidLedger
+            from uuid import uuid4
+            ledger = PaidLedger(self.state, self.config, self.clock)
+            intent = 'text-' + uuid4().hex
+            # Transport limits input to 128 KiB. Gemini can make two attempts,
+            # each with at most 32768 output/thinking tokens.
+            attempts = 2 if provider == 'gemini' else 1
+            bound = text_cost(self.config.budget, provider, model, attempts * 128 * 1024, attempts * 32768)
+            ledger.reserve(intent, provider, model, bound)
 
         def run():
             with MODEL_LOCK.enter(background=True, stop=stop):
+                check_dispatch()
                 return function(*args, usage_sink=meter.add) if meter is not None else function(*args)
         # Cancelling to_thread does not stop the call; finish it before releasing resources.
         task = asyncio.create_task(asyncio.to_thread(run))
@@ -165,10 +189,25 @@ class Service:
             except asyncio.CancelledError:
                 await task
                 raise
+        except DispatchPaused as error:
+            if paid and not error.dispatched:
+                from .paid import cancel_pending_before_dispatch
+                cancel_pending_before_dispatch(self.state,'paid_intents',intent,self.clock)
+                cancelled_before_dispatch = True
+            raise
         finally:
             if meter is not None and (paid or meter.calls):
                 usd = text_cost(self.config.budget, provider, model, meter.prompt, meter.completion)
-                self.usage.record(provider, model, meter.prompt + meter.completion, usd)
+                if paid and cancelled_before_dispatch:
+                    self.usage.publish()
+                elif paid:
+                    if meter.calls and not meter.uncertain and meter.prompt + meter.completion > 0:
+                        ledger.settle(intent, meter.prompt + meter.completion, usd)
+                    else:
+                        ledger.uncertain(intent)
+                    self.usage.publish()
+                else:
+                    self.usage.record(provider, model, meter.prompt + meter.completion, usd)
 
     async def notify(self):
         if self.notice_send is None:
@@ -177,6 +216,98 @@ class Service:
             notice = uncertain_notice(row)
             if notice:
                 await send_once(self.state, self.notice_send, *notice, now=self.clock())
+
+    async def save_remote_draft(self, post_id, payload, *, cover_path, image_paths):
+        from .admin import Admin
+        from .admin_state import AdminStore
+        from .publication import AdminError
+        from .admin_images import validate_files, verify_reviews
+        if self.config.mode != 'live':
+            raise AdminError('preview_write_disabled')
+        browser = Admin(self.config)
+        browser.write_ready()
+        store = AdminStore(self.state, self.config)
+        op = store.operation(post_id)
+        if op is None:
+            row = self.state.get_post(post_id)
+            if not row:
+                raise AdminError('draft_state_invalid')
+            if han_fields(payload) or han_fields(json.loads(row['draft_json'])):
+                raise AdminError('unexpected_han_requires_review')
+            store.check_write(post_id)
+            hashes = validate_files(cover_path, image_paths)
+            verify_reviews(json.loads(row['draft_json']), hashes,config=self.config)
+            store.claim_create(post_id, payload)
+        async with browser as admin:
+            await admin.ready()
+            if op:
+                # A create intent survives an unknown outcome. Never issue another POST.
+                row = self.state.get_post(post_id)
+                if row['admin_id']:
+                    actual = await admin.read(row['admin_id'])
+                    store.record_draft(post_id, actual)
+                    return actual
+                candidates = await admin.find_drafts(json.loads(op['payload']))
+                if len(candidates) != 1:
+                    raise AdminError('create_requires_manual_reconciliation')
+                store.record_draft(post_id, candidates[0])
+                return candidates[0]
+            admin.guard.check_action = lambda: store.check_write(post_id)
+            admin.file_hashes = dict(zip([str(Path(p).resolve()) for p in [cover_path, *image_paths]], hashes))
+            actual = await admin.save_draft(payload, lambda value: store.materialized(post_id, value),
+                                            cover_path=cover_path, image_paths=image_paths)
+            store.record_draft(post_id, actual)
+            return actual
+
+    async def publish_pass(self, *, post_id=None):
+        """Recover first, then attempt due posts. Durable claims are the only path to a Publish click."""
+        from .admin import Admin
+        from .admin_state import AdminStore
+        from .publication import AdminError
+        from .admin_images import verify_reviews
+        if self.config.mode != 'live' or self.state.control()['paused']:
+            return []
+        store = AdminStore(self.state, self.config)
+        candidates = self.state.list_posts(('before_publish', 'uncertain')) + self.due_posts()
+        if post_id is not None and not any(row['id'] == post_id for row in candidates):
+            from .staging_immediate import explicit_publish_candidate
+            explicit = explicit_publish_candidate(self.state, self.config, post_id, self.clock())
+            if explicit is not None:
+                candidates.append(explicit)
+        if post_id is not None:
+            candidates = [row for row in candidates if row['id'] == post_id]
+        completed = []
+        for row in candidates:
+            op = store.operation(row['id'])
+            if not op or not row['admin_id']:
+                continue
+            try:
+                payload = store.recovery_payload(row['id'])
+                if row['state'] == 'scheduled' and (han_fields(payload) or han_fields(json.loads(row['draft_json']))):
+                    raise AdminError('unexpected_han_requires_review')
+                document=json.loads(row['draft_json'])
+                if row['state']=='scheduled' and document.get('test_image_waiver'):
+                    verify_reviews(document,document.get('image_hashes',[]),config=self.config)
+                async with Admin(self.config) as admin:
+                    await admin.ready()
+                    # Bind remote MIME/byte checks to the reviewed document on
+                    # both fresh publication and read-only uncertain recovery.
+                    admin.approved_image_hashes = document.get('image_hashes')
+                    if row['state'] == 'scheduled':
+                        admin.guard.check_action = lambda: store.check_publish_write(row['id'], self.clock())
+                        await admin.publish(row['admin_id'], payload,
+                                            lambda: store.claim_publish(row['id'], self.clock()))
+                    evidence = await admin.published_readback(row['admin_id'], payload)
+                    self.state.transition(row['id'], 'published', evidence=evidence)
+                    completed.append(row['id'])
+            except Exception as error:
+                # Never log raw Playwright/API error text: it may include request contents.
+                current = self.state.get_post(row['id'])
+                if current['state'] == 'before_publish':
+                    self.state.transition(row['id'], 'uncertain', 'publish_readback_unconfirmed')
+                LOG.warning('NailBlog admin post=%s error=%s', row['id'],
+                            str(error) if isinstance(error, AdminError) else type(error).__name__)
+        return completed
 
     def text_model(self, stop=None):
         return self.text or TextModel(self.config, self.model_call, stop=stop)
@@ -193,6 +324,8 @@ class Service:
             while not stop.is_set():
                 try:
                     self.tick()
+                    if self.config.mode == 'live':
+                        await self.publish_pass()
                     self.usage.prune()
                     await self.notify()
                     self._start_jobs(stop)
@@ -301,26 +434,43 @@ class Service:
                       existing_slugs=[post.get("slug") for post in posts] if posts is not None else None,
                       others=self._occupied_slots(), ungrounded=ungrounded, site_origin=site, posts=posts,
                       today=today, content=content)
+        result = hold_unexpected_han(article, result)
         return images, content, ungrounded, result
 
     async def draft(self, topic, text, *, posts, today):
-        """Write one article for a topic row and judge it. When the gate finds only `fixable` issues the model gets
-        exactly ONE repair round for those fields and the gate and facts check run once more; `hold` issues are
-        never repaired."""
+        """One bounded editorial repair, including alt-length holds; other holds remain blocking.
+
+        The unchanged complete gate and facts check decide the result after the repair."""
         sources, promo, _scores = topic_meta(topic)
+        try:
+            metadata = json.loads(topic.get('sources_json', '{}'))
+        except (TypeError, ValueError):
+            metadata = {}
+        hints = {key: metadata[key] for key in ('primary_keyword', 'secondary_keywords')
+                 if isinstance(metadata, dict) and key in metadata}
         article = await write_article(
-            text, {"title": topic["title"], "category": topic["category"], "product_promo": promo}, sources,
-            site_origin=self.config.contract.site_origin, today=today, related_posts=posts or [],
+            text, {"title": topic["title"], "category": topic["category"], "product_promo": promo, **hints}, sources,
+            site_origin=self.config.contract.site_origin, today=today, related_posts=posts,
             links=self.config.links)
+        article, repaired = rebalance_paragraphs(article, sources)
         images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
-        repaired = []
-        if result.verdict == "fixable":
+        if any(issue.code == 'wall_of_text' for issue in result.issues):
+            article, wall_repaired = rebalance_paragraphs(article, sources, wall=True)
+            repaired += wall_repaired
+            images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
+        repair_issues = editorial_repair_issues(result, article)
+        if repair_issues:
             try:
-                article, repaired = await repair_article(text, article, result.fixable)
+                article, model_repaired = await repair_article(text, article, repair_issues, sources=sources)
+                article, balanced = rebalance_paragraphs(article, sources)
+                repaired += model_repaired + balanced
             except TextModelError as error:
                 LOG.warning("NailBlog repair failed reason=%s", error)
+                article = {**article, "writer_audit": list(article.get("writer_audit", [])) +
+                           ["repair_model_error:TextModelError"]}
             else:
                 images, content, ungrounded, result = self._assess(article, topic, promo, sources, posts, today)
+        article = annotate_repair_outcome(article, result)
         article = {**article, "jsonld": build_jsonld(article, self.config.contract.site_origin, topic["slot_at"])}
         return Draft(article, content, images, ungrounded, result, word_count(article), repaired)
 

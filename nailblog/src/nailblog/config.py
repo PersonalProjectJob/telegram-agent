@@ -12,9 +12,13 @@ from .schedule import MODES, TIMEZONE_NAME, parse_hhmm
 DEFAULT_SLOTS = ("06:00", "19:00")
 API_ORIGIN = "https://api.nailhub.ai"
 SITE_ORIGIN = "https://nailhub.ai"
+STAGING_SITE_ORIGIN = "https://staging.nailhub.ai"
+STAGING_API_ORIGIN = "https://api-staging.nailhub.ai"
+STAGING_MEDIA_ORIGIN = "https://vlink-storages-test.sgp1.cdn.digitaloceanspaces.com"
+PRODUCTION_MEDIA_ORIGIN = "https://vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com"
 TEXT_PROVIDERS = ("ollama", "deepseek", "gemini")
 THINKING_LEVELS = ("", "minimal", "low", "medium", "high")
-IMAGE_PROVIDERS = ("gemini", "openai")
+IMAGE_PROVIDERS = ("gemini", "openai", "cloudflare")
 # A name is refused as a secret when it contains one of these parts, is `key`, or ends with `key`
 # (`deepseek_key`, `api_key`); a name ending `_file` is a path to a key file and is allowed.
 SECRET_PARTS = ("token", "secret", "password", "passwd", "authorization", "api_key", "apikey")
@@ -31,21 +35,26 @@ DEFAULT_ANCHORS = ("nail", "nails", "manicure", "pedicure", "mani", "pedi", "nai
 DEFAULT_CONTEXT = ("polish", "gel", "acrylic", "chrome", "french tip", "cat eye", "salon", "beauty", "makeup", "glitter")
 MAX_TERMS = 60
 SECTIONS = ("service", "telegram", "schedule", "text_model", "image", "budget", "contract", "console", "sources",
-            "trends", "daily", "links")
+            "trends", "daily", "links", "admin", "cloudflare")
 KNOWN_KEYS = {
     "service": ("mode", "db_path", "owner_ids", "owner_username", "timezone", "slots", "late_window_minutes"),
     "telegram": ("session",),
     "schedule": ("image_mode", "fixed_at", "window_start_hours", "window_end_hours", "approve_deadline_hours"),
     "text_model": ("provider", "model", "url", "think", "key_file", "num_predict", "timeout_seconds",
                    "section_thinking"),
-    "image": ("provider", "model_body", "model_cover", "review_model", "key_file", "candidates", "max_rounds"),
-    "budget": ("daily_usd", "text_prices", "image_prices"),
-    "contract": ("api_origin", "site_origin", "verified", "verification_ref"),
+    "image": ("provider", "model_body", "model_cover", "review_model", "key_file", "candidates", "max_rounds",
+              "cover_size", "body_size", "input_ceiling", "output_ceiling", "body_output_ceiling", "review_input_ceiling",
+              "review_output_ceiling", "timeout_seconds", "review_bypass"),
+    "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices"),
+    "contract": ("api_origin", "site_origin", "verified", "verification_ref", "environment", "media_origin"),
+    "admin": ("credential_file", "profile_path", "timeout_seconds", "headless", "daily_publish_limit"),
     "console": ("revision",),
     "sources": ("feeds", "timeout_seconds"),
     "trends": ("rss_url", "poll_hours", "keywords", "anchor_terms", "context_terms", "api_enabled"),
     "daily": ("propose_at", "pick_deadline", "preview_at"),
     "links": ("jobs", "salon_sale", "app"),
+    "cloudflare": ("account_id", "free_proof_file", "quota_db_path", "daily_neurons", "review_input_allowance",
+                   "reference_image_file", "reference_image_sha256", "two_article_free_day"),
 }
 MAX_FEEDS = 30
 
@@ -80,6 +89,15 @@ class ImageConfig:
     key_file: str = ""
     candidates: int = 2
     max_rounds: int = 2
+    cover_size: str = "2K"
+    body_size: str = "1K"
+    input_ceiling: int = 4096
+    output_ceiling: int = 2048
+    review_input_ceiling: int = 16384
+    review_output_ceiling: int = 1024
+    timeout_seconds: int = 180
+    body_output_ceiling: int = 1536
+    review_bypass: bool = False   # TEMPORARY Owner decision 2026-10-22: skip model image review; see AGENTS.md
 
 
 @dataclass(frozen=True)
@@ -87,6 +105,7 @@ class BudgetConfig:
     daily_usd: float = 3.0
     text_prices: dict = field(default_factory=dict)   # model -> (usd per 1M input tokens, usd per 1M output tokens)
     image_prices: dict = field(default_factory=dict)  # model -> usd per image
+    image_output_prices: dict = field(default_factory=dict)  # model -> upper USD/1M output including images/thinking
 
 
 @dataclass(frozen=True)
@@ -95,6 +114,29 @@ class ContractConfig:
     site_origin: str = SITE_ORIGIN
     verified: bool = False
     verification_ref: str = ""
+    environment: str = "production"
+    media_origin: str = ""
+
+
+@dataclass(frozen=True)
+class AdminConfig:
+    credential_file: str = ""
+    profile_path: str = ""
+    timeout_seconds: int = 30
+    headless: bool = True
+    daily_publish_limit: int = 1
+
+
+@dataclass(frozen=True)
+class CloudflareConfig:
+    account_id: str = ""
+    free_proof_file: str = ""
+    quota_db_path: str = ""
+    daily_neurons: float = 10000.0
+    review_input_allowance: int = 32768
+    reference_image_file: str = ""
+    reference_image_sha256: str = ""
+    two_article_free_day: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,6 +191,8 @@ class NailBlogConfig:
     trends: TrendsConfig = field(default_factory=TrendsConfig)
     daily: DailyConfig = field(default_factory=DailyConfig)
     links: LinksConfig = field(default_factory=LinksConfig)
+    admin: AdminConfig = field(default_factory=AdminConfig)
+    cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
 
 
 def _fail(message):
@@ -275,15 +319,25 @@ def _image(table, live):
     _only_known(table, "image")
     provider = table.get("provider", "gemini")
     if provider not in IMAGE_PROVIDERS:
-        _fail("image.provider must be gemini or openai")
+        _fail("image.provider must be gemini, openai or cloudflare")
     models = {name: _string(table.get(name, ""), "image." + name, empty=True)
               for name in ("model_body", "model_cover", "review_model")}
     key_file = _path(table.get("key_file", ""), "image.key_file", empty=True)
     if live and (not all(models.values()) or not key_file):
         _fail("live mode requires image models and image.key_file")
+    sizes = [table.get(name, default) for name, default in (("cover_size", "2K"), ("body_size", "1K"))]
+    if any(size not in ("1K", "2K", "4K") for size in sizes):
+        _fail("image sizes must be 1K, 2K or 4K")
     return ImageConfig(provider, models["model_body"], models["model_cover"], models["review_model"], key_file,
                        _int(table.get("candidates", 2), "image.candidates", 1, 4),
-                       _int(table.get("max_rounds", 2), "image.max_rounds", 1, 5))
+                       _int(table.get("max_rounds", 2), "image.max_rounds", 1, 5), *sizes,
+                       _int(table.get("input_ceiling",4096),"image.input_ceiling",64,65536),
+                       _int(table.get("output_ceiling",2048),"image.output_ceiling",256,32768),
+                       _int(table.get("review_input_ceiling",16384),"image.review_input_ceiling",512,65536),
+                       _int(table.get("review_output_ceiling",1024),"image.review_output_ceiling",256,8192),
+                       _int(table.get("timeout_seconds",180),"image.timeout_seconds",10,600),
+                       _int(table.get("body_output_ceiling",1536),"image.body_output_ceiling",256,32768),
+                       _bool(table.get("review_bypass", False), "image.review_bypass"))
 
 
 def _budget(table):
@@ -296,7 +350,27 @@ def _budget(table):
                               _number(price["output_per_m"], f"budget.text_prices.{model}.output_per_m"))
     for model, price in _table(table, "image_prices").items():
         image_prices[model] = _number(price, f"budget.image_prices.{model}")
-    return BudgetConfig(_number(table.get("daily_usd", 3.0), "budget.daily_usd", 0.0), text_prices, image_prices)
+    output_prices = {model:_number(price, 'budget.image_output_prices.'+model, 0.000001)
+                     for model,price in _table(table,'image_output_prices').items()}
+    return BudgetConfig(_number(table.get("daily_usd", 3.0), "budget.daily_usd", 0.0), text_prices, image_prices, output_prices)
+
+
+def _cloudflare(table):
+    import re
+    _only_known(table,'cloudflare')
+    account = _string(table.get('account_id',''),'cloudflare.account_id',empty=True)
+    if account and not re.fullmatch(r'[a-f0-9]{32}',account):
+        _fail('cloudflare.account_id must be 32 lowercase hexadecimal characters')
+    cap = _number(table.get('daily_neurons',10000.0),'cloudflare.daily_neurons',0.001)
+    if cap > 10000: _fail('cloudflare.daily_neurons must not exceed Free allocation 10000')
+    reference=_path(table.get('reference_image_file',''),'cloudflare.reference_image_file',empty=True)
+    reference_sha=_string(table.get('reference_image_sha256',''),'cloudflare.reference_image_sha256',empty=True)
+    if bool(reference)!=bool(reference_sha) or (reference_sha and not re.fullmatch(r'[a-f0-9]{64}',reference_sha)):
+        _fail('cloudflare reference image requires an absolute path and lowercase SHA256 together')
+    return CloudflareConfig(account,_path(table.get('free_proof_file',''),'cloudflare.free_proof_file',empty=True),
+        _path(table.get('quota_db_path',''),'cloudflare.quota_db_path',empty=True),cap,
+        _int(table.get('review_input_allowance',32768),'cloudflare.review_input_allowance',1024,65536),reference,reference_sha,
+        _bool(table.get('two_article_free_day',False),'cloudflare.two_article_free_day'))
 
 
 def _sources(table):
@@ -429,9 +503,29 @@ def load_config(path):
     reference = _string(table.get("verification_ref", ""), "contract.verification_ref", empty=True)
     if mode == "live" and (not verified or not reference.strip()):
         _fail("live mode needs contract.verified=true and a verification_ref")
-    contract = ContractConfig(_origin(table.get("api_origin", API_ORIGIN), "contract.api_origin", API_ORIGIN),
-                              _origin(table.get("site_origin", SITE_ORIGIN), "contract.site_origin", SITE_ORIGIN),
-                              verified, reference)
+    environment = table.get("environment", "production")
+    if environment not in ("production", "staging"):
+        _fail("contract.environment must be production or staging")
+    site, api = ((STAGING_SITE_ORIGIN, STAGING_API_ORIGIN) if environment == "staging"
+                 else (SITE_ORIGIN, API_ORIGIN))
+    media_origin = _string(table.get('media_origin', ''), 'contract.media_origin', empty=True)
+    if media_origin:
+        parsed = urlparse(media_origin)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.netloc != parsed.hostname or
+                parsed.path or parsed.params or parsed.query or parsed.fragment or
+                (environment == 'staging' and media_origin != STAGING_MEDIA_ORIGIN) or
+                (environment == 'production' and media_origin != PRODUCTION_MEDIA_ORIGIN)):
+            _fail('contract.media_origin must be an observed HTTPS origin in the selected environment')
+    contract = ContractConfig(_origin(table.get("api_origin", api), "contract.api_origin", api),
+                              _origin(table.get("site_origin", site), "contract.site_origin", site),
+                              verified, reference, environment, media_origin)
+    admin = _table(data, "admin")
+    _only_known(admin, "admin")
+    admin = AdminConfig(_path(admin.get("credential_file", ""), "admin.credential_file", empty=True),
+                        _path(admin.get("profile_path", ""), "admin.profile_path", empty=True),
+                        _int(admin.get("timeout_seconds", 30), "admin.timeout_seconds", 5, 120),
+                        _bool(admin.get("headless", True), "admin.headless"),
+                        _int(admin.get("daily_publish_limit",1),"admin.daily_publish_limit",1,2))
     console = _table(data, "console")
     _only_known(console, "console")
     return NailBlogConfig(
@@ -439,4 +533,5 @@ def load_config(path):
         _schedule(_table(data, "schedule")), _text_model(_table(data, "text_model")),
         _image(_table(data, "image"), mode == "live"), _budget(_table(data, "budget")), contract,
         str(console.get("revision", "")), _sources(_table(data, "sources")), _trends(_table(data, "trends")),
-        _daily(_table(data, "daily")), _links(_table(data, "links"), contract.site_origin))
+        _daily(_table(data, "daily")), _links(_table(data, "links"), contract.site_origin), admin,
+        _cloudflare(_table(data,'cloudflare')))

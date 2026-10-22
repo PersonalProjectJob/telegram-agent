@@ -182,7 +182,7 @@ class BackoffCapTests(unittest.TestCase):
 
 
 class FakeUsage:
-    """Same shape as UsageRecorder.check() / record(provider, model, units, usd); keeps the order of events."""
+    """UsageRecorder notification protocol; paid accounting itself uses the real SQLite ledger."""
 
     def __init__(self, events, fail_check=False):
         self.events, self.fail_check = events, fail_check
@@ -195,6 +195,10 @@ class FakeUsage:
     def record(self, provider, model, units, usd):
         self.events.append(("record", provider, model, units, round(usd, 6)))
 
+    def publish(self, *, force=False):
+        self.events.append('publish')
+        return True
+
 
 class ModelCallBillingTests(unittest.IsolatedAsyncioTestCase):
     def make(self, **kwargs):
@@ -206,19 +210,29 @@ class ModelCallBillingTests(unittest.IsolatedAsyncioTestCase):
         return service
 
     def test_the_fake_matches_the_real_recorder_signatures(self):
-        for name in ("check", "record"):
+        for name in ("check", "record", "publish"):
             self.assertEqual(inspect.signature(getattr(FakeUsage, name)).parameters.keys(),
                              inspect.signature(getattr(UsageRecorder, name)).parameters.keys())
 
     async def test_paid_provider_checks_before_and_records_after(self):
         service = self.make()
+        self.assertEqual(service.state.usage_between(0,2*10**10),[])
 
         def call(value, usage_sink=None):
             self.events.append("call")
+            self.assertEqual(service.state.usage_between(0,2*10**10),[])
+            with service.state.connection() as db:
+                intent=db.execute("SELECT status,reserved FROM paid_intents").fetchone()
+            self.assertEqual(intent['status'],'pending');self.assertGreater(intent['reserved'],0)
             usage_sink({"prompt_tokens": 1000, "completion_tokens": 500})
             return value
         self.assertEqual(await service.model_call(call, 7, provider="deepseek", model="deepseek-chat"), 7)
-        self.assertEqual(self.events, ["check", "call", ("record", "deepseek", "deepseek-chat", 1500, 0.0015)])
+        self.assertEqual(self.events, ["check", "call", 'publish'])
+        rows=service.state.usage_between(0,2*10**10)
+        self.assertEqual([(row[1],row[2],row[3]) for row in rows],[('deepseek','deepseek-chat',1500)])
+        self.assertAlmostEqual(rows[0][4],.0015)
+        with service.state.connection() as db:
+            self.assertEqual(db.execute('SELECT status,charged FROM paid_intents').fetchone()[:],('settled',1500))
 
     async def test_budget_exceeded_stops_the_call_before_it_starts(self):
         service = self.make()
@@ -237,13 +251,19 @@ class ModelCallBillingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_paid_call_is_still_recorded(self):
         service = self.make()
+        self.assertEqual(service.state.usage_between(0,2*10**10),[])
 
         def call(usage_sink=None):
             usage_sink({"prompt_tokens": 10, "completion_tokens": 0})
             raise OSError("boom")
         with self.assertRaises(OSError):
             await service.model_call(call, provider="deepseek", model="deepseek-chat")
-        self.assertEqual(self.events, ["check", ("record", "deepseek", "deepseek-chat", 10, 0.000005)])
+        self.assertEqual(self.events, ["check", 'publish'])
+        rows=service.state.usage_between(0,2*10**10)
+        self.assertEqual([(row[1],row[2],row[3]) for row in rows],[('deepseek','deepseek-chat',10)])
+        self.assertAlmostEqual(rows[0][4],.000005)
+        with service.state.connection() as db:
+            self.assertEqual(db.execute('SELECT status,charged FROM paid_intents').fetchone()[:],('settled',5))
 
     async def test_local_provider_is_never_checked_and_costs_nothing(self):
         service = self.make()

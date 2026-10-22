@@ -253,11 +253,12 @@ def fetch_feeds(feeds, *, opener=None, timeout=15):
 
 def _pinned_origin(origin):
     parsed = urlparse(origin or "")
-    expected = urlparse(API_ORIGIN)
-    if (parsed.scheme != "https" or parsed.hostname != expected.hostname or parsed.username or parsed.password
+    from .config import STAGING_API_ORIGIN
+    allowed = (API_ORIGIN, STAGING_API_ORIGIN)
+    if (parsed.scheme != "https" or parsed.hostname not in [urlparse(x).hostname for x in allowed] or parsed.username or parsed.password
             or parsed.port not in (None, 443) or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
         raise SourceError("origin_not_pinned")
-    return API_ORIGIN
+    return origin.rstrip('/')
 
 
 def _published_date(value):

@@ -182,7 +182,15 @@ def execute(state, name, args, *, now, config=None):
     if name in ("approve", "hold"):
         target = "scheduled" if name == "approve" else "held"
         try:
-            state.transition(args[0], target, reason=args[1] if name == "hold" else "")
+            if name == "approve" and getattr(config, 'mode', 'preview') == 'live':
+                from .admin_state import AdminStore
+                from .publication import AdminError
+                try:
+                    AdminStore(state, config).approve(args[0], now)
+                except AdminError as error:
+                    return [f"Không duyệt được #{args[0]}: {error}."]
+            else:
+                state.transition(args[0], target, reason=args[1] if name == "hold" else "")
         except InvalidTransition as error:
             return [f"Không thực hiện được {name} #{args[0]}: {error}."]
         return [f"Bài #{args[0]}: {'đã lên lịch' if name == 'approve' else 'đã giữ'}."]

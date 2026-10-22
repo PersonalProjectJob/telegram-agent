@@ -498,7 +498,7 @@ class DryRunWithoutStateTests(DryRunCase):
 
 class DryRunWithStateTests(DryRunCase):
     def test_an_existing_state_directory_is_left_exactly_as_it_was(self):
-        self.state_dir.mkdir(parents=True)
+        self.state_dir.mkdir(parents=True, mode=0o700)
         state = State(self.state_dir / "nailblog.sqlite3")
         state.add_topic("2026-W43", "Đã có", "hot-trend", SLOT_06, 5)
         (self.state_dir / "blog-cache.json").write_text('{"posts": [], "items": []}', encoding="utf-8")

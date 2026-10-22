@@ -1,9 +1,9 @@
-"""NailBlog CLI. run, login-telegram and status are step A; plan-week and preview are step B (preview mode only);
-trends and daily (TD-8) run the trend poll and one daily milestone by hand. Nothing here writes to the website."""
+"""NailBlog CLI: offline preview pipelines and explicitly configured staging admin operations."""
 
 import argparse
 import asyncio
 import logging
+import json
 import os
 import shutil
 import sqlite3
@@ -22,6 +22,7 @@ from .service import CACHE_NAME, PreviewError
 from .sources import SourceError
 from .state import StateError
 from .text import TextModelError
+from .images import ImageError
 
 PIPELINES = ('plan-week', 'preview', 'trends', 'daily')
 DRY_RUN_COMMANDS = ('plan-week', 'trends', 'daily')
@@ -141,6 +142,67 @@ async def _daily(config, args, runtime, options):
 
 async def execute(command, config, args=None, runtime=None):
     runtime = runtime or Runtime()
+    if command == 'pause-install':
+        from .state import State
+        State(config.db_path, image_mode=config.schedule.image_mode).set_paused(True)
+        print('NailBlog installed/startup paused')
+        return
+    if command == 'one-post':
+        from .onepost import OnePost
+        from .service import Service
+        workflow = OnePost(Service(config))
+        if args.action == 'prepare':
+            article = json.loads(Path(args.article).read_text(encoding='utf-8')) if args.article else None
+            result = await workflow.prepare(args.run_id, args.topic, args.out, article=article,
+                                            images_document=args.images_document, free_enabled=args.free_enabled,
+                                            paid_enabled=args.paid_enabled,
+                                            ceiling=args.run_neurons if args.free_enabled else args.run_usd)
+        elif args.action == 'accept-images':
+            result = workflow.accept_images(args.run_id, args.snapshot)
+        elif args.action == 'draft':
+            result = await workflow.save(args.run_id, args.category_id)
+        elif args.action == 'approve':
+            result = workflow.approve(args.run_id, args.snapshot)
+        elif args.action == 'publish':
+            result = await workflow.publish(args.run_id)
+        else:
+            result = workflow.artifact(args.run_id)
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if command == 'images':
+        from .images.pipeline import ImagePipeline, load_json
+        article = load_json(Path(args.article))
+        cloudflare=config.image.provider=='cloudflare'
+        if cloudflare!=args.free_enabled:
+            raise ImageError('provider_requires_matching_explicit_enable')
+        ceiling=args.run_neurons if cloudflare else args.run_usd
+        document = await ImagePipeline(config).run(article,args.out,args.run_id,ceiling,
+                                                  paid_enabled=args.paid_enabled,free_enabled=args.free_enabled)
+        print('local images verified: '+str(len(document['image_hashes'])))
+        print(str(Path(args.out)/'document.json'))
+        return
+    if command in ('login', 'probe'):
+        from .admin import Admin
+        from .usage import write_atomic
+        # Explicit CLI auth/probe capability; not a scheduler/live enable switch.
+        async with Admin(replace(config, mode='probe')) as admin:
+            if command == 'login':
+                await admin.ready()
+                print('NailBlog staging login verified')
+            else:
+                Path(args.out).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                report = await admin.probe(screenshot_path=Path(args.out).with_suffix('.png'))
+                write_atomic(args.out, report)
+                print('staging probe: authenticated=true editor_roundtrip=' + str(report['editor_roundtrip']).lower())
+                print(args.out)
+        return
+    if command == 'save-draft':
+        from .service import Service
+        data = json.loads(Path(args.article).read_text(encoding='utf-8'))
+        actual = await Service(config).save_remote_draft(args.post, data['payload'],
+                                                        cover_path=data['cover_path'], image_paths=data['image_paths'])
+        print('staging Draft verified id=' + actual['id'])
+        return
     if command in ('run', 'login-telegram'):
         from .telegram import run, login_telegram
         await (run(config) if command == 'run' else login_telegram(config))
@@ -186,19 +248,71 @@ def main(argv=None, *, runtime=None):
         sys.stdout.reconfigure(encoding='utf-8')  # the DM and issue lists are Vietnamese
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog='python -m nailblog')
-    parser.add_argument('command', choices=('run', 'login-telegram', 'status') + PIPELINES)
+    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'save-draft', 'images', 'one-post', 'pause-install') + PIPELINES)
     parser.add_argument('--config', default=os.environ.get('NAILBLOG_CONFIG', '/etc/nailblog/nailblog.toml'))
     parser.add_argument('--dry-run', action='store_true',
                         help='plan-week, trends, daily: work on a scratch copy of the state (empty when none exists); nothing is written to the real state directory')
     parser.add_argument('--topic', type=int, help='preview: topic id')
-    parser.add_argument('--out', help='preview: output directory')
+    parser.add_argument('--out', help='preview: output directory; probe: output report JSON and sibling PNG')
+    parser.add_argument('--post', type=int, help='save-draft: local post id')
+    parser.add_argument('--article', help='save-draft: prepared payload and local image paths JSON')
+    parser.add_argument('--run-id', help='images: stable durable run identity (reuse on resume)')
+    parser.add_argument('--run-usd', type=float, help='images: approved total run ceiling USD, immutable on resume')
+    parser.add_argument('--paid-enabled', action='store_true', help='images: explicitly authorize local paid image calls')
+    parser.add_argument('--free-enabled',action='store_true',help='images: Cloudflare Workers Free only, no paid fallback')
+    parser.add_argument('--run-neurons',type=float,help='images: immutable Cloudflare run quota estimate, at most 9000')
+    parser.add_argument('--action', choices=('prepare','accept-images','draft','approve','publish','status'))
+    parser.add_argument('--images-document', help='one-post: SHA-reviewed local image document, bound to the exact article')
+    parser.add_argument('--snapshot', help='one-post: exact approval.json snapshot reviewed by the Owner')
+    parser.add_argument('--category-id', help='one-post draft: category GUID observed from the selected admin environment')
     parser.add_argument('--at', type=int, choices=sorted(DAILY_AT), help='daily: milestone hour (10, 13 or 20)')
     parser.add_argument('--date', type=date.fromisoformat, help='daily: the run day, YYYY-MM-DD (default: today in Vietnam)')
     args = parser.parse_args(argv)
+    if args.command == 'one-post':
+        if not args.action or not args.run_id or args.post:
+            parser.error('one-post requires --action and --run-id')
+        if args.action == 'prepare':
+            if not args.topic or not args.out:
+                parser.error('one-post prepare requires --topic and --out')
+            if args.images_document:
+                if args.free_enabled or args.paid_enabled or args.run_usd is not None or args.run_neurons is not None:
+                    parser.error('approved images cannot also enable generation')
+            elif args.free_enabled == args.paid_enabled:
+                parser.error('one-post prepare needs approved images or exactly one generation enable')
+            elif args.free_enabled and (args.run_neurons is None or args.run_usd is not None):
+                parser.error('free generation requires only --run-neurons')
+            elif args.paid_enabled and (args.run_usd is None or args.run_neurons is not None):
+                parser.error('paid generation requires only --run-usd')
+        elif any((args.topic, args.out, args.article, args.images_document, args.paid_enabled, args.free_enabled,
+                  args.run_usd is not None, args.run_neurons is not None)):
+            parser.error('preparation inputs belong to one-post prepare only')
+        if args.action in ('accept-images','approve') and not args.snapshot:
+            parser.error('approval requires --snapshot from the reviewed approval.json')
+        if args.action == 'draft' and not args.category_id:
+            parser.error('one-post draft requires --category-id')
+    elif any((args.action, args.images_document, args.snapshot, args.category_id)):
+        parser.error('one-post options require one-post')
     if args.command == 'preview' and (args.topic is None or args.topic <= 0 or not args.out):
         parser.error('preview needs --topic <id> and --out <dir>')
-    if args.command != 'preview' and (args.topic is not None or args.out):
-        parser.error('--topic and --out belong to preview only')
+    if args.command not in ('preview', 'probe', 'images', 'one-post') and (args.topic is not None or args.out):
+        parser.error('--topic belongs to preview; --out belongs to preview/probe only')
+    if args.command == 'probe' and (not args.out or args.topic is not None):
+        parser.error('probe needs --out <report.json>')
+    if args.command == 'save-draft' and (not args.post or args.post <= 0 or not args.article):
+        parser.error('save-draft needs --post <id> and --article <file>')
+    if args.command not in ('save-draft','images','one-post') and (args.post is not None or args.article):
+        parser.error('--post and --article belong to save-draft only')
+    if args.command == 'images':
+        if (not args.article or not args.out or not args.run_id or args.post or args.topic or
+                args.paid_enabled==args.free_enabled):
+            parser.error('images needs --article --out --run-id and exactly one explicit paid/free enable')
+        if args.paid_enabled and (args.run_usd is None or args.run_neurons is not None):
+            parser.error('paid images require --run-usd, without --run-neurons')
+        if args.free_enabled and (args.run_neurons is None or args.run_usd is not None):
+            parser.error('Cloudflare free images require --run-neurons, without --run-usd')
+    if args.command not in ('images','one-post') and (args.run_id or args.run_usd is not None or args.paid_enabled or
+                                    args.free_enabled or args.run_neurons is not None):
+        parser.error('image enable and run budget flags belong to images only')
     if args.command not in DRY_RUN_COMMANDS and args.dry_run:
         parser.error('--dry-run belongs to plan-week, trends and daily only')
     if args.command == 'daily' and args.at is None:
@@ -214,7 +328,7 @@ def main(argv=None, *, runtime=None):
     except (ConfigError, StateError) as error:
         print(str(error))
         return 2
-    except (TextModelError, SourceError, PreviewError) as error:
+    except (TextModelError, SourceError, PreviewError, ImageError) as error:
         print('NailBlog operation failed: ' + str(error))
         return 1
     except Exception as error:

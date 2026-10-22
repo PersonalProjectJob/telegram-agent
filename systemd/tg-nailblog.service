@@ -1,0 +1,31 @@
+[Unit]
+Description=NailBlog Owner Automation
+After=network-online.target ollama.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+StartLimitBurst=5
+
+[Service]
+User=tgnailblog
+Group=agentfleet
+SupplementaryGroups=tgnailblog
+WorkingDirectory=/opt/agentfleet/nailblog
+Environment=NAILBLOG_CONFIG=/etc/nailblog/nailblog.toml
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailblog/browsers
+EnvironmentFile=/etc/agentfleet/tg-nailblog.env
+ExecStartPre=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog pause-install
+ExecStart=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog run
+Restart=always
+RestartSec=30
+RestartPreventExitStatus=2
+UMask=0077
+TimeoutStopSec=150
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agentfleet/nailblog /var/lib/agentfleet/nailblog-cloudflare-quota /run/agentfleet
+
+[Install]
+WantedBy=multi-user.target
