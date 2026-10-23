@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import daily, facts
+from ._runtime import AlreadyRunning, ProcessLock
 from .commands import execute
 from .model_lock import MODEL_LOCK
 from .notices import notice_key, send_once, uncertain_notice
@@ -33,6 +34,12 @@ TICK_SECONDS = 60
 CACHE_NAME = "blog-cache.json"
 OCCUPYING_STATES = ("writing", "review", "scheduled", "before_publish", "published", "uncertain")
 MIN_WEEK_TOPICS = 14
+READBACK_BACKOFF_SECONDS = 300
+READBACK_BACKOFF_MAX_SECONDS = 3600
+REFUSAL_TEXT = {
+    'daily_publish_limit': 'đã đủ số bài được đăng trong ngày (daily_publish_limit), bài này không được đăng.',
+    'outside_publish_window': 'đã ngoài cửa sổ đăng (15 phút quanh slot), không đăng bù.',
+}
 # Preview only: an image that is not made yet shows as an empty dashed frame with its brief as the note.
 PREVIEW_STYLE = ("<style>figure:has(img[src^=\"placeholder-\"]){border:2px dashed #999;padding:1em;min-height:12em;"
                  "margin:1em 0}img[src^=\"placeholder-\"]{display:none}figure:has(img[src^=\"placeholder-\"]) "
@@ -113,6 +120,9 @@ class Service:
         self.job_failures = {}   # (day, step) -> (failures, retry not before)
         self.refresh_trends = True  # False: a CLI run for a past day (--date) must not fetch today's real trends
         self._jobs = None
+        self.browser_lock = asyncio.Lock()  # one browser user at a time: publish_pass and save_remote_draft
+        self.media_send = None   # bound later (Owner media sender); only the attribute lives here
+        self.readback_backoff = {}  # post id -> (consecutive timeouts, retry not before) for uncertain readback
 
     def command(self, name, args=()):
         return execute(self.state, name, args, now=self.clock(), config=self.config)
@@ -218,6 +228,12 @@ class Service:
                 await send_once(self.state, self.notice_send, *notice, now=self.clock())
 
     async def save_remote_draft(self, post_id, payload, *, cover_path, image_paths):
+        async with self.browser_lock:
+            # A hung draft save must not hold the browser forever; the error surfaces as any other failure.
+            async with asyncio.timeout(self.config.admin.publish_timeout_seconds):
+                return await self._save_remote_draft(post_id, payload, cover_path=cover_path, image_paths=image_paths)
+
+    async def _save_remote_draft(self, post_id, payload, *, cover_path, image_paths):
         from .admin import Admin
         from .admin_state import AdminStore
         from .publication import AdminError
@@ -259,16 +275,85 @@ class Service:
             store.record_draft(post_id, actual)
             return actual
 
-    async def publish_pass(self, *, post_id=None):
-        """Recover first, then attempt due posts. Durable claims are the only path to a Publish click."""
-        from .admin import Admin
-        from .admin_state import AdminStore
+    def recover_interrupted_publish(self):
+        """After a restart a leftover `before_publish` becomes `uncertain` (read-only readback follows), but only
+        when the admin profile lock is free: a held lock means another process may be publishing right now."""
+        if self.config.mode != 'live' or not self.state.list_posts(('before_publish',)):
+            return []
+        raw = self.config.admin.profile_path
+        profile = Path(raw) if raw else None
+        if profile is None or not profile.is_absolute() or profile.is_symlink():
+            return []
+        moved = []
+        try:
+            profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with ProcessLock(profile):
+                for row in self.state.list_posts(('before_publish',)):
+                    self.state.transition(row['id'], 'uncertain', 'publish_interrupted_restart')
+                    moved.append(row['id'])
+        except AlreadyRunning:
+            LOG.warning('NailBlog restart recovery skipped: admin profile is in use')
+        except OSError as error:
+            LOG.warning('NailBlog restart recovery skipped exception=%s', type(error).__name__)
+        return moved
+
+    def _interrupt(self, post_id, reason):
+        """A claimed publish whose outcome is unknown is `uncertain`; an unclaimed (`scheduled`) post is untouched."""
+        current = self.state.get_post(post_id)
+        if current and current['state'] == 'before_publish':
+            self.state.transition(post_id, 'uncertain', reason)
+
+    def _backoff_active(self, row, now):
+        if row['state'] != 'uncertain':
+            return False
+        return self.readback_backoff.get(row['id'], (0, 0))[1] > now
+
+    def _note_timeout(self, post_id, now):
+        failures = self.readback_backoff.get(post_id, (0, 0))[0] + 1
+        delay = min(READBACK_BACKOFF_SECONDS * 2 ** (failures - 1), READBACK_BACKOFF_MAX_SECONDS)
+        self.readback_backoff[post_id] = (failures, now + delay)
+
+    async def _refusal_notice(self, row, error):
         from .publication import AdminError
-        from .admin_images import verify_reviews
+        code = str(error) if isinstance(error, AdminError) else ''
+        if code not in REFUSAL_TEXT or self.notice_send is None:
+            return
+        await send_once(self.state, self.notice_send, notice_key('publish_refused', f"{row['id']}|{row['slot_at']}|{code}"),
+                        f"NailBlog: bài #{row['id']} (slot {row['slot_at']}) {REFUSAL_TEXT[code]}", now=self.clock())
+
+    async def _acquire_browser(self, stop):
+        """Take `browser_lock`; give up (False) when `stop` fires first."""
+        if stop is None:
+            await self.browser_lock.acquire()
+            return True
+        acquire = asyncio.ensure_future(self.browser_lock.acquire())
+        waiter = asyncio.ensure_future(stop.wait())
+        try:
+            await asyncio.wait({acquire, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            acquire.cancel()
+            waiter.cancel()
+            if acquire.done() and not acquire.cancelled() and acquire.exception() is None:
+                self.browser_lock.release()
+            raise
+        waiter.cancel()
+        if not acquire.done():
+            acquire.cancel()
+            await asyncio.gather(acquire, return_exceptions=True)
+        return not acquire.cancelled()
+
+    async def publish_pass(self, *, post_id=None, stop=None):
+        """Due scheduled posts first, then recovery. Durable claims are the only path to a Publish click.
+
+        Each post gets one bounded browser block (`admin.publish_timeout_seconds`) that also ends when `stop` fires."""
         if self.config.mode != 'live' or self.state.control()['paused']:
             return []
+        from .admin_state import AdminStore
         store = AdminStore(self.state, self.config)
-        candidates = self.state.list_posts(('before_publish', 'uncertain')) + self.due_posts()
+        now = self.clock()
+        candidates = self.due_posts()
+        candidates += [row for row in self.state.list_posts(('before_publish', 'uncertain'))
+                       if post_id is not None or not self._backoff_active(row, now)]
         if post_id is not None and not any(row['id'] == post_id for row in candidates):
             from .staging_immediate import explicit_publish_candidate
             explicit = explicit_publish_candidate(self.state, self.config, post_id, self.clock())
@@ -278,36 +363,71 @@ class Service:
             candidates = [row for row in candidates if row['id'] == post_id]
         completed = []
         for row in candidates:
-            op = store.operation(row['id'])
-            if not op or not row['admin_id']:
-                continue
+            if stop is not None and stop.is_set():
+                break
+            if not await self._acquire_browser(stop):
+                break
             try:
-                payload = store.recovery_payload(row['id'])
-                if row['state'] == 'scheduled' and (han_fields(payload) or han_fields(json.loads(row['draft_json']))):
-                    raise AdminError('unexpected_han_requires_review')
-                document=json.loads(row['draft_json'])
-                if row['state']=='scheduled' and document.get('test_image_waiver'):
-                    verify_reviews(document,document.get('image_hashes',[]),config=self.config)
-                async with Admin(self.config) as admin:
-                    await admin.ready()
-                    # Bind remote MIME/byte checks to the reviewed document on
-                    # both fresh publication and read-only uncertain recovery.
-                    admin.approved_image_hashes = document.get('image_hashes')
-                    if row['state'] == 'scheduled':
-                        admin.guard.check_action = lambda: store.check_publish_write(row['id'], self.clock())
-                        await admin.publish(row['admin_id'], payload,
-                                            lambda: store.claim_publish(row['id'], self.clock()))
-                    evidence = await admin.published_readback(row['admin_id'], payload)
-                    self.state.transition(row['id'], 'published', evidence=evidence)
+                if await self._publish_one(row, store, stop):
                     completed.append(row['id'])
-            except Exception as error:
-                # Never log raw Playwright/API error text: it may include request contents.
-                current = self.state.get_post(row['id'])
-                if current['state'] == 'before_publish':
-                    self.state.transition(row['id'], 'uncertain', 'publish_readback_unconfirmed')
-                LOG.warning('NailBlog admin post=%s error=%s', row['id'],
-                            str(error) if isinstance(error, AdminError) else type(error).__name__)
+            finally:
+                self.browser_lock.release()
         return completed
+
+    async def _publish_one(self, row, store, stop):
+        from .admin import Admin
+        from .publication import AdminError
+        from .admin_images import verify_reviews
+        if not store.operation(row['id']) or not row['admin_id']:
+            return False
+        limit = None
+        try:
+            payload = store.recovery_payload(row['id'])
+            if row['state'] == 'scheduled' and (han_fields(payload) or han_fields(json.loads(row['draft_json']))):
+                raise AdminError('unexpected_han_requires_review')
+            document = json.loads(row['draft_json'])
+            if row['state'] == 'scheduled' and document.get('test_image_waiver'):
+                verify_reviews(document, document.get('image_hashes', []), config=self.config)
+            async with asyncio.timeout(self.config.admin.publish_timeout_seconds) as limit:
+                watcher = None
+                if stop is not None:
+                    async def stop_deadline():
+                        await stop.wait()
+                        limit.reschedule(asyncio.get_running_loop().time())
+                    watcher = asyncio.create_task(stop_deadline())
+                try:
+                    async with Admin(self.config) as admin:
+                        await admin.ready()
+                        # Bind remote MIME/byte checks to the reviewed document on
+                        # both fresh publication and read-only uncertain recovery.
+                        admin.approved_image_hashes = document.get('image_hashes')
+                        if row['state'] == 'scheduled':
+                            admin.guard.check_action = lambda: store.check_publish_write(row['id'], self.clock())
+                            await admin.publish(row['admin_id'], payload,
+                                                lambda: store.claim_publish(row['id'], self.clock()))
+                        evidence = await admin.published_readback(row['admin_id'], payload)
+                        self.state.transition(row['id'], 'published', evidence=evidence)
+                finally:
+                    if watcher is not None:
+                        watcher.cancel()
+            self.readback_backoff.pop(row['id'], None)
+            return True
+        except asyncio.CancelledError:
+            self._interrupt(row['id'], 'publish_interrupted')
+            raise
+        except Exception as error:
+            # Never log raw Playwright/API error text: it may include request contents.
+            timed_out = isinstance(error, TimeoutError) and limit is not None and limit.expired()
+            if timed_out:
+                reason = 'publish_interrupted' if stop is not None and stop.is_set() else 'publish_readback_timeout'
+                self._note_timeout(row['id'], self.clock())
+            else:
+                reason = 'publish_readback_unconfirmed'
+            self._interrupt(row['id'], reason)
+            LOG.warning('NailBlog admin post=%s error=%s', row['id'],
+                        str(error) if isinstance(error, AdminError) else type(error).__name__)
+            await self._refusal_notice(row, error)
+            return False
 
     def text_model(self, stop=None):
         return self.text or TextModel(self.config, self.model_call, stop=stop)
@@ -321,11 +441,16 @@ class Service:
 
     async def scheduler(self, stop):
         try:
+            if self.config.mode == 'live':
+                try:
+                    self.recover_interrupted_publish()
+                except Exception as error:
+                    LOG.warning("NailBlog restart recovery failed exception=%s", type(error).__name__)
             while not stop.is_set():
                 try:
                     self.tick()
                     if self.config.mode == 'live':
-                        await self.publish_pass()
+                        await self.publish_pass(stop=stop)
                     self.usage.prune()
                     await self.notify()
                     self._start_jobs(stop)

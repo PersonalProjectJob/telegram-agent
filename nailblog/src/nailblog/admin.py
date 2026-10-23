@@ -2,12 +2,15 @@
 import json
 import hashlib
 import asyncio
+import functools
 import io
 import ipaddress
+import logging
 import os
 import re
 import socket
 import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -23,6 +26,9 @@ BLOGS = '/api/v1/admin/blogs'
 CATEGORIES = '/api/v1/admin/blog-categories'
 SIGNIN = '/api/v1/authentication/signin'
 UPLOAD = '/api/v1/Images/quick-upload'
+LOG = logging.getLogger(__name__)
+CLOSE_TIMEOUT_SECONDS = 15
+CODE = re.compile(r'^[a-z0-9_]{1,80}$')
 ID = re.compile(r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
 
 
@@ -98,6 +104,32 @@ def public_webp(config, url, *, cover, approved_sha=None):
         if connection: connection.close()
 
 
+def logged(name, *, post=False):
+    """Log one line per step: post id, step name, outcome code and elapsed ms; never URLs, payloads or API text."""
+    def wrap(function):
+        @functools.wraps(function)
+        async def run(self, *args, **kwargs):
+            if post and args:
+                self.step_post = str(args[0])
+            started, outcome = time.monotonic(), 'ok'
+            try:
+                return await function(self, *args, **kwargs)
+            except asyncio.CancelledError:
+                outcome = 'cancelled'
+                raise
+            except AdminError as error:
+                outcome = str(error) if CODE.fullmatch(str(error)) else 'AdminError'
+                raise
+            except BaseException as error:
+                outcome = 'error_' + type(error).__name__
+                raise
+            finally:
+                LOG.info('NailBlog publish post=%s step=%s outcome=%s elapsed_ms=%d',
+                         getattr(self, 'step_post', '-'), name, outcome, (time.monotonic() - started) * 1000)
+        return run
+    return wrap
+
+
 class Admin:
     def __init__(self, config):
         self.config, self.env = config, binding(config)
@@ -105,6 +137,7 @@ class Admin:
         self.context = self.manager = self.lock = self.page = None
         self.file_hashes = {}
         self.approved_image_hashes = None
+        self.step_post = '-'
 
     async def __aenter__(self):
         if self.config.mode == 'preview':
@@ -135,14 +168,22 @@ class Admin:
             await self.__aexit__()
             raise
 
+    async def bounded(self, awaitable, what):
+        """Bounded shutdown step: a hung close must never hold the process or the profile lock."""
+        try:
+            await asyncio.wait_for(awaitable, CLOSE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            LOG.warning('NailBlog publish post=%s step=%s outcome=close_timeout elapsed_ms=%d',
+                        self.step_post, what, CLOSE_TIMEOUT_SECONDS * 1000)
+
     async def __aexit__(self, *args):
         try:
             if self.context:
-                await self.context.close()
+                await self.bounded(self.context.close(), 'context_close')
         finally:
             try:
                 if self.manager:
-                    await self.manager.stop()
+                    await self.bounded(self.manager.stop(), 'manager_stop')
             finally:
                 if self.lock:
                     self.lock.__exit__()
@@ -449,6 +490,7 @@ class Admin:
             created_response = await response.value
         return await self.create_receipt(created_response, payload)
 
+    @logged('image_bytes')
     async def image_bytes(self, expected):
         images = [expected['coverImage'], *expected['images']]
         hashes = self.approved_image_hashes
@@ -460,6 +502,7 @@ class Admin:
                           cover=index == 0, approved_sha=hashes[index] if hashes is not None else None))
         return checks
 
+    @logged('draft_image_decode', post=True)
     async def draft_image_decode(self, post_id, expected):
         """Use the real edit dialog's images, never an injected test DOM."""
         row = await self.locate(post_id)
@@ -484,6 +527,7 @@ class Admin:
                 await dialog.get_by_role('button', name='Cancel', exact=True).click()
                 await dialog.wait_for(state='hidden')
 
+    @logged('publish', post=True)
     async def publish(self, post_id, expected, before_click):
         self.write_ready()
         actual = await self.read(post_id)
@@ -506,6 +550,7 @@ class Admin:
             if not 200 <= (await response.value).status < 300:
                 raise AdminError('publish_http_error')
 
+    @logged('published_readback', post=True)
     async def published_readback(self, post_id, expected):
         admin = await self.read(post_id)
         if not matches(admin, expected, self.config, status='Published', post_id=post_id, published=True):
@@ -524,6 +569,7 @@ class Admin:
         return {'readback': {'admin_id': post_id, 'slug': slug, 'publishedAt': admin['publishedAt'],
                              **self.env, 'snapshot': snapshot(admin, self.config), **public_evidence}}
 
+    @logged('anonymous_readback')
     async def anonymous_readback(self, slug, expected):
         """Prove actual unauthenticated page/images and a homepage card click, never inject DOM."""
         image_checks = await self.image_bytes(expected)
@@ -556,8 +602,9 @@ class Admin:
             return {'anonymous_homepage_click':True,'anonymous_image_count':len(expected_images),
                     'homepage_navigation':navigation,'image_byte_checks':image_checks}
         finally:
-            await browser.close()
+            await self.bounded(browser.close(), 'browser_close')
 
+    @logged('homepage_card_click')
     async def homepage_card_click(self, page, slug, title):
         """Click the rendered article anchor or the actual clickable card heading."""
         anchors = page.locator('a[href="/blog/'+slug+'"]:visible')
