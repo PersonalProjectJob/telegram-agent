@@ -182,6 +182,13 @@ async def execute(command, config, args=None, runtime=None):
         print('local images verified: '+str(len(document['image_hashes'])))
         print(str(Path(args.out)/'document.json'))
         return
+    if command == 'image-compare':
+        from .images.compare import parse_variants, run_compare
+        board = run_compare(config, json.loads(Path(args.article).read_text(encoding='utf-8')), args.out,
+                            parse_variants(args.variants), args.max_usd, paid_enabled=args.paid_enabled)
+        print('image-compare: total_usd=%.6f ledger_settled_usd=%.6f' % (board['total_usd'], board['ledger_settled_usd']))
+        print(str(Path(args.out) / 'board.html'))
+        return
     if command in ('login', 'probe'):
         from .admin import Admin
         from .usage import write_atomic
@@ -249,7 +256,7 @@ def main(argv=None, *, runtime=None):
         sys.stdout.reconfigure(encoding='utf-8')  # the DM and issue lists are Vietnamese
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog='python -m nailblog')
-    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'save-draft', 'images', 'one-post', 'pause-install') + PIPELINES)
+    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'save-draft', 'images', 'image-compare', 'one-post', 'pause-install') + PIPELINES)
     parser.add_argument('--config', default=os.environ.get('NAILBLOG_CONFIG', '/etc/nailblog/nailblog.toml'))
     parser.add_argument('--dry-run', action='store_true',
                         help='plan-week, trends, daily: work on a scratch copy of the state (empty when none exists); nothing is written to the real state directory')
@@ -262,6 +269,8 @@ def main(argv=None, *, runtime=None):
     parser.add_argument('--paid-enabled', action='store_true', help='images: explicitly authorize local paid image calls')
     parser.add_argument('--free-enabled',action='store_true',help='images: Cloudflare Workers Free only, no paid fallback')
     parser.add_argument('--run-neurons',type=float,help='images: immutable Cloudflare run quota estimate, at most 9000')
+    parser.add_argument('--variants', help='image-compare: comma list of model@1K|2K|4K')
+    parser.add_argument('--max-usd', type=float, help='image-compare: total USD ceiling for the comparison run')
     parser.add_argument('--action', choices=('prepare','accept-images','draft','approve','publish','status'))
     parser.add_argument('--images-document', help='one-post: SHA-reviewed local image document, bound to the exact article')
     parser.add_argument('--snapshot', help='one-post: exact approval.json snapshot reviewed by the Owner')
@@ -296,13 +305,13 @@ def main(argv=None, *, runtime=None):
         parser.error('one-post options require one-post')
     if args.command == 'preview' and (args.topic is None or args.topic <= 0 or not args.out):
         parser.error('preview needs --topic <id> and --out <dir>')
-    if args.command not in ('preview', 'probe', 'images', 'one-post') and (args.topic is not None or args.out):
+    if args.command not in ('preview', 'probe', 'images', 'image-compare', 'one-post') and (args.topic is not None or args.out):
         parser.error('--topic belongs to preview; --out belongs to preview/probe only')
     if args.command == 'probe' and (not args.out or args.topic is not None):
         parser.error('probe needs --out <report.json>')
     if args.command == 'save-draft' and (not args.post or args.post <= 0 or not args.article):
         parser.error('save-draft needs --post <id> and --article <file>')
-    if args.command not in ('save-draft','images','one-post') and (args.post is not None or args.article):
+    if args.command not in ('save-draft','images','image-compare','one-post') and (args.post is not None or args.article):
         parser.error('--post and --article belong to save-draft only')
     if args.command == 'images':
         if (not args.article or not args.out or not args.run_id or args.post or args.topic or
@@ -312,7 +321,16 @@ def main(argv=None, *, runtime=None):
             parser.error('paid images require --run-usd, without --run-neurons')
         if args.free_enabled and (args.run_neurons is None or args.run_usd is not None):
             parser.error('Cloudflare free images require --run-neurons, without --run-usd')
-    if args.command not in ('images','one-post') and (args.run_id or args.run_usd is not None or args.paid_enabled or
+    if args.command == 'image-compare':
+        if (not args.article or not args.out or not args.variants or args.max_usd is None or not args.max_usd > 0 or
+                args.run_id or args.run_usd is not None or args.free_enabled or args.run_neurons is not None or
+                args.post or args.topic):
+            parser.error('image-compare needs --article --out --variants and --max-usd > 0')
+        if not args.paid_enabled:
+            parser.error('image-compare requires the explicit --paid-enabled opt-in; nothing was called')
+    elif args.variants or args.max_usd is not None:
+        parser.error('--variants and --max-usd belong to image-compare only')
+    if args.command not in ('images','image-compare','one-post') and (args.run_id or args.run_usd is not None or args.paid_enabled or
                                     args.free_enabled or args.run_neurons is not None):
         parser.error('image enable and run budget flags belong to images only')
     if args.command not in DRY_RUN_COMMANDS and args.dry_run:
