@@ -191,7 +191,7 @@ class OnePost:
         return digest(manifest)
 
     async def prepare(self, run_id, topic_id, out, *, text=None, article=None, images_document=None,
-                      free_enabled=False, paid_enabled=False, ceiling=None):
+                      free_enabled=False, paid_enabled=False, ceiling=None, before_dispatch=None):
         self.active()
         if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 160:
             raise AdminError('invalid_run_id')
@@ -246,15 +246,20 @@ class OnePost:
             if article is None:
                 from .text import TextModel
                 from .images.pipeline import DispatchPaused
-                def text_dispatch():
+                def dispatch_gate():
+                    # `before_dispatch` (e.g. a stop event) joins the pause check; False or a raise stops like a pause.
                     self.active()
+                    if before_dispatch is not None and before_dispatch() is False:
+                        raise AdminError('dispatch_stopped')
+                def text_dispatch():
+                    dispatch_gate()
                     with self.state.connection() as db:
                         db.execute('BEGIN IMMEDIATE')
                         row = db.execute('SELECT document FROM onepost_runs WHERE run_id=?',(run_id,)).fetchone()
                         progress = json.loads(row['document'])
                         progress['text_dispatches'] = progress.get('text_dispatches',0)+1
                         db.execute('UPDATE onepost_runs SET document=? WHERE run_id=?',(json.dumps(progress),run_id))
-                model = text or TextModel(self.config, partial(self.service.model_call, before_dispatch=self.active),
+                model = text or TextModel(self.config, partial(self.service.model_call, before_dispatch=dispatch_gate),
                                            before_dispatch=text_dispatch)
                 try:
                     draft = await self.service.draft(topic, model, posts=cache['posts'], today=today)
@@ -284,6 +289,9 @@ class OnePost:
             return self.artifact(run_id)
         article = saved['article']
         self.verify_article_artifacts(saved)
+        if image_data is None:
+            # Exact limits of this generation, so a one-time retry can never raise them.
+            saved['image_run'] = {'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling}
         self.store(run_id, 'images_pending', saved)
         if image_data is None:
             image_data = await ImagePipeline(self.config, before_dispatch=self.active).run(article, directory/'images', run_id+'-images', ceiling,
@@ -291,6 +299,23 @@ class OnePost:
             image_base = directory/'images'
         else:
             image_base = image_input.parent
+        self.attach_images(saved, article, image_data, image_base, image_input)
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT post_id FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
+            post_id = row['post_id']
+            if post_id is None:
+                # Create the local post and bind its run in the SAME transaction.
+                if db.execute('SELECT 1 FROM posts WHERE topic_id=?', (topic_id,)).fetchone():
+                    raise AdminError('topic_already_has_post')
+                post_id = db.execute('INSERT INTO posts(topic_id,slot_at,state,draft_json,fingerprint) VALUES(?,?,?,?,?)',
+                                    (topic_id, topic['slot_at'], 'writing', '{}', '')).lastrowid
+                db.execute('UPDATE onepost_runs SET post_id=? WHERE run_id=?', (post_id, run_id))
+        self.store(run_id, 'images_ready', saved)
+        return self.artifact(run_id)
+
+    def attach_images(self, saved, article, image_data, image_base, image_input):
+        """Validate a finished image document and copy it into the run document."""
         if image_data.get('article') != article:
             raise AdminError('image_article_mismatch')
         provenance = self.provenance(image_data, image_base,config=self.config)
@@ -309,19 +334,6 @@ class OnePost:
             saved.update(test_image_waiver=image_data['test_image_waiver'],automatic_flow_verdict='HELD',model_quality_verdict='FAIL')
         if 'review_bypass' in image_data:
             saved.update(review_bypass=image_data['review_bypass'])
-        with self.state.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
-            row = db.execute('SELECT post_id FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
-            post_id = row['post_id']
-            if post_id is None:
-                # Create the local post and bind its run in the SAME transaction.
-                if db.execute('SELECT 1 FROM posts WHERE topic_id=?', (topic_id,)).fetchone():
-                    raise AdminError('topic_already_has_post')
-                post_id = db.execute('INSERT INTO posts(topic_id,slot_at,state,draft_json,fingerprint) VALUES(?,?,?,?,?)',
-                                    (topic_id, topic['slot_at'], 'writing', '{}', '')).lastrowid
-                db.execute('UPDATE onepost_runs SET post_id=? WHERE run_id=?', (post_id, run_id))
-        self.store(run_id, 'images_ready', saved)
-        return self.artifact(run_id)
 
     @staticmethod
     def verify_images(document, *, config=None):
@@ -442,4 +454,41 @@ class OnePost:
             await self.service.publish_pass(post_id=run['post_id'])
         if self.state.get_post(run['post_id'])['state'] == 'published':
             self.store(run_id, 'published', json.loads(run['document']))
+        return self.artifact(run_id)
+
+    async def retry_images(self, run_id, reason):
+        """One operator image reject: veto every selected image, rerun the SAME image run once, never raise a limit."""
+        self.active()
+        run = self.read(run_id)
+        if not run or run['phase'] != 'images_ready' or run['image_approval']:
+            raise AdminError('image_retry_not_allowed')
+        saved = json.loads(run['document'])
+        if saved.get('image_retries', 0) >= 1:
+            raise AdminError('image_retry_exhausted')
+        limits = saved.get('image_run')
+        if not isinstance(limits, dict) or not saved.get('out') or not saved.get('image_hashes'):
+            raise AdminError('image_retry_not_allowed')
+        reason = ''.join(c for c in ' '.join(str(reason or '').split()) if c.isprintable())[:500] or 'operator_rejected_images'
+        directory = Path(saved['out'])
+        hashes = saved['image_hashes']
+        positions = ['cover', *[f'body-{i}' for i in range(1, len(hashes))]]
+        pipeline = ImagePipeline(self.config, before_dispatch=self.active)
+        # The single retry is spent durably BEFORE any veto: a crash can resume, never retry again.
+        saved.update(image_retries=1, image_retry_reasons=[*saved.get('image_retry_reasons', []), reason])
+        self.store(run_id, 'images_pending', saved)
+        for position, sha in zip(positions, hashes):
+            pipeline.reject_selected(directory/'images', position, sha, reason)
+        image_data = await pipeline.run(saved['article'], directory/'images', run_id+'-images', limits.get('ceiling'),
+                                        free_enabled=limits.get('free_enabled', False),
+                                        paid_enabled=limits.get('paid_enabled', False))
+        self.attach_images(saved, saved['article'], image_data, directory/'images', None)
+        self.store(run_id, 'images_ready', saved)
+        return self.artifact(run_id)
+
+    def mark_published(self, run_id):
+        """Record an already-published post on its run. Never calls admin or publish."""
+        run = self.read(run_id)
+        if not run or not run['post_id'] or self.state.get_post(run['post_id'])['state'] != 'published':
+            raise AdminError('mark_published_requires_published')
+        self.store(run_id, 'published', json.loads(run['document']))
         return self.artifact(run_id)
