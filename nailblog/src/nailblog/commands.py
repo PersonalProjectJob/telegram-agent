@@ -4,22 +4,28 @@ Messages in the namespace are always consumed (never reach triage), including ma
 rejected ones. Other namespaces (e.g. /nailhub) and ordinary messages are ignored silently.
 """
 
+import asyncio
+import json
+import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 
-from .config import DEFAULT_SLOTS, DailyConfig
+from .config import CATEGORIES, DEFAULT_SLOTS, DailyConfig
 from .schedule import MODES, VN_TZ, iso_slot, parse_hhmm, slot_datetime
-from .state import InvalidTransition, SlotTaken
+from .state import InvalidTransition, SlotTaken, _file_digest, startup_binding
 from .trends import format_views, parse_views
 from .usage import day_bounds
 
+LOG = logging.getLogger(__name__)
 NAMESPACE = re.compile(r"^\s*/nailblog(?:\b|@)", re.IGNORECASE)
 USAGE = ("Lệnh: /nailblog topics | topics ok <số,số> | topics drop <số> | topics edit <số> <chủ đề> | queue | "
-         "approve <id> | hold <id> <lý do> | move <id> <YYYY-MM-DD> <06|19> | mode <fixed|random|adaptive> | "
-         "pick <06|19> <số> | trend add #tag <lượt xem, vd 12M> | pause | resume | status")
+         "approve <id> | hold <id> <lý do> | move <id> <YYYY-MM-DD> <giờ> | mode <fixed|random|adaptive> | "
+         "pick <giờ> <số> | trend add #tag <lượt xem, vd 12M> | ok <id> | reject <id> <lý do> | flow | "
+         "pause | resume | status")
 MAX_IDS = 50
 MAX_TEXT = 300
-NO_ARGS = ("queue", "pause", "resume", "status")
+NO_ARGS = ("queue", "pause", "resume", "status", "flow")
 
 
 def make_owner_notice_sender(client, verified_owner_ids):
@@ -85,6 +91,15 @@ def parse(text):
         return None
     if verb == "approve":
         return ("approve", (_number(rest[0]),)) if len(rest) == 1 and _number(rest[0]) else None
+    if verb == "ok":
+        return ("ok", (_number(rest[0]),)) if len(rest) == 1 and _number(rest[0]) else None
+    if verb == "reject":
+        if len(rest) == 1 and _number(rest[0]):
+            return ("reject", (_number(rest[0]), ""))   # the store answers `reason_required`
+        if len(rest) >= 2 and _number(rest[0]):
+            reason = _free_text(text.split(None, 3)[3])
+            return ("reject", (_number(rest[0]), reason)) if reason else None
+        return None
     if verb == "hold":
         if len(rest) >= 2 and _number(rest[0]):
             reason = _free_text(text.split(None, 3)[3])
@@ -144,6 +159,156 @@ def _pick(state, slot, number, now, slots, daily):
     title = state.get_topic(topic_id)["title"]
     return [f"Đã chọn slot {slot[:2]} ngày {target:%d/%m}: #{topic_id} {title[:120]}. "
             f"Chọn lại được trước {daily.pick_deadline}."]
+
+
+STAGE_TEXT = {
+    "new": ("mới tạo", "tạo bài và ảnh (trả phí, trong trần của run)"),
+    "images_send": ("ảnh đã sẵn sàng", "gửi thẻ duyệt ảnh cho Owner"),
+    "images_wait": ("chờ Owner duyệt ảnh", None),
+    "images_retry": ("đang tạo lại ảnh (tối đa một lần)", "gửi thẻ ảnh mới"),
+    "saving": ("ảnh đã duyệt", "lưu Draft lên admin (không lưu trong 20 phút trước slot)"),
+    "draft_send": ("Draft đã lưu", "gửi thẻ duyệt Draft cho Owner"),
+    "draft_wait": ("chờ Owner duyệt Draft", None),
+    "scheduled": ("đã lên lịch", "scheduler đăng đúng giờ slot"),
+    "published": ("đã đăng", "xong"),
+    "held": ("giữ lại", "cần Owner kiểm tra, autoflow không tự thử lại"),
+    "skipped": ("bỏ qua", "không còn bước nào"),
+}
+WAIT_KEY = {"images_wait": "images", "draft_wait": "draft"}
+
+
+def flow_line(row, now=None):
+    """One Vietnamese line for an `autoflow_runs` row: stage and the next step. Only sanitized codes are shown."""
+    label, step = STAGE_TEXT.get(row["stage"], (row["stage"], "kiểm tra thủ công"))
+    if step is None:
+        try:
+            request = (json.loads(row["ctx"] or "{}").get(WAIT_KEY[row["stage"]]) or {}).get("id")
+        except ValueError:
+            request = None
+        ident = request if request is not None else "<id>"
+        step = f"/nailblog ok {ident} hoặc /nailblog reject {ident} <lý do>"
+    line = f"#{row['topic_id']} slot {row['slot_at']} [{row['stage']}] {label}; tiếp theo: {step}"
+    if row["terminal_reason"]:
+        line += f" (lý do: {row['terminal_reason']})"
+    if row["failures"]:
+        line += f" (lỗi liên tiếp: {row['failures']}"
+        if now is not None and row["next_attempt_at"] > now:
+            line += ", thử lại " + datetime.fromtimestamp(row["next_attempt_at"], VN_TZ).strftime("%H:%M %d/%m")
+        line += ")"
+    return line
+
+
+def flow_lines(state, now=None):
+    from .autoflow import AutoflowRuns
+    return [flow_line(row, now) for row in AutoflowRuns(state).rows()]
+
+
+DECISION_TEXT = {
+    "recorded": "đã ghi nhận",
+    "already_decided": "đã được quyết định như vậy từ trước, không đổi gì",
+    "wrong_sender": "từ chối: người gửi không phải Owner đã xác minh",
+    "owner_unbound": "từ chối: chưa xác minh được Owner",
+    "unknown_request": "không có yêu cầu duyệt này",
+    "reason_required": "cần lý do: /nailblog reject <id> <lý do>",
+    "already_decided_differently": "đã được quyết định khác trước đó, không đổi được",
+    "superseded": "đã bị thay bằng yêu cầu mới, hãy dùng thẻ mới nhất",
+    "expired": "đã hết hạn duyệt",
+}
+
+
+def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids, now):
+    """`/nailblog ok|reject`: record the Owner's decision only (the engine acts on it at its next pass)."""
+    from .approvals import ApprovalStore
+    owner = owner_ids[0] if len(owner_ids) == 1 else None
+    result = ApprovalStore(state).decide(request_id, verdict, reason, sender_id, owner, now)
+    text = DECISION_TEXT.get(result["code"], "không xử lý được")
+    word = "OK" if verdict == "ok" else "từ chối"
+    reply = f"Yêu cầu duyệt #{request_id} ({word}): {text} [{result['code']}]."
+    if result["code"] == "recorded":
+        reply += " Autoflow sẽ chạy bước tiếp theo ở lượt kiểm tra kế tiếp (khoảng một phút)."
+    return [reply]
+
+
+async def _check_gemini(config):
+    """Key captured + ListModels for the configured models. Returns failed check codes."""
+    from .images import ImageError
+    from .images import provider as gemini
+    if config.image.provider != "gemini":
+        return []
+    try:
+        client = gemini.GeminiImages(config)
+        client.headers()
+    except Exception:
+        return ["gemini_key_missing"]
+    try:
+        await asyncio.to_thread(client.verify_models)
+    except ImageError as error:
+        code = str(error) if re.fullmatch(r"[a-z_]{3,40}", str(error)) else "image_error"
+        return ["gemini_models_unavailable:" + code]
+    except Exception as error:
+        return ["gemini_models_unavailable:" + type(error).__name__]
+    return []
+
+
+async def _check_admin(service):
+    """Contract report verified + the admin session can open (read-only). Returns failed check codes."""
+    from .admin import Admin
+    config = service.config
+    failed = []
+    try:
+        Admin(config).write_ready()
+    except Exception:
+        failed.append("contract_unverified")
+    try:
+        async with service.browser_lock:
+            async with asyncio.timeout(config.admin.publish_timeout_seconds):
+                async with Admin(config) as admin:
+                    await admin.ready()
+    except Exception as error:
+        LOG.warning("NailBlog resume preflight admin failed exception=%s", type(error).__name__)
+        failed.append("admin_not_ready")
+    return failed
+
+
+def _check_budget(service):
+    from .paid import PaidLedger
+    from .usage import BudgetExceeded
+    try:
+        PaidLedger(service.state, service.config, service.clock).check()
+    except BudgetExceeded:
+        return ["budget_exhausted"]
+    except Exception:
+        return ["budget_unknown"]
+    return []
+
+
+async def preflight(service, *, config_path=None):
+    """Failed check codes before arming; empty means safe to arm. Live mode checks the contract, the admin session
+    and the remaining budget; `autoflow.enabled` adds the Gemini key, ListModels and the category GUIDs."""
+    config = service.config
+    path = config_path if config_path is not None else os.environ.get("NAILBLOG_CONFIG", "")
+    failed = []
+    if not path or _file_digest(path) == "missing":
+        failed.append("config_digest_missing")
+    if config.mode == "live":
+        failed += await _check_admin(service)
+        failed += _check_budget(service)
+    if config.autoflow.enabled:
+        failed += await _check_gemini(config)
+        if not set(CATEGORIES) <= set(config.admin.category_ids):
+            failed.append("category_ids_incomplete")
+    return failed
+
+
+async def resume(service, *, config_path=None):
+    """`/nailblog resume`: preflight, then arm the current binding and unpause. On any failure nothing changes."""
+    path = config_path if config_path is not None else os.environ.get("NAILBLOG_CONFIG", "")
+    failed = await preflight(service, config_path=path)
+    if failed:
+        return ["Chưa chạy lại NailBlog: preflight lỗi (" + ", ".join(failed) + "). Vẫn giữ trạng thái tạm dừng/chưa arm."]
+    service.state.arm(startup_binding(service.config, config_path=path)[0])
+    service.state.set_paused(False)
+    return ["Đã chạy lại NailBlog (preflight đạt, đã arm)."]
 
 
 def execute(state, name, args, *, now, config=None):
@@ -220,6 +385,10 @@ def execute(state, name, args, *, now, config=None):
     if name == "resume":
         state.set_paused(False)
         return ["Đã chạy lại NailBlog."]
+    if name == "flow":
+        rows = flow_lines(state, now)
+        head = "Autoflow" + ("" if getattr(getattr(config, "autoflow", None), "enabled", False) else " (đang tắt)") + ":"
+        return [_bounded([head] + rows)] if rows else [head + " chưa có run nào."]
     if name == "status":
         info = state.status()
         spent = state.usd_between(*day_bounds(now))
@@ -256,7 +425,15 @@ async def route_command(event, service, owner_ids):
     except Exception:
         return True
     parsed = parse(text)
-    response = [USAGE] if parsed is None else service.command(*parsed)
+    if parsed is None:
+        response = [USAGE]
+    elif parsed[0] in ("ok", "reject"):
+        response = decide_approval(service.state, parsed[0], parsed[1][0], parsed[1][1] if parsed[0] == "reject" else "",
+                                   sender_id=sender, owner_ids=owner_ids, now=service.clock())
+    elif parsed[0] == "resume":
+        response = await resume(service)
+    else:
+        response = service.command(*parsed)
     for line in response if isinstance(response, list) else [response]:
         await event.reply(line, parse_mode=None, link_preview=False)
     return True

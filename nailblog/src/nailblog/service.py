@@ -19,7 +19,8 @@ from ._runtime import AlreadyRunning, ProcessLock
 from .commands import execute
 from .model_lock import MODEL_LOCK
 from .notices import notice_key, send_once, uncertain_notice
-from .planner import format_topics_dm, next_week_start, propose, store_topics, topic_meta, week_label
+from .planner import (format_topics_dm, next_week_start, propose, slots_of_config, store_topics, topic_meta,
+                      week_label)
 from .quality import gate
 from .schedule import VN_TZ, is_due_for_publish
 from .sources import SourceError, fetch_feeds, fetch_posts
@@ -33,7 +34,7 @@ LOG = logging.getLogger(__name__)
 TICK_SECONDS = 60
 CACHE_NAME = "blog-cache.json"
 OCCUPYING_STATES = ("writing", "review", "scheduled", "before_publish", "published", "uncertain")
-MIN_WEEK_TOPICS = 14
+WEEK_DAYS = 7   # a weekly plan needs WEEK_DAYS x (configured slots per day) topics
 READBACK_BACKOFF_SECONDS = 300
 READBACK_BACKOFF_MAX_SECONDS = 3600
 REFUSAL_TEXT = {
@@ -523,14 +524,15 @@ class Service:
                                created=False)
         items, posts, notes = self.read_material(opener, self.load_cache() or {}, today)
         self.save_cache(items, posts)
-        topics, dropped = await propose(text, items, posts, week_start, today)
+        topics, dropped = await propose(text, items, posts, week_start, today, self.config)
         if dropped:
             notes.append(f"đã loại {len(dropped)} chủ đề (nguồn không có trong tư liệu hoặc trùng bài 90 ngày)")
-        if len(topics) < MIN_WEEK_TOPICS:
-            notes.append(f"chỉ còn {len(topics)} chủ đề, chưa đủ 14 slot")
+        needed = WEEK_DAYS * len(slots_of_config(self.config))
+        if len(topics) < needed:
+            notes.append(f"chỉ còn {len(topics)} chủ đề, chưa đủ {needed} slot")
         placed = sum(1 for topic in topics if topic["slot_at"])
-        if topics and placed < MIN_WEEK_TOPICS:
-            notes.append(f"{placed}/14 slot đã có chủ đề")
+        if topics and placed < needed:
+            notes.append(f"{placed}/{needed} slot đã có chủ đề")
         ids = store_topics(self.state, week_start, topics, items)
         message = format_topics_dm([self.state.get_topic(i) for i in ids], week_start, notes)
         self.state.set_last_result(f"plan-week {label}: {len(ids)} chủ đề")

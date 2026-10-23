@@ -401,6 +401,8 @@ async def decide(service, text, today, *, opener=None):
 async def write_articles(service, text, today, *, opener=None):
     """Write the article of every locked topic that has no post yet. Returns (message, complete)."""
     state, config = service.state, service.config
+    if autoflow_enabled(config):   # the autoflow engine writes the article itself; a placeholder post would block it
+        return "", True
     target = today + timedelta(days=1)
     complete = True
     for hhmm in slots_of(config):
@@ -437,6 +439,25 @@ async def write_slot(service, text, target, hhmm, topic):
     return post_id
 
 
+def autoflow_enabled(config):
+    return bool(getattr(getattr(config, "autoflow", None), "enabled", False))
+
+
+def _flow_block(service, target, hhmm, topic):
+    """The 20:00 block of a slot while autoflow is on: the stage of its `autoflow_runs` row."""
+    from .autoflow import AutoflowRuns
+    from .commands import flow_line
+    config = service.config
+    head = f"Slot {hhmm} ngày {target:%d/%m}"
+    if topic is None:
+        return f"{head}: chưa có chủ đề."
+    run = AutoflowRuns(service.state).by_topic(topic["id"])
+    if run is None:
+        return (f"{head}: chủ đề \"{topic['title'][:100]}\" chưa có run autoflow (bắt đầu "
+                f"{config.schedule.window_start_hours} tiếng trước slot).")
+    return f"{head}: {flow_line(run, service.clock())}"
+
+
 def _post_block(service, target, hhmm, topic):
     config = service.config
     when = slot_datetime(target, hhmm)
@@ -471,9 +492,12 @@ async def preview_dm(service, text, today, *, opener=None):
     """Step 20:00. Returns (DM, complete): one block per slot of tomorrow."""
     state, config = service.state, service.config
     target = today + timedelta(days=1)
-    blocks = [_post_block(service, target, hhmm, chosen_topic(state, target, hhmm)) for hhmm in slots_of(config)]
+    flow = autoflow_enabled(config)
+    block = _flow_block if flow else _post_block
+    blocks = [block(service, target, hhmm, chosen_topic(state, target, hhmm)) for hhmm in slots_of(config)]
     head = f"NailBlog {today:%d/%m} {config.daily.preview_at}: xem trước bài ngày mai {target:%d/%m}"
-    tail = ("Chế độ preview: không có link website, bài chỉ là file trên máy; chưa đăng gì lên nailhub.ai. "
+    tail = ("Autoflow đang bật: bài được viết và gửi thẻ duyệt ảnh/Draft riêng, trả lời bằng /nailblog ok <id> hoặc "
+            "/nailblog reject <id> <lý do>. Xem /nailblog flow. Không duyệt đúng hạn thì bài không lên lịch.") if flow else ("Chế độ preview: không có link website, bài chỉ là file trên máy; chưa đăng gì lên nailhub.ai. "
             "Không duyệt đúng hạn thì bài không lên lịch.")
     state.set_last_result(f"daily preview {target.isoformat()}")
     return "\n\n".join([head] + blocks + [tail]), True
@@ -574,3 +598,19 @@ async def run_due(service, stop=None):
             LOG.warning("NailBlog daily step failed step=%s exception=%s", step, type(error).__name__)
         await _flush_quietly(service, today)
     await _flush_quietly(service, today)  # a DM that failed earlier is retried by the notice backoff, on any pass
+    await _autoflow_pass(service, stop)
+
+
+async def _autoflow_pass(service, stop):
+    """One engine pass after the daily steps (the engine itself needs live + unpaused + armed). Never raises: a
+    failing engine must not stop the scheduler. The OnePost is built like the CLI's: `OnePost(service)`."""
+    if not autoflow_enabled(service.config) or service.config.mode != "live" or (stop is not None and stop.is_set()):
+        return
+    try:
+        from . import autoflow
+        from .approvals import ApprovalStore
+        from .onepost import OnePost
+        await autoflow.run_due(service, stop, onepost=OnePost(service), approvals=ApprovalStore(service.state),
+                               now=service.clock())
+    except Exception as error:
+        LOG.warning("NailBlog autoflow pass failed exception=%s", type(error).__name__)

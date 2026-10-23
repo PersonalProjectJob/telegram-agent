@@ -88,7 +88,7 @@ class StartupGateTests(unittest.TestCase):
                 self.assertTrue(self.state.armed_binding())
 
     def test_build_json_is_preferred_over_package_digest(self):
-        (self.root / "build.json").write_text("{}", encoding="utf-8")
+        (self.package / "build.json").write_text("{}", encoding="utf-8")
         _, kind = startup_binding(self.config, config_path=self.config_file, package_dir=self.package)
         self.assertEqual(kind, "build.json")
 

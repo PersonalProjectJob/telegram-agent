@@ -17,7 +17,7 @@ from ..model_lock import MODEL_LOCK
 from ..paid import IntentExists, PaidLedger, cancel_pending_before_dispatch
 from ..publication import digest
 from ..state import State
-from ..usage import UsageRecorder, write_atomic as _write_atomic
+from ..usage import BudgetExceeded, UsageRecorder, write_atomic as _write_atomic
 from ..writer import render_html, slot_of
 from . import ImageError
 from .post import VERSION, crop, hashes, thumbnail, webp, decode
@@ -657,6 +657,14 @@ class ImagePipeline:
                     entry = manifest['candidates'][current_name]
                     entry['status'] = 'review_paused' if entry.get('file') else 'paused'
                     entry['dispatch_pause'] = {'at':self.clock(),'request_sent':False}
+                elif isinstance(error,BudgetExceeded) and current_name and not is_cloudflare:
+                    # A budget refusal BEFORE any ledger reservation sent nothing and cost nothing: resumable like a
+                    # dispatch pause. With a reservation on the books the candidate keeps today's reconciliation path.
+                    entry = manifest['candidates'][current_name]
+                    key = 'review_intent' if entry.get('file') else 'intent'
+                    if entry.get('status') == 'pending' and entry.get(key) and not self.ledger.get(entry[key]):
+                        entry['status'] = 'review_paused' if entry.get('file') else 'paused'
+                        entry['dispatch_pause'] = {'at':self.clock(),'request_sent':False,'reason':'budget'}
                 manifest.update(status='held',error=str(error) if isinstance(error,ImageError) else type(error).__name__,
                                 usage=self.ledger.report(run_id))
                 write_atomic(manifest_path,manifest)

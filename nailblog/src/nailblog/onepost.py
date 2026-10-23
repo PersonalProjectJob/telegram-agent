@@ -21,7 +21,7 @@ from .images import ImageError
 from .publication import AdminError, binding, digest, row_fingerprint
 from .quality import gate
 from .schedule import VN_TZ
-from .usage import write_atomic
+from .usage import BudgetExceeded, write_atomic
 from .writer import han_fields, hold_unexpected_han, placeholder_images, render_html, word_count
 
 
@@ -263,10 +263,11 @@ class OnePost:
                                            before_dispatch=text_dispatch)
                 try:
                     draft = await self.service.draft(topic, model, posts=cache['posts'], today=today)
-                except DispatchPaused:
+                except (DispatchPaused, BudgetExceeded):
                     progress = json.loads(self.read(run_id)['document'])
                     # Retrying the whole writer is safe ONLY when no transport
-                    # has started. Partial articles retain reconciliation state.
+                    # has started (a budget refusal comes before the dispatch hook).
+                    # Partial articles retain reconciliation state.
                     if not progress.get('text_dispatches'):
                         self.store(run_id,'text_paused',progress)
                     raise

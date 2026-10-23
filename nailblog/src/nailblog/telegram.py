@@ -209,6 +209,7 @@ async def _run_locked(config):
                 raise RuntimeError('Owner binding is unverified')
             sender = make_owner_notice_sender(client, selected)
             service.notice_send = sender
+            service.media_send = make_owner_media_sender(client, selected)
             service.notice_owner_id = selected[0]
             verified_owner_ids.extend(selected)
         except ConfigError:

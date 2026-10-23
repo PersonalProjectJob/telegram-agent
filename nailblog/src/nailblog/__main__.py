@@ -145,8 +145,15 @@ async def execute(command, config, args=None, runtime=None):
     runtime = runtime or Runtime()
     if command == 'pause-install':
         from .state import State
-        State(config.db_path, image_mode=config.schedule.image_mode).set_paused(True)
+        state = State(config.db_path, image_mode=config.schedule.image_mode)
+        state.set_paused(True)
+        state.disarm()   # only an explicit /nailblog resume (with its preflight) arms again
         print('NailBlog installed/startup paused')
+        return
+    if command == 'startup-gate':
+        from .state import startup_gate
+        result = startup_gate(config, config_path=getattr(args, 'config', None))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return
     if command == 'one-post':
         from .onepost import OnePost
@@ -256,7 +263,7 @@ def main(argv=None, *, runtime=None):
         sys.stdout.reconfigure(encoding='utf-8')  # the DM and issue lists are Vietnamese
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog='python -m nailblog')
-    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'save-draft', 'images', 'image-compare', 'one-post', 'pause-install') + PIPELINES)
+    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'save-draft', 'images', 'image-compare', 'one-post', 'pause-install', 'startup-gate') + PIPELINES)
     parser.add_argument('--config', default=os.environ.get('NAILBLOG_CONFIG', '/etc/nailblog/nailblog.toml'))
     parser.add_argument('--dry-run', action='store_true',
                         help='plan-week, trends, daily: work on a scratch copy of the state (empty when none exists); nothing is written to the real state directory')

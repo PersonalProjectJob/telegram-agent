@@ -40,7 +40,7 @@ class ParseTests(unittest.TestCase):
                 self.assertIsNone(parse(text))
 
     def test_the_usage_line_names_both_commands(self):
-        self.assertIn("pick <06|19> <số>", USAGE)
+        self.assertIn("pick <giờ> <số>", USAGE)
         self.assertIn("trend add #tag", USAGE)
 
 

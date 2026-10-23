@@ -1,5 +1,6 @@
 """NailBlog deployment identity, reviewed snapshot and first-install safety."""
 import json
+import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -64,6 +65,18 @@ class NailBlogDeploymentTests(unittest.TestCase):
                       'python -m nailblog startup-gate','python -m nailblog run'):
             self.assertIn(exact,text)
         self.assertNotIn(' -m nailhub ',text)
+
+    def test_every_unit_command_is_a_registered_nailblog_cli_command(self):
+        # ExecStartPre runs a command the CLI must register, or the service can never start.
+        root=Path(__file__).resolve().parents[1]
+        unit=(root/'systemd/tg-nailblog.service').read_text()
+        main=(root/'nailblog/src/nailblog/__main__.py').read_text(encoding='utf-8')
+        choices=re.search(r"parser\.add_argument\('command', choices=\((.*?)\) \+ PIPELINES\)",main,re.S).group(1)
+        registered=set(re.findall(r"'([a-z-]+)'",choices))
+        used=re.findall(r'-m nailblog ([a-z-]+)',unit)
+        self.assertIn('startup-gate',used)
+        self.assertTrue(set(used)<=registered,sorted(set(used)-registered))
+        self.assertIn("command == 'startup-gate'",main)
 
     def test_bootstrap_is_reviewable_and_never_starts_another_unit_or_copies_state(self):
         with tempfile.TemporaryDirectory() as tmp:

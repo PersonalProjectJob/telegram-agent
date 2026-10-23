@@ -482,9 +482,9 @@ def _file_digest(path):
 def _build_digest(package_dir=None):
     """sha256 of the installed build.json if present, else of the installed nailblog package .py files."""
     package = Path(package_dir) if package_dir else Path(__file__).resolve().parent
-    for candidate in (package / "build.json", package.parent / "build.json"):
-        if candidate.is_file():
-            return "build.json", _file_digest(candidate)
+    candidate = package / "build.json"   # package directory only: never the parent (site-packages is shared)
+    if candidate.is_file():
+        return "build.json", _file_digest(candidate)
     digest = hashlib.sha256()
     for source in sorted(package.rglob("*.py")):
         digest.update(source.relative_to(package).as_posix().encode("utf-8") + b"\0")
