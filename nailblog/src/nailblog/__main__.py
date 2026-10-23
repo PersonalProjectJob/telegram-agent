@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from . import env_secrets
 from ._errors import ConfigError
 from .config import load_config
 from .schedule import VN_TZ, iso_slot, parse_hhmm, slot_datetime
@@ -268,6 +269,7 @@ def main(argv=None, *, runtime=None):
     parser.add_argument('--at', type=int, choices=sorted(DAILY_AT), help='daily: milestone hour (10, 13 or 20)')
     parser.add_argument('--date', type=date.fromisoformat, help='daily: the run day, YYYY-MM-DD (default: today in Vietnam)')
     args = parser.parse_args(argv)
+    env_secrets.capture()
     if args.command == 'one-post':
         if not args.action or not args.run_id or args.post:
             parser.error('one-post requires --action and --run-id')

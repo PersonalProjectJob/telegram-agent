@@ -1,6 +1,7 @@
 """Strict deployment configuration, fail-closed. API keys never live in TOML, only key-file paths."""
 
 import math
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -10,6 +11,12 @@ from ._errors import ConfigError
 from .schedule import MODES, TIMEZONE_NAME, parse_hhmm
 
 DEFAULT_SLOTS = ("06:00", "19:00")
+CATEGORIES = ("hot-trend", "nail-job", "nail-salon", "did-you-know")
+DEFAULT_SLOT_CATEGORIES = {"06:00": ("hot-trend", "nail-job"), "19:00": ("nail-salon", "did-you-know")}
+KEY_SOURCES = ("file", "env")
+UNIT_PRICE_SIZES = ("1K", "2K", "4K")
+MAX_PUBLISH_PER_DAY = 3
+GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 API_ORIGIN = "https://api.nailhub.ai"
 SITE_ORIGIN = "https://nailhub.ai"
 STAGING_SITE_ORIGIN = "https://staging.nailhub.ai"
@@ -35,7 +42,7 @@ DEFAULT_ANCHORS = ("nail", "nails", "manicure", "pedicure", "mani", "pedi", "nai
 DEFAULT_CONTEXT = ("polish", "gel", "acrylic", "chrome", "french tip", "cat eye", "salon", "beauty", "makeup", "glitter")
 MAX_TERMS = 60
 SECTIONS = ("service", "telegram", "schedule", "text_model", "image", "budget", "contract", "console", "sources",
-            "trends", "daily", "links", "admin", "cloudflare")
+            "trends", "daily", "links", "admin", "cloudflare", "autoflow")
 KNOWN_KEYS = {
     "service": ("mode", "db_path", "owner_ids", "owner_username", "timezone", "slots", "late_window_minutes"),
     "telegram": ("session",),
@@ -44,14 +51,16 @@ KNOWN_KEYS = {
                    "section_thinking"),
     "image": ("provider", "model_body", "model_cover", "review_model", "key_file", "candidates", "max_rounds",
               "cover_size", "body_size", "input_ceiling", "output_ceiling", "body_output_ceiling", "review_input_ceiling",
-              "review_output_ceiling", "timeout_seconds", "review_bypass"),
-    "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices"),
+              "review_output_ceiling", "timeout_seconds", "review_bypass", "key_source"),
+    "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices", "image_unit_prices"),
     "contract": ("api_origin", "site_origin", "verified", "verification_ref", "environment", "media_origin"),
-    "admin": ("credential_file", "profile_path", "timeout_seconds", "headless", "daily_publish_limit"),
+    "admin": ("credential_file", "profile_path", "timeout_seconds", "headless", "daily_publish_limit",
+              "publish_timeout_seconds", "category_ids"),
     "console": ("revision",),
     "sources": ("feeds", "timeout_seconds"),
     "trends": ("rss_url", "poll_hours", "keywords", "anchor_terms", "context_terms", "api_enabled"),
-    "daily": ("propose_at", "pick_deadline", "preview_at"),
+    "daily": ("propose_at", "pick_deadline", "preview_at", "slot_categories"),
+    "autoflow": ("enabled", "run_usd", "runs_dir"),
     "links": ("jobs", "salon_sale", "app"),
     "cloudflare": ("account_id", "free_proof_file", "quota_db_path", "daily_neurons", "review_input_allowance",
                    "reference_image_file", "reference_image_sha256", "two_article_free_day"),
@@ -98,6 +107,7 @@ class ImageConfig:
     timeout_seconds: int = 180
     body_output_ceiling: int = 1536
     review_bypass: bool = False   # TEMPORARY Owner decision 2026-10-22: skip model image review; see AGENTS.md
+    key_source: str = "file"      # "env": the key comes from env_secrets (captured at start), no key_file needed
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,7 @@ class BudgetConfig:
     text_prices: dict = field(default_factory=dict)   # model -> (usd per 1M input tokens, usd per 1M output tokens)
     image_prices: dict = field(default_factory=dict)  # model -> usd per image
     image_output_prices: dict = field(default_factory=dict)  # model -> upper USD/1M output including images/thinking
+    image_unit_prices: dict = field(default_factory=dict)  # model -> {"1K": usd, "2K": usd} per generated image
 
 
 @dataclass(frozen=True)
@@ -125,6 +136,8 @@ class AdminConfig:
     timeout_seconds: int = 30
     headless: bool = True
     daily_publish_limit: int = 1
+    publish_timeout_seconds: int = 300
+    category_ids: dict = field(default_factory=dict)  # category slug -> GUID
 
 
 @dataclass(frozen=True)
@@ -160,6 +173,14 @@ class DailyConfig:
     propose_at: str = "10:00"
     pick_deadline: str = "13:00"
     preview_at: str = "20:00"
+    slot_categories: dict = field(default_factory=lambda: dict(DEFAULT_SLOT_CATEGORIES))  # slot -> category slugs
+
+
+@dataclass(frozen=True)
+class AutoflowConfig:
+    enabled: bool = False
+    run_usd: float = 0.0   # 0.0 = unset; required (> 0, <= budget.daily_usd) once enabled
+    runs_dir: str = ""     # absolute; required once enabled
 
 
 @dataclass(frozen=True)
@@ -193,6 +214,7 @@ class NailBlogConfig:
     links: LinksConfig = field(default_factory=LinksConfig)
     admin: AdminConfig = field(default_factory=AdminConfig)
     cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
+    autoflow: AutoflowConfig = field(default_factory=AutoflowConfig)
 
 
 def _fail(message):
@@ -324,8 +346,12 @@ def _image(table, live):
     models = {name: _string(table.get(name, ""), "image." + name, empty=True)
               for name in ("model_body", "model_cover", "review_model")}
     key_file = _path(table.get("key_file", ""), "image.key_file", empty=True)
-    if live and (not all(models.values()) or not key_file):
-        _fail("live mode requires image models and image.key_file")
+    key_source = table.get("key_source", "file")
+    if key_source not in KEY_SOURCES:
+        _fail("image.key_source must be file or env")
+    if live and (not all(models.values()) or (key_source == "file" and not key_file)):
+        _fail("live mode requires image models and image.key_file" if key_source == "file"
+              else "live mode requires image models")
     sizes = [table.get(name, default) for name, default in (("cover_size", "2K"), ("body_size", "1K"))]
     if any(size not in ("1K", "2K", "4K") for size in sizes):
         _fail("image sizes must be 1K, 2K or 4K")
@@ -338,7 +364,7 @@ def _image(table, live):
                        _int(table.get("review_output_ceiling",1024),"image.review_output_ceiling",256,8192),
                        _int(table.get("timeout_seconds",180),"image.timeout_seconds",10,600),
                        _int(table.get("body_output_ceiling",1536),"image.body_output_ceiling",256,32768),
-                       _bool(table.get("review_bypass", False), "image.review_bypass"))
+                       _bool(table.get("review_bypass", False), "image.review_bypass"), key_source)
 
 
 def _budget(table):
@@ -353,7 +379,14 @@ def _budget(table):
         image_prices[model] = _number(price, f"budget.image_prices.{model}")
     output_prices = {model:_number(price, 'budget.image_output_prices.'+model, 0.000001)
                      for model,price in _table(table,'image_output_prices').items()}
-    return BudgetConfig(_number(table.get("daily_usd", 3.0), "budget.daily_usd", 0.0), text_prices, image_prices, output_prices)
+    unit_prices = {}
+    for model, sizes in _table(table, "image_unit_prices").items():
+        if not isinstance(sizes, dict) or not sizes or not set(sizes) <= set(UNIT_PRICE_SIZES):
+            _fail(f"budget.image_unit_prices.{model} must be a table of {' and/or '.join(UNIT_PRICE_SIZES)} prices")
+        unit_prices[model] = {size: _number(price, f"budget.image_unit_prices.{model}.{size}", 0.000001)
+                              for size, price in sizes.items()}
+    return BudgetConfig(_number(table.get("daily_usd", 3.0), "budget.daily_usd", 0.0), text_prices, image_prices,
+                        output_prices, unit_prices)
 
 
 def _cloudflare(table):
@@ -428,7 +461,24 @@ def _trends(table):
     return TrendsConfig(TRENDS_RSS_URL, poll, keywords, anchors, context, api)
 
 
-def _daily(table):
+def _slot_categories(value, slots):
+    if value is None:
+        # Absent: the default groups, but only while they describe the configured slots (older configs keep loading).
+        return dict(DEFAULT_SLOT_CATEGORIES) if set(slots) == set(DEFAULT_SLOT_CATEGORIES) else {}
+    if not isinstance(value, dict):
+        _fail("daily.slot_categories must be a table of slot = [categories]")
+    if set(value) != set(slots):
+        _fail("daily.slot_categories keys must equal service.slots")
+    groups = {}
+    for slot, names in value.items():
+        if (not isinstance(names, list) or not names or len(set(map(str, names))) != len(names)
+                or any(name not in CATEGORIES for name in names)):
+            _fail(f"daily.slot_categories.{slot} must be a non-empty list of unique categories: " + ", ".join(CATEGORIES))
+        groups[slot] = tuple(names)
+    return groups
+
+
+def _daily(table, slots=DEFAULT_SLOTS):
     _only_known(table, "daily")
     times = {name: _string(table.get(name, default), "daily." + name)
              for name, default in (("propose_at", "10:00"), ("pick_deadline", "13:00"), ("preview_at", "20:00"))}
@@ -439,7 +489,26 @@ def _daily(table):
             _fail(f"daily.{name} must be HH:MM")
     if not times["propose_at"] < times["pick_deadline"] < times["preview_at"]:
         _fail("daily times must satisfy propose_at < pick_deadline < preview_at")
-    return DailyConfig(times["propose_at"], times["pick_deadline"], times["preview_at"])
+    return DailyConfig(times["propose_at"], times["pick_deadline"], times["preview_at"],
+                       _slot_categories(table.get("slot_categories"), slots))
+
+
+def _category_ids(value):
+    if not isinstance(value, dict):
+        _fail("admin.category_ids must be a table of category = GUID")
+    for slug, guid in value.items():
+        if slug not in CATEGORIES:
+            _fail(f"admin.category_ids.{slug}: unknown category (use {', '.join(CATEGORIES)})")
+        if not isinstance(guid, str) or not GUID_PATTERN.fullmatch(guid):
+            _fail(f"admin.category_ids.{slug} must be a GUID")
+    return dict(value)
+
+
+def _autoflow(table):
+    _only_known(table, "autoflow")
+    return AutoflowConfig(_bool(table.get("enabled", False), "autoflow.enabled"),
+                          _number(table.get("run_usd", 0.0), "autoflow.run_usd", 0.0),
+                          _path(table.get("runs_dir", ""), "autoflow.runs_dir", empty=True))
 
 
 def _links(table, site_origin):
@@ -526,13 +595,35 @@ def load_config(path):
                         _path(admin.get("profile_path", ""), "admin.profile_path", empty=True),
                         _int(admin.get("timeout_seconds", 30), "admin.timeout_seconds", 5, 120),
                         _bool(admin.get("headless", True), "admin.headless"),
-                        _int(admin.get("daily_publish_limit",1),"admin.daily_publish_limit",1,2))
+                        _int(admin.get("daily_publish_limit",1),"admin.daily_publish_limit",1,
+                             min(len(slots), MAX_PUBLISH_PER_DAY)),
+                        _int(admin.get("publish_timeout_seconds", 300), "admin.publish_timeout_seconds", 60, 900),
+                        _category_ids(admin.get("category_ids", {})))
     console = _table(data, "console")
     _only_known(console, "console")
+    image = _image(_table(data, "image"), mode == "live")
+    budget = _budget(_table(data, "budget"))
+    autoflow = _autoflow(_table(data, "autoflow"))
+    if autoflow.run_usd > budget.daily_usd:
+        _fail("autoflow.run_usd must be > 0 and <= budget.daily_usd")
+    if autoflow.enabled:
+        if mode != "live":
+            _fail("autoflow.enabled requires service.mode = live")
+        if image.provider != "gemini" or image.key_source != "env":
+            _fail('autoflow.enabled requires image.provider = "gemini" and image.key_source = "env"')
+        if set(admin.category_ids) != set(CATEGORIES):
+            _fail("autoflow.enabled requires admin.category_ids for all of " + ", ".join(CATEGORIES))
+        for model, size in ((image.model_cover, image.cover_size), (image.model_body, image.body_size)):
+            if size not in budget.image_unit_prices.get(model, {}):
+                _fail(f"autoflow.enabled requires a {size} price for {model} in budget.image_unit_prices")
+        if not 0 < autoflow.run_usd <= budget.daily_usd:
+            _fail("autoflow.run_usd must be > 0 and <= budget.daily_usd")
+        if not autoflow.runs_dir:
+            _fail("autoflow.enabled requires autoflow.runs_dir")
     return NailBlogConfig(
         db_path, (ids[0],), username, mode, TIMEZONE_NAME, tuple(sorted(slots)), late, session,
         _schedule(_table(data, "schedule")), _text_model(_table(data, "text_model")),
-        _image(_table(data, "image"), mode == "live"), _budget(_table(data, "budget")), contract,
+        image, budget, contract,
         str(console.get("revision", "")), _sources(_table(data, "sources")), _trends(_table(data, "trends")),
-        _daily(_table(data, "daily")), _links(_table(data, "links"), contract.site_origin), admin,
-        _cloudflare(_table(data,'cloudflare')))
+        _daily(_table(data, "daily"), tuple(sorted(slots))), _links(_table(data, "links"), contract.site_origin), admin,
+        _cloudflare(_table(data,'cloudflare')), autoflow)
