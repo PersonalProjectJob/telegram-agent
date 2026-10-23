@@ -25,7 +25,7 @@ class StateTests(unittest.TestCase):
             self.assertTrue({"control", "topics", "posts", "images", "runs", "usage", "notices"} <= names)
             self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
             columns = lambda table: {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
-            self.assertEqual(columns("control"), {"id", "paused", "image_mode", "last_result"})
+            self.assertEqual(columns("control"), {"id", "paused", "image_mode", "last_result", "armed_binding"})
             self.assertEqual(columns("topics"), {"id", "week", "title", "category", "slot_at", "score", "sources_json", "state"})
             self.assertEqual(columns("posts"), {"id", "topic_id", "slot_at", "state", "draft_json", "fingerprint",
                                                 "admin_id", "reason", "details"})
@@ -59,7 +59,7 @@ class StateTests(unittest.TestCase):
             State(link)
 
     def test_control_defaults_and_updates(self):
-        self.assertEqual(self.state.control(), {"id": 1, "paused": 0, "image_mode": "fixed", "last_result": "not started"})
+        self.assertEqual(self.state.control(), {"id": 1, "paused": 0, "image_mode": "fixed", "last_result": "not started", "armed_binding": ""})
         self.state.set_paused(True)
         self.state.set_image_mode("adaptive")
         control = self.state.control()

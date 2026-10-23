@@ -61,7 +61,7 @@ class NailBlogDeploymentTests(unittest.TestCase):
         text=(Path(__file__).resolve().parents[1]/'systemd/tg-nailblog.service').read_text()
         for exact in ('User=tgnailblog','Group=agentfleet','NAILBLOG_CONFIG=/etc/nailblog/nailblog.toml',
                       'PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailblog/browsers',
-                      'python -m nailblog pause-install','python -m nailblog run'):
+                      'python -m nailblog startup-gate','python -m nailblog run'):
             self.assertIn(exact,text)
         self.assertNotIn(' -m nailhub ',text)
 

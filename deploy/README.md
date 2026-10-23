@@ -6,8 +6,19 @@ NailBlog is now a separate supported deployment target: `--service nailblog`,
 `/opt/agentfleet/nailblog`, `/etc/nailblog/nailblog.toml`,
 `/var/lib/agentfleet/nailblog`, `tg-nailblog`, user `tgnailblog`.
 Its database is `[service].db_path`; readiness is `NailBlog ready owner_verified=1`.
-The unit starts paused on every start through `pause-install`. Enabling recurring
+The unit runs `startup-gate` before every start (see "NailBlog arming" below). Enabling recurring
 publication requires a separate explicit resume after successful canary acceptance.
+
+### NailBlog arming
+
+`ExecStartPre=... -m nailblog startup-gate` compares a binding (sha256 of the installed
+`build.json`, or of the installed package `.py` files when there is none, plus the config
+file bytes and `service.mode`) with the binding stored by the last explicit arm.
+- Same binding (crash restart, `Restart=always`): the paused flag is left exactly as it was.
+- Any new wheel, any config change or a mode change: the service is paused and disarmed.
+- `pause-install` must also disarm. Only an explicit `/nailblog resume` arms again.
+
+A new wheel or config therefore always starts paused.
 
 First inventory the confirmed THINKPAD, existing services, Python, dependency wheel
 cache, exact Playwright version and browser revision. `deploy/nailblog_bootstrap.py`

@@ -13,7 +13,7 @@ WorkingDirectory=/opt/agentfleet/nailblog
 Environment=NAILBLOG_CONFIG=/etc/nailblog/nailblog.toml
 Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/agentfleet/nailblog/browsers
 EnvironmentFile=/etc/agentfleet/tg-nailblog.env
-ExecStartPre=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog pause-install
+ExecStartPre=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog startup-gate
 ExecStart=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog run
 Restart=always
 RestartSec=30

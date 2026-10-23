@@ -1,5 +1,6 @@
 """Durable SQLite (WAL) state: control, topics, posts, images, runs, usage, notices."""
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -134,7 +135,10 @@ class State:
             """)
             if image_mode not in ("fixed", "random", "adaptive"):
                 raise StateError("image_mode must be fixed, random or adaptive")
-            db.execute("INSERT OR IGNORE INTO control VALUES(1,0,?,'not started')", (image_mode,))
+            if "armed_binding" not in {row["name"] for row in db.execute("PRAGMA table_info(control)")}:
+                db.execute("ALTER TABLE control ADD COLUMN armed_binding TEXT NOT NULL DEFAULT ''")
+            db.execute("INSERT OR IGNORE INTO control(id,paused,image_mode,last_result) VALUES(1,0,?,'not started')",
+                       (image_mode,))
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -155,6 +159,17 @@ class State:
     def set_paused(self, value):
         with self.connection() as db:
             db.execute("UPDATE control SET paused=? WHERE id=1", (int(bool(value)),))
+
+    def arm(self, binding):
+        with self.connection() as db:
+            db.execute("UPDATE control SET armed_binding=? WHERE id=1", (str(binding),))
+
+    def disarm(self):
+        self.arm("")
+
+    def armed_binding(self):
+        with self.connection() as db:
+            return db.execute("SELECT armed_binding FROM control WHERE id=1").fetchone()[0]
 
     def set_image_mode(self, mode):
         if mode not in ("fixed", "random", "adaptive"):
@@ -455,3 +470,44 @@ class State:
             db.execute("INSERT INTO notices(key,sent_at,attempts,next_attempt_at) VALUES(?,0,1,?) "
                        "ON CONFLICT(key) DO UPDATE SET attempts=attempts+1,next_attempt_at=excluded.next_attempt_at "
                        "WHERE notices.sent_at=0", (key, now + retry_seconds))
+
+
+def _file_digest(path):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
+
+
+def _build_digest(package_dir=None):
+    """sha256 of the installed build.json if present, else of the installed nailblog package .py files."""
+    package = Path(package_dir) if package_dir else Path(__file__).resolve().parent
+    for candidate in (package / "build.json", package.parent / "build.json"):
+        if candidate.is_file():
+            return "build.json", _file_digest(candidate)
+    digest = hashlib.sha256()
+    for source in sorted(package.rglob("*.py")):
+        digest.update(source.relative_to(package).as_posix().encode("utf-8") + b"\0")
+        digest.update(source.read_bytes() + b"\0")
+    return "package", digest.hexdigest()
+
+
+def startup_binding(config, *, config_path=None, package_dir=None):
+    kind, build = _build_digest(package_dir)
+    path = config_path or os.environ.get("NAILBLOG_CONFIG", "")
+    config_digest = _file_digest(path) if path else "missing"
+    combined = hashlib.sha256("\n".join((build, config_digest, str(config.mode))).encode("utf-8")).hexdigest()
+    return combined, kind
+
+
+def startup_gate(config, *, state=None, config_path=None, package_dir=None):
+    """Keep the armed state across crash restarts; a new build, config file or mode pauses and disarms."""
+    state = state or State(config.db_path, image_mode=config.schedule.image_mode)
+    binding, kind = startup_binding(config, config_path=config_path, package_dir=package_dir)
+    if binding == state.armed_binding():
+        return {"decision": "unchanged", "armed": True, "paused": bool(state.control()["paused"]),
+                "build_source": kind, "mode": config.mode}
+    state.set_paused(True)
+    state.disarm()
+    return {"decision": "paused_disarmed", "armed": False, "paused": True, "build_source": kind,
+            "mode": config.mode}
