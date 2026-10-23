@@ -8,6 +8,7 @@ import socket
 import threading
 from urllib.parse import urlsplit
 
+from .. import env_secrets
 from ..ai_transport import PinnedHTTPS, read_key, resolve
 from ..gemini_text import GEMINI_BASE, GEMINI_HOST, KEY_SCOPE, MODEL_NAME
 from . import ImageError
@@ -113,6 +114,8 @@ def review_of(envelope):
 
 class GeminiImages:
     def __init__(self, config, *, transport=request, key_reader=read_key):
+        if key_reader is read_key and getattr(config.image, 'key_source', 'file') == 'env':
+            key_reader = env_secrets.gemini_key_reader
         self.config, self.transport, self.key_reader = config, transport, key_reader
 
     def headers(self):

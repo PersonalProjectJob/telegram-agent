@@ -93,6 +93,9 @@ def slots(article):
     return [{'brief':cover_brief,'subject':cover_subject,'alt':'Ảnh bìa minh họa '+' '.join(title.split()[:11]),'caption':''},*result]
 
 
+STALE_MARGIN_S=600  # pending older than image.timeout_seconds + this margin is presumed crashed
+
+
 BYPASS_STATUS='complete_with_review_bypass'
 BYPASS_FLAG='image.review_bypass'
 
@@ -228,7 +231,13 @@ class ImagePipeline:
         if not isinstance(output_rate,(int,float)) or output_rate <= 0 or output_rate < price_in[1]:
             raise ImageError('positive_output_price_required')
         bound = (input_ceiling*price_in[0] + output_ceiling*output_rate)/1e6
+        unit_price = size = None
+        if image:
+            size = body.get('generationConfig',{}).get('imageConfig',{}).get('imageSize') if isinstance(body,dict) else None
+            unit_price = self.config.budget.image_unit_prices.get(model,{}).get(size)
+            if unit_price is not None: bound = max(bound,unit_price)
         if self.ledger.get(intent): raise ImageError('existing_intent_requires_reconciliation')
+        self.recorder.check()  # at the cap: refuse before ANY transport call, countTokens included
         # countTokens is a bounded non-generation preflight, not a paid retry.
         def count():
             if self.before_dispatch is None:
@@ -259,8 +268,13 @@ class ImagePipeline:
                 raise ImageError('reported_usage_exceeds_reserved_bound')
             cost = (tokens_in*price_in[0]+tokens_out*output_rate)/1e6
             units = sum('inlineData' in part for part in parts) if image else tokens_in+tokens_out
-            self.ledger.settle(intent,units,cost,{'input':tokens_in,'output_including_thinking':tokens_out,
-                                               'cost_basis':'all_output_at_conservative_rate','output_per_m':output_rate})
+            metadata = {'input':tokens_in,'output_including_thinking':tokens_out,
+                        'cost_basis':'all_output_at_conservative_rate','output_per_m':output_rate}
+            if unit_price is not None:
+                metadata['unit_price_basis'] = {'token_cost_usd':cost,'unit_price_usd':unit_price,'size':size,
+                                                'settled_usd':max(cost,unit_price)}
+                cost = max(cost,unit_price)
+            self.ledger.settle(intent,units,cost,metadata)
             self.recorder.publish()
             return envelope
         except DispatchPaused:
@@ -362,10 +376,20 @@ class ImagePipeline:
             raise ImageError('gemini_models_required')
         directory = safe_directory(out)
         with ProcessLock(directory):
+            if not is_cloudflare:
+                # Crash recovery before any new reservation: stale pending -> uncertain (still counted); uncertain
+                # older than a day -> settled at the full reserved bound on its original day.
+                now = self.clock()
+                self.ledger.reconcile_stale(now,cfg.timeout_seconds+STALE_MARGIN_S)
+                self.ledger.age_out_uncertain(now)
             params = asdict(cfg);params.pop('key_file')
             # Switch OFF keeps the historical binding digest; ON changes it (resume fails closed both ways).
             if not cfg.review_bypass:params.pop('review_bypass')
-            binding = digest({'article':article,'image':params,'prices':asdict(self.config.budget),
+            # Same pattern for the autoflow fields: defaults keep the pre-autoflow digest so older runs still resume.
+            if cfg.key_source=='file':params.pop('key_source')
+            prices = asdict(self.config.budget)
+            if not prices['image_unit_prices']:prices.pop('image_unit_prices')
+            binding = digest({'article':article,'image':params,'prices':prices,
                               'processing':VERSION,'review':REVIEW_VERSION,'directory':str(directory),
                               'template':digest(files('nailblog.images').joinpath('templates/cover.html').read_text(encoding='utf-8')),
                               'prompt_version':PROMPT_VERSION,

@@ -282,7 +282,10 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         def expected(c,directory,*,keep):
             params=asdict(c.image);params.pop('key_file')
             if not keep:params.pop('review_bypass')
-            return digest({'article':article(),'image':params,'prices':asdict(c.budget),'processing':VERSION,
+            if params['key_source']=='file':params.pop('key_source')
+            prices=asdict(c.budget)
+            if not prices['image_unit_prices']:prices.pop('image_unit_prices')
+            return digest({'article':article(),'image':params,'prices':prices,'processing':VERSION,
                            'review':REVIEW_VERSION,'directory':str(Path(directory).absolute()),
                            'template':digest(files('nailblog.images').joinpath('templates/cover.html').read_text(encoding='utf-8')),
                            'prompt_version':PROMPT_VERSION,'cloudflare':None})

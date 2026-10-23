@@ -101,6 +101,35 @@ class PaidLedger:
         with self.state.connection() as db:
             db.execute("UPDATE paid_intents SET status='uncertain' WHERE id=? AND status='pending'", (intent,))
 
+    def reconcile_stale(self, now, older_than_s):
+        """A pending intent older than `older_than_s` is presumed crashed mid-call: it becomes uncertain and keeps its
+        full reservation in the daily cap. Returns the number of intents changed."""
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return db.execute("UPDATE paid_intents SET status='uncertain' WHERE status='pending' AND at<?",
+                              (now - older_than_s,)).rowcount
+
+    def age_out_uncertain(self, now, after_s=86400):
+        """An uncertain intent older than `after_s` is settled at its FULL reserved amount, booked to the Vietnam day
+        of the intent's own original `at`. Never lowers a charge. Returns the number of intents settled."""
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows = db.execute("SELECT * FROM paid_intents WHERE status='uncertain' AND at<? ORDER BY at,id",
+                              (now - after_s,)).fetchall()
+            for row in rows:
+                try:
+                    metadata = json.loads(row['metadata'] or '{}')
+                except ValueError:
+                    metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata['assumed_full_bound'] = True
+                db.execute('INSERT INTO usage VALUES(?,?,?,?,?)',
+                           (row['at'], row['provider'], row['model'], 0, row['reserved'] / 1_000_000))
+                db.execute("UPDATE paid_intents SET status='settled',charged=?,metadata=? WHERE id=?",
+                           (row['reserved'], json.dumps(metadata, sort_keys=True), row['id']))
+            return len(rows)
+
     def settle(self, intent, units, usd, metadata=None):
         charged = micros(usd)
         with self.state.connection() as db:
