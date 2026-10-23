@@ -3,6 +3,7 @@
 import asyncio
 import getpass
 import inspect
+import io
 import logging
 import os
 import signal
@@ -27,6 +28,42 @@ class SafeTransportHandler(logging.Handler):
         exception = record.exc_info[0].__name__ if record.exc_info and record.exc_info[0] else "none"
         LOG.log(record.levelno, "transport logger=%s level=%s exception=%s",
                 record.name, record.levelname, exception)
+
+
+class OwnerMediaSendError(RuntimeError):
+    """A media send failed part-way; `sent_ids` are the Telegram messages already delivered."""
+
+    def __init__(self, sent_ids, cause_type):
+        super().__init__(f'owner media send failed after {len(sent_ids)} message(s): {cause_type}')
+        self.sent_ids = list(sent_ids)
+
+
+def make_owner_media_sender(client, owner_ids):
+    """Album of in-memory JPEGs then the text card, to the single verified Owner DM only."""
+    if len(owner_ids) != 1 or type(owner_ids[0]) is not int or owner_ids[0] <= 0:
+        raise ValueError('verified single Owner binding required')
+    bound = owner_ids[0]
+
+    async def send(owner_id, files, caption_text):
+        if owner_id != bound:
+            raise ValueError('recipient is not the verified Owner')
+        streams = []
+        for index, data in enumerate(files, 1):
+            if isinstance(data, (bytes, bytearray)):
+                data = io.BytesIO(bytes(data))
+                data.name = f'nailblog-{index}.jpg'
+            streams.append(data)
+        sent = []
+        try:
+            for start in range(0, len(streams), 10):  # Telegram albums hold at most 10 items
+                result = await client.send_file(bound, streams[start:start + 10])
+                sent.extend(getattr(m, 'id', m) for m in (result if isinstance(result, (list, tuple)) else [result]))
+            message = await client.send_message(bound, caption_text, parse_mode=None, link_preview=False)
+            sent.append(getattr(message, 'id', message))
+        except Exception as error:
+            raise OwnerMediaSendError(sent, type(error).__name__) from None
+        return sent
+    return send
 
 
 def make_client(config):
