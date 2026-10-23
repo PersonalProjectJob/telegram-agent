@@ -121,7 +121,7 @@ def _bounded(lines, limit=3500):
 def _pick(state, slot, number, now, slots, daily):
     """Choose candidate `number` of tomorrow's slot; allowed until daily.pick_deadline of today, and swappable."""
     moment = datetime.fromtimestamp(now, VN_TZ)
-    if slot not in slots or slot not in ("06:00", "19:00"):
+    if slot not in slots:
         return ["Slot phải là một trong: " + ", ".join(s[:2] for s in slots) + "."]
     deadline = datetime.combine(moment.date(), parse_hhmm(daily.pick_deadline), tzinfo=VN_TZ)
     if moment >= deadline:
