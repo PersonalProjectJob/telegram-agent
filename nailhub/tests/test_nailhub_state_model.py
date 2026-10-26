@@ -10,7 +10,7 @@ from unittest.mock import patch
 from nailhub._errors import ConfigError
 from nailhub.model_lock import ModelLock as ModelGate
 from nailhub.browser import posting_from_data
-from nailhub.config import load_config, load_optional
+from nailhub.config import NailHubConfig, load_config, load_optional
 from nailhub.credentials import load_credentials
 from nailhub.model import NailHubModel
 from nailhub.state import State
@@ -53,11 +53,43 @@ class ConfigModelTests(unittest.TestCase):
             path=Path(directory)/'config.toml'
             base='[worker]\ndb_path='+json.dumps(str(Path(directory)/'a.db'))+'\nprofile_path='+json.dumps(str(Path(directory)/'profile'))+'\n'
             path.write_text(base);cfg=load_config(path);self.assertEqual(cfg.mode,'preview');self.assertEqual(cfg.owner_ids,())
+            self.assertEqual(cfg.owner_username,'')
+            self.assertEqual(NailHubConfig('unused.db','unused-profile').owner_username,'')
             for extra in ('[model]\nthink=true','[model]\nmodel=""','mode="live"','owner_ids=[true]',
-                          '[model]\nurl="http://example.com"','owner_username="Other"'):
+                          '[model]\nurl="http://example.com"','owner_username="bad name"'):
                 path.write_text(base+extra)
                 with self.subTest(extra=extra):
                     with self.assertRaises(ConfigError):load_config(path)
+
+    def test_owner_usernames_ids_and_live_complete_binding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'config.toml'
+            base='[worker]\ndb_path='+json.dumps(str(Path(directory)/'a.db'))+'\nprofile_path='+json.dumps(str(Path(directory)/'profile'))+'\n'
+            for username in ('TeamOwner','@tEaMoWnEr','SotaThao','A_b12','A'*32):
+                with self.subTest(username=username):
+                    path.write_text(base+'owner_username='+json.dumps(username)+'\nowner_ids=[123456789]\n')
+                    cfg=load_config(path)
+                    self.assertEqual(cfg.owner_username,username.removeprefix('@'))
+                    self.assertEqual(cfg.owner_ids,(123456789,))
+            for value in ('"@"','"@@TeamOwner"','" TeamOwner"','"TeamOwner "','"abcd"',
+                          '"1Owner"','"user-name"','"TéamOwner"',json.dumps('A'*33),'true','123','[]'):
+                with self.subTest(username=value):
+                    path.write_text(base+'owner_username='+value)
+                    with self.assertRaises(ConfigError):load_config(path)
+            for ids in ('true','123','"123"','[true]','[0]','[-1]','[1.0]','[1,2]','["123"]'):
+                with self.subTest(ids=ids):
+                    path.write_text(base+'owner_ids='+ids)
+                    with self.assertRaises(ConfigError):load_config(path)
+            contract='\n[contract]\nverified=true\nverification_ref="offline-fixture"\n'
+            for owner in ('','owner_ids=[123456789]\n','owner_username="TeamOwner"\n',
+                          'owner_username=""\nowner_ids=[123456789]\n'):
+                with self.subTest(incomplete=owner):
+                    path.write_text(base+owner)
+                    self.assertEqual(load_config(path).mode,'preview')
+                    path.write_text(base+'mode="live"\n'+owner+contract)
+                    with self.assertRaises(ConfigError):load_config(path)
+            path.write_text(base+'mode="live"\nowner_username="@TeamOwner"\nowner_ids=[123456789]\n'+contract)
+            self.assertEqual(load_config(path).owner_username,'TeamOwner')
 
     def test_model_owner_think_false_only_content_and_failures(self):
         with tempfile.TemporaryDirectory() as directory:

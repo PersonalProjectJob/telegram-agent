@@ -86,7 +86,7 @@ class WorkerPacingTests(unittest.IsolatedAsyncioTestCase):
 
 class FloodWaitTests(unittest.IsolatedAsyncioTestCase):
     def config(self,directory):
-        return replace(settings(directory,owner_ids=(OWNER,)),telegram_session=str(Path(directory)/'nailhub.session'))
+        return replace(settings(directory,owner_ids=(OWNER,),owner_username='TeamOwner'),telegram_session=str(Path(directory)/'nailhub.session'))
 
     def client(self,entities):
         return SimpleNamespace(add_event_handler=Mock(),remove_event_handler=Mock(),connect=AsyncMock(),
@@ -96,7 +96,7 @@ class FloodWaitTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_owner_verification_floodwait_retries_seconds_capped_at_fifteen_minutes(self):
         for seconds in ((60,120),(3601,)):
             with self.subTest(seconds=seconds),tempfile.TemporaryDirectory() as directory:
-                owner=SimpleNamespace(id=OWNER,bot=False,username='SotaThao')
+                owner=SimpleNamespace(id=OWNER,bot=False,username='TeamOwner')
                 client=self.client([*[FakeFloodWaitError(capture=s) for s in seconds],owner,owner])
                 started=asyncio.Event();stops=[]
                 async def work(stop):started.set();await stop.wait()
@@ -116,7 +116,7 @@ class FloodWaitTests(unittest.IsolatedAsyncioTestCase):
                         task.cancel();await asyncio.gather(task,return_exceptions=True)
                 self.assertEqual(clock.delays,[min(s,900) for s in seconds])
                 self.assertEqual(client.get_entity.await_count,len(seconds)+2)
-                self.assertEqual([call.args[0] for call in client.get_entity.await_args_list],['SotaThao']*(len(seconds)+1)+[OWNER])
+                self.assertEqual([call.args[0] for call in client.get_entity.await_args_list],['TeamOwner']*(len(seconds)+1)+[OWNER])
                 client.connect.assert_awaited_once();client.get_me.assert_awaited_once();client.disconnect.assert_awaited_once()
                 self.assertEqual(service.notice_owner_id,OWNER)
                 service.worker.assert_awaited_once();service.scheduler.assert_awaited_once()
@@ -139,6 +139,6 @@ class FloodWaitTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     if stops:stops[0].set()
                     task.cancel();await asyncio.gather(task,return_exceptions=True)
-            self.assertEqual(requests,[900]);client.get_entity.assert_awaited_once_with('SotaThao')
+            self.assertEqual(requests,[900]);client.get_entity.assert_awaited_once_with('TeamOwner')
             service.worker.assert_not_called();service.scheduler.assert_not_called()
             self.assertFalse(hasattr(service,'notice_owner_id'));client.disconnect.assert_awaited_once()

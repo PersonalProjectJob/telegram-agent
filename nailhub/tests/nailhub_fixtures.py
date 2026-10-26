@@ -9,7 +9,7 @@ from nailhub.config import NailHubConfig
 from nailhub.validation import FACT_KINDS, Posting
 
 POST_ID = '11111111-1111-4111-8111-111111111111'
-OWNER = 1603321775
+OWNER = 123456789
 
 def settings(directory, **values):
     return replace(NailHubConfig(str(Path(directory)/'jobs.db'), str(Path(directory)/'profile')), **values)
@@ -30,7 +30,7 @@ def extracted(original, amount='$1200', period='week', kind='guaranteed', mode='
             'location':{}, 'facts':{kind:[] for kind in FACT_KINDS}, 'rationale':'Source-backed proposal.'}
 
 def dm(**values):
-    user=SimpleNamespace(id=OWNER, username='SotaThao', bot=False, is_self=False)
+    user=SimpleNamespace(id=OWNER, username='TeamOwner', bot=False, is_self=False)
     data=dict(raw_text='/nailhub scan', out=False, is_private=True, is_group=False, is_channel=False,
               sender_id=OWNER, chat_id=OWNER, fwd_from=None, message=SimpleNamespace(fwd_from=None),
               get_sender=AsyncMock(return_value=user), get_chat=AsyncMock(return_value=user), reply=AsyncMock())

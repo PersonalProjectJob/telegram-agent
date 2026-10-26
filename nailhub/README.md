@@ -13,6 +13,20 @@ The browser CLI remains `login`, `probe`, `preview` and `status`;
 all accept `--config /absolute/path.toml`. Stop tg-nailhub before these local
 operations to avoid profile/state contention. Preview never writes to the website.
 
+Configure your Telegram Owner in `[worker]`: `owner_username = "TeamOwner"` and
+`owner_ids = [123456789]` are synthetic examples; replace both with the same real
+human account, different from the account logged into this service's Telegram session.
+The Owner must have a Telegram username (not a display name or phone number) and
+its numeric user ID; both example values above are fake and must be replaced.
+The defaults are an empty username and empty ID list, with no implicit Owner.
+Usernames accept 5–32 ASCII letters, digits or underscores, starting with a letter.
+One leading `@` is removed; matching is case-insensitive. Exactly one positive
+integer ID is allowed. At startup the existing client resolves the username and
+numeric ID and requires the same non-bot human, different from the listener.
+DM authorization then uses only the verified numeric ID, never a message username.
+`run` requires both fields even in preview mode. The website `login`, `probe` and
+`preview` CLI remain available in preview mode without an Owner binding.
+
 Keep state/profile service-owned mode 0700, SQLite/session/optional credentials
 mode 0600. Browser credentials remain an optional Owner-authorized local
 JSON with exactly email/password keys. Never store them or profiles in Git.
@@ -47,7 +61,7 @@ matching GET identity plus visible title/content confirms binding. No guessed AP
 HTTP request is used. Listing pagination uses verified Next UI, never first title/row. Authentication,
 selectors, eligible status/visibility and correct category, stable GUID, fresh source fingerprint and one-visible-element
 checks precede mutations. Read-only selectors may be configured before contract verified; live
-requires verification_ref evidence, nonempty numeric allowlist and verified=true.
+requires verification_ref evidence, a complete Owner username/single numeric ID binding and verified=true.
 
 Exact salary conversion uses Decimal: month*12/52, year/52, biweekly/2. Day/hour needs cited schedule.
 Owner override 2026-10-12: numeric range UI displays weekly UPPER bound rounded down to nearest USD 100
@@ -105,7 +119,7 @@ private numeric peer through the dedicated NailHub client. Exact private-DM comm
 
 ## Manual-review DM notices
 
-After startup verifies @SotaThao→1603321775 with the dedicated NailHub Telegram client, the worker backfills
+After startup verifies the configured Owner username→numeric ID with the dedicated NailHub Telegram client, the worker backfills
 current needs-human/uncertain posts and sends new holds to that same numeric private peer. Each
 plain-text message contains a bounded title, clickable `https://nailhub.ai/admin/postings?id=<UUID>`
 and a fixed Vietnamese explanation/action. Unknown raw errors and original body text are omitted.
