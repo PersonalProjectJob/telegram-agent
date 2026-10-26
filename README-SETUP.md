@@ -1,201 +1,221 @@
-# Chạy Telegram Triage và NailHub từ source
+# Setup nhanh Telegram Triage và NailHub
 
-Cập nhật: 26/10/2026 · Phiên bản: 1.0.2
+Cập nhật: 26/10/2026 · Phiên bản: 1.0.4
 
-Console UI hiện chưa khả dụng. Hướng dẫn này chạy trực tiếp bằng CLI trên **Windows / PowerShell**. Chỉ làm phần của worker cần dùng; muốn chạy cả hai thì mở hai terminal riêng.
+Chạy trực tiếp bằng CLI, **không cần Console UI hoặc Node.js**. Chỉ cài/chạy worker bạn cần. Hướng dẫn dành cho Windows PowerShell và macOS/Linux Bash hoặc Zsh, dùng tài khoản người dùng thông thường.
 
-## Nhận source trên máy mới
+## 1. Chuẩn bị và lấy source
 
-Cài Git và Python 3.11+, sau đó mở PowerShell:
+Cài **Git**, **Python 3.12** (source yêu cầu tối thiểu 3.11) và [Ollama](https://docs.ollama.com/quickstart). Cần Internet để tải package/model và truy cập Telegram/NailHub. Repository riêng tư cần tài khoản có quyền đọc.
 
-```powershell
-git clone --branch codex/worker-cli-setup https://github.com/PersonalProjectJob/telegram-agent.git AgentBuilder
+NailHub còn cần hệ điều hành/CPU được [Playwright hỗ trợ](https://playwright.dev/python/docs/intro#system-requirements). Không thể bảo đảm mọi máy hoặc hệ điều hành cũ đều chạy được. Model local cần đủ RAM/dung lượng; máy không đủ tài nguyên cần bên bàn giao cấp cấu hình provider phù hợp.
+
+```sh
+git clone --branch codex/cross-platform-cli-setup https://github.com/PersonalProjectJob/telegram-agent.git AgentBuilder
 cd AgentBuilder
-git rev-parse HEAD
 ```
 
-Branch này chứa bản bàn giao đầy đủ, gồm Telegram Triage từ `main` và các thay đổi local của Console/NailHub. Sau khi PR được merge, có thể clone branch `main` thay thế. Repository riêng tư yêu cầu tài khoản có quyền đọc. Lưu commit được in ra để xác định đúng bản đang cài.
+Đã nhận ZIP source thì giải nén và mở terminal trong thư mục có `listener/`, `nailhub/`, `config/`. Không cần clone lại. Sau khi PR được merge, có thể dùng branch `main` thay branch bàn giao.
 
-Console hiện chưa qua gate tương thích worker: metadata vẫn pin baseline cũ. Không dùng Console Save/Apply hoặc ZIP Console làm đường setup; chạy hai worker bằng CLI theo các bước bên dưới.
+**Mọi lệnh dưới đây chạy tại root source.** Không copy virtualenv, Telegram session hoặc browser profile từ máy khác; cài và đăng nhập mới trên máy nhận.
 
-## 1. Chuẩn bị
+Mở Ollama, sau đó tải model đúng với cấu hình mẫu:
 
-- Cài **Python 3.11+** và nhận source đầy đủ từ bên bàn giao.
-- Mở PowerShell tại thư mục gốc source, nơi có `listener/`, `nailhub/`, `config/`.
-- Chuẩn bị Telegram API ID/hash và tài khoản Telegram được phép sử dụng.
-- Có Ollama đang chạy tại `http://127.0.0.1:11434`, đã tải model `qwen3.5:9b` theo cấu hình mẫu. Nếu bên giao dùng model/provider khác, nhận cấu hình tương ứng từ bên giao.
-- Với NailHub: cần thêm tài khoản đăng nhập website.
+```sh
+ollama pull qwen3.5:9b
+ollama ls
+```
 
-Kiểm tra Python:
+Nếu Ollama chưa chạy nền, mở terminal riêng chạy `ollama serve` và giữ terminal đó mở. Không chạy thêm server nếu cổng đã được ứng dụng/dịch vụ Ollama sử dụng. [Tham khảo CLI Ollama](https://docs.ollama.com/cli).
+
+## 2. Cài worker và chuẩn bị terminal
+
+Chọn **một** khối theo hệ điều hành. Bỏ các dòng của worker không sử dụng. Chỉ cài package và copy cấu hình lần đầu; không ghi đè cấu hình đã chỉnh.
+
+### Windows — PowerShell
 
 ```powershell
 python --version
-```
-
-Các lệnh bên dưới đều chạy từ root source. Không cần Node.js hoặc Console UI.
-
-## 2. Cài package — chỉ làm lần đầu
-
-**Telegram Triage:**
-
-```powershell
 python -m venv listener/.venv
-.\listener\.venv\Scripts\python.exe -m pip install ./listener
-```
-
-**NailHub:**
-
-```powershell
 python -m venv nailhub/.venv
+.\listener\.venv\Scripts\python.exe -m pip install ./listener
 .\nailhub\.venv\Scripts\python.exe -m pip install ./nailhub
 .\nailhub\.venv\Scripts\python.exe -m playwright install chromium
+
+New-Item -ItemType Directory -Force -Path "$HOME/.agentfleet-cli/triage", "$HOME/.agentfleet-cli/nailhub", "$HOME/.agentfleet-cli/model-lock"
+Copy-Item config/listener.example.toml "$HOME/.agentfleet-cli/listener.toml"
+Copy-Item config/nailhub.example.toml "$HOME/.agentfleet-cli/nailhub.toml"
 ```
 
-Không cần activate virtualenv. Hai worker dùng hai môi trường riêng.
+Nếu `python` không được nhận, dùng `py -3.12` thay `python` ở ba dòng đầu. Không cần activate virtualenv hoặc đổi ExecutionPolicy.
 
-## 3. Tạo cấu hình — chỉ làm lần đầu
+Trong **mỗi terminal mới** dùng để chạy worker, đứng tại root source và chạy:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:/AgentFleetConfig
-New-Item -ItemType Directory -Force -Path C:/AgentFleetData/triage
-New-Item -ItemType Directory -Force -Path C:/AgentFleetData/nailhub
-Copy-Item config/listener.example.toml C:/AgentFleetConfig/listener.toml
-Copy-Item config/nailhub.example.toml C:/AgentFleetConfig/nailhub.toml
+function triage { & ./listener/.venv/Scripts/python.exe -m tg_triage @args --config "$HOME/.agentfleet-cli/listener.toml" }
+function nailhub { & ./nailhub/.venv/Scripts/python.exe -m nailhub @args --config "$HOME/.agentfleet-cli/nailhub.toml" }
+$env:AGENTFLEET_LOCK_DIR = "$HOME/.agentfleet-cli/model-lock"
+$env:TG_API_ID = "<telegram-api-id>"
+$env:TG_API_HASH = "<telegram-api-hash>"
+$env:TG_TRIAGE_MODE = "dry-run"
+Write-Output "$HOME/.agentfleet-cli".Replace('\', '/')
 ```
 
-Không copy lại đè lên cấu hình đã chỉnh. Giữ thư mục cấu hình và dữ liệu riêng tư, không đưa key, session hoặc browser profile vào source bàn giao.
+### macOS / Linux — Bash hoặc Zsh
 
-### Cấu hình Telegram Triage
+```sh
+python3 --version
+python3 -m venv listener/.venv
+python3 -m venv nailhub/.venv
+./listener/.venv/bin/python -m pip install ./listener
+./nailhub/.venv/bin/python -m pip install ./nailhub
+./nailhub/.venv/bin/python -m playwright install chromium
 
-Mở `C:/AgentFleetConfig/listener.toml`, sửa các giá trị sau **trong section sẵn có**, giữ nguyên phần còn lại:
-
-```toml
-mode = "dry-run"
-
-[telegram]
-session_path = "C:/AgentFleetData/triage/gateway.session"
-chat_ids = [-1001234567890] # Thay bằng ID nhóm thử nghiệm thực tế
-listen_all_groups = false
-
-[storage]
-db_path = "C:/AgentFleetData/triage/triage.sqlite3"
+umask 077
+mkdir -p "$HOME/.agentfleet-cli/triage" "$HOME/.agentfleet-cli/nailhub" "$HOME/.agentfleet-cli/model-lock"
+chmod 700 "$HOME/.agentfleet-cli" "$HOME/.agentfleet-cli/triage" "$HOME/.agentfleet-cli/nailhub" "$HOME/.agentfleet-cli/model-lock"
+cp -i config/listener.example.toml "$HOME/.agentfleet-cli/listener.toml"
+cp -i config/nailhub.example.toml "$HOME/.agentfleet-cli/nailhub.toml"
 ```
 
-Các đoạn TOML trong hướng dẫn chỉ thể hiện trường cần sửa; không thay toàn bộ file mẫu hoặc thêm section trùng tên.
+**Linux:** cài thêm thư viện hệ thống cho Chromium bằng lệnh dưới. Bước này có thể yêu cầu quyền quản trị; nhờ quản trị viên thực hiện nếu tài khoản không có quyền. Không chạy worker bằng root.
 
-### Cấu hình NailHub
-
-Mở `C:/AgentFleetConfig/nailhub.toml`, sửa trong section sẵn có:
-
-```toml
-[telegram]
-session = "C:/AgentFleetData/nailhub/nailhub.session"
-
-[worker]
-mode = "preview"
-db_path = "C:/AgentFleetData/nailhub/jobs.sqlite3"
-profile_path = "C:/AgentFleetData/nailhub/profile"
-credential_file = "C:/AgentFleetConfig/nailhub-credentials.json"
+```sh
+./nailhub/.venv/bin/python -m playwright install-deps chromium
 ```
 
-Tạo file riêng `C:/AgentFleetConfig/nailhub-credentials.json`, chỉ gồm hai trường:
+**Ubuntu/Debian:** nếu tạo venv báo thiếu `ensurepip`/`venv`, cài package `python3-venv` tương ứng phiên bản Python đang dùng rồi tạo lại venv. Trên macOS, dùng bản Python 3.12 đã cài thay cho Python hệ thống quá cũ.
+
+Trong **mỗi terminal mới** dùng để chạy worker, đứng tại root source và chạy:
+
+```sh
+triage() { ./listener/.venv/bin/python -m tg_triage "$@" --config "$HOME/.agentfleet-cli/listener.toml"; }
+nailhub() { ./nailhub/.venv/bin/python -m nailhub "$@" --config "$HOME/.agentfleet-cli/nailhub.toml"; }
+export AGENTFLEET_LOCK_DIR="$HOME/.agentfleet-cli/model-lock"
+export TG_API_ID='<telegram-api-id>'
+export TG_API_HASH='<telegram-api-hash>'
+export TG_TRIAGE_MODE='dry-run'
+printf '%s\n' "$HOME/.agentfleet-cli"
+```
+
+`triage` và `nailhub` là hai lệnh tắt trong terminal hiện tại; các bước sau dùng chung cho cả ba hệ điều hành. Thay Telegram API ID/hash bằng thông tin được cấp riêng. Worker không tự đọc `.env`. Nếu chỉ chạy NailHub `login`/`probe`/`preview`, chưa cần Telegram credentials.
+
+## 3. Sửa cấu hình một lần
+
+Lệnh cuối ở bước 2 in ra thư mục dữ liệu, ví dụ `C:/Users/An/.agentfleet-cli`, `/Users/an/.agentfleet-cli` hoặc `/home/an/.agentfleet-cli`.
+
+Mở hai TOML trong thư mục đó bằng editor. Trong bảng dưới, **BASE là đường dẫn tuyệt đối vừa in**, không gõ nguyên chữ BASE, `$HOME` hoặc `~` vào TOML. Trên Windows dùng dấu `/`. Lưu file dạng **UTF-8 không BOM**.
+
+Sửa các trường trong section có sẵn, giữ nguyên phần còn lại; không thêm section trùng tên:
+
+| File | Trường cần sửa | Giá trị |
+|---|---|---|
+| `listener.toml` | `mode` ở đầu file | `"dry-run"` |
+| `listener.toml` | `[telegram] session_path` | `"BASE/triage/gateway.session"` |
+| `listener.toml` | `[telegram] chat_ids` | Numeric ID của nhóm thử nghiệm, ví dụ `[-1001234567890]`; thay ID mẫu |
+| `listener.toml` | `[telegram] listen_all_groups` | `false` |
+| `listener.toml` | `[storage] db_path` | `"BASE/triage/triage.sqlite3"` |
+| `nailhub.toml` | `[telegram] session` | `"BASE/nailhub/nailhub.session"` |
+| `nailhub.toml` | `[worker] mode` | `"preview"` |
+| `nailhub.toml` | `[worker] db_path` | `"BASE/nailhub/jobs.sqlite3"` |
+| `nailhub.toml` | `[worker] profile_path` | `"BASE/nailhub/profile"` |
+| `nailhub.toml` | `[worker] credential_file` | `"BASE/nailhub-credentials.json"` |
+
+Giữ nguyên model `qwen3.5:9b`, endpoint local và `think` của từng worker theo mẫu. NailHub yêu cầu `think = false`. Giữ `contract.verified = false` trong giai đoạn preview.
+
+**Chỉ khi dùng NailHub:** tạo file `nailhub-credentials.json` trong BASE, lưu UTF-8 không BOM:
 
 ```json
 {
-  "email": "<email-dang-nhap>",
+  "email": "<email-dang-nhap-NailHub>",
   "password": "<mat-khau>"
 }
 ```
 
-Thay placeholder bằng tài khoản website được cấp. File chứa mật khẩu dạng rõ: chỉ cấp quyền đọc cho tài khoản vận hành và quản trị viên cần thiết, không commit hoặc gửi kèm source.
+Thay placeholder bằng thông tin thật. Trên macOS/Linux, bắt buộc đặt quyền file bằng chính tài khoản chạy worker:
 
-Giữ `model.think = false` và `contract.verified = false` theo mẫu. Bước `probe`/`preview` bên dưới chưa cần chạy Telegram worker NailHub.
+```sh
+chmod 600 "$HOME/.agentfleet-cli/nailhub-credentials.json"
+```
+
+File chứa mật khẩu dạng rõ. Dùng thư mục riêng của tài khoản, không chia sẻ/commit key, session, database hoặc profile; trên Windows giới hạn quyền đọc file mật khẩu cho người vận hành và quản trị viên cần thiết. Cả hai worker trên cùng máy dùng chung `AGENTFLEET_LOCK_DIR` ở bước 2 để tránh tranh tài nguyên model.
 
 ## 4. Chạy Telegram Triage
 
-Trong terminal chạy Triage, cấp biến môi trường:
+### Chuẩn bị tài khoản listener — lần đầu
 
-```powershell
-$env:TG_API_ID = "<telegram-api-id>"
-$env:TG_API_HASH = "<telegram-api-hash>"
-$env:TG_TRIAGE_MODE = "dry-run"
+Listener đăng nhập bằng **tài khoản Telegram người dùng**, không dùng Bot Token. Nên dùng một tài khoản riêng cho listener và thêm tài khoản đó vào các nhóm cần theo dõi.
+
+1. Đăng nhập [my.telegram.org](https://my.telegram.org) bằng tài khoản Telegram dùng để đăng ký application.
+2. Vào **API development tools**, điền form tạo application để nhận `api_id` và `api_hash`. Xem [hướng dẫn chính thức Telegram](https://core.telegram.org/api/obtaining_api_id).
+3. Điền hai giá trị này vào `TG_API_ID` và `TG_API_HASH` trong khối chuẩn bị terminal ở bước 2; không đặt Bot Token vào các trường này.
+4. Trong `listener.toml`, đặt `[telegram] chat_ids` thành numeric ID của các nhóm được phép theo dõi. Nhận ID chính xác từ bên bàn giao; không giữ ID mẫu, không dùng tên nhóm hoặc username thay numeric ID.
+5. Khi chạy `triage login`, nhập số điện thoại **của tài khoản listener**, có mã quốc gia (ví dụ `+84...`), mã đăng nhập được Telegram gửi và mật khẩu 2FA nếu được hỏi. Tài khoản đó phải có quyền truy cập các nhóm đã cấu hình.
+
+API ID/hash xác định application; tài khoản listener thực tế được chọn ở bước đăng nhập bằng số điện thoại. Không gửi API hash, OTP hoặc mật khẩu 2FA vào chat/tài liệu bàn giao.
+
+### Đăng nhập và chạy
+
+Trong terminal đã chuẩn bị ở bước 2:
+
+```sh
+triage check-config
+triage login
+triage run
 ```
 
-Thay placeholder bằng giá trị được cấp riêng. Worker không tự đọc file `.env`.
+Chỉ chạy lệnh kế tiếp khi lệnh trước thành công. Đăng nhập thành công tạo file `gateway.session` tại `[telegram] session_path` đã cấu hình. File này giữ quyền truy cập tài khoản: bảo vệ như mật khẩu, không commit hoặc đưa vào ZIP source. `run` giữ terminal mở; dừng bằng `Ctrl+C`.
 
-Kiểm tra cấu hình và đăng nhập Telegram lần đầu:
+Thử gửi tin từ tài khoản khác trong nhóm đã cấu hình: listener bỏ qua tin outgoing của chính tài khoản đang đăng nhập. **Dry-run không tạo GitHub issue nhưng vẫn có thể thả reaction Telegram.**
 
-```powershell
-.\listener\.venv\Scripts\python.exe -m tg_triage check-config --config C:/AgentFleetConfig/listener.toml
-.\listener\.venv\Scripts\python.exe -m tg_triage login --config C:/AgentFleetConfig/listener.toml
+Lần sau: vào root source, chạy lại khối chuẩn bị terminal ở bước 2 rồi `triage run`. Chỉ login lại khi session hết hiệu lực.
+
+## 5. Chạy NailHub
+
+Đăng nhập website và kiểm tra một lượt:
+
+```sh
+nailhub login
+nailhub probe
+nailhub preview
 ```
 
-Nhập số điện thoại, OTP và 2FA khi được hỏi. Sau đó chạy:
+Chạy lần lượt; `login` dùng file JSON ở bước 3. `probe` kiểm tra truy cập danh sách; `preview` chạy một lượt rồi kết thúc, không ghi bài lên website nhưng vẫn đọc dữ liệu thật và có thể gọi model.
 
-```powershell
-.\listener\.venv\Scripts\python.exe -m tg_triage run --config C:/AgentFleetConfig/listener.toml
+### Nếu cần chạy liên tục và nhận command Telegram
+
+Nhờ bên bàn giao cấp **numeric Owner ID đã xác minh** để điền `[worker] owner_ids` trong `nailhub.toml`. Source hiện khóa Owner username ở `SotaThao`; không đổi tùy ý sang tài khoản khác. `owner_ids = []` khiến `run` không khởi động, kể cả preview.
+
+Trong terminal đã có Telegram credentials và `AGENTFLEET_LOCK_DIR` ở bước 2:
+
+```sh
+nailhub login-telegram
+nailhub run
 ```
 
-Giữ terminal mở. Gửi tin trong nhóm thử nghiệm đã cấu hình để kiểm tra. **Dry-run không tạo GitHub issue nhưng vẫn có thể thả reaction Telegram.**
+Giữ mode preview khi thử nghiệm. Lần sau chỉ cần chuẩn bị terminal và `nailhub run` nếu session còn hợp lệ. Dùng session riêng cho hai worker. Không chạy nhiều tiến trình trên cùng session/database/browser profile; dừng NailHub worker trước khi chạy lại `login`/`probe`/`preview`.
 
-Dừng bằng `Ctrl+C`. Lần sau chỉ cần cấp lại biến môi trường trong terminal mới và chạy lệnh `run`; không cần login lại nếu session còn hợp lệ.
+## Khi cần chạy live
 
-## 5. Chạy thử NailHub
-
-Đăng nhập website lần đầu bằng thông tin trong file JSON:
-
-```powershell
-.\nailhub\.venv\Scripts\python.exe -m nailhub login --config C:/AgentFleetConfig/nailhub.toml
-```
-
-Kiểm tra truy cập, rồi chạy một lượt preview:
-
-```powershell
-.\nailhub\.venv\Scripts\python.exe -m nailhub probe --config C:/AgentFleetConfig/nailhub.toml
-.\nailhub\.venv\Scripts\python.exe -m nailhub preview --config C:/AgentFleetConfig/nailhub.toml
-```
-
-`probe` đọc danh sách để kiểm tra truy cập. `preview` chạy một lượt rồi kết thúc, không ghi bài lên website; vẫn đọc dữ liệu thật và có thể gọi model. Nếu session website còn hợp lệ, các lần sau có thể chạy thẳng `preview`.
-
-### Nếu cần NailHub chạy liên tục và nhận lệnh Telegram
-
-Cần bên bàn giao xác nhận **numeric Owner ID** để điền `worker.owner_ids`. Source hiện khóa `owner_username` ở `SotaThao`, không hỗ trợ đổi tùy ý sang username khác. `owner_ids = []` khiến lệnh `run` không khởi động được, kể cả mode preview.
-
-Sau khi nhận đúng Owner binding, mở terminal riêng tại root source:
-
-```powershell
-$env:TG_API_ID = "<telegram-api-id>"
-$env:TG_API_HASH = "<telegram-api-hash>"
-
-.\nailhub\.venv\Scripts\python.exe -m nailhub login-telegram --config C:/AgentFleetConfig/nailhub.toml
-.\nailhub\.venv\Scripts\python.exe -m nailhub run --config C:/AgentFleetConfig/nailhub.toml
-```
-
-`login-telegram` chỉ cần lần đầu hoặc khi session hết hiệu lực. Giữ mode preview khi thử nghiệm. Dừng bằng `Ctrl+C`. Dừng worker trước khi chạy lại `login`, `probe` hoặc `preview`; không chạy hai tiến trình cùng dùng một profile/session/database.
-
-## 6. Khi chạy thật
-
-- **Triage:** cần `GH_TOKEN`, `GH_REPO` và mode `live`; biến `TG_TRIAGE_MODE` ghi đè TOML. Upload ảnh/tài liệu còn cần GitHub CLI `gh`. Xác nhận repo đích và quyền trước khi bật.
-- **NailHub:** mode `live` cần Owner binding và contract evidence đã xác minh. Nhận cấu hình đã được bên giao review, không chỉ tự đổi `verified = true`.
-- Linux production: theo [hướng dẫn deploy/rollback](deploy/README.md), đối chiếu host đích trước khi chạy các bước cutover legacy.
+- Triage: cấp thêm `GH_TOKEN`, `GH_REPO` trong terminal theo cú pháp biến môi trường của OS, rồi đặt `TG_TRIAGE_MODE` thành `live`. Upload ảnh/tài liệu còn cần GitHub CLI `gh` và quyền truy cập repo đích.
+- NailHub: cần Owner binding, contract evidence và cấu hình đã được bên giao review; không chỉ tự bật `verified = true`.
+- Cài dịch vụ chạy nền/Linux production: dùng [deploy/README.md](deploy/README.md), đối chiếu host đích trước các bước cutover legacy. Hướng dẫn trên chạy tương tác và không tự khởi động lại khi reboot.
 
 ## Lỗi thường gặp
 
-| Lỗi | Cách xử lý |
+| Hiện tượng | Kiểm tra |
 |---|---|
-| Không tìm thấy `python` | Kiểm tra Python/PATH; thử `py -3.12` thay `python` nếu máy dùng Python launcher |
-| Không import được package | Dùng đúng đường dẫn Python trong virtualenv của worker |
-| Thiếu Telegram API ID/hash | Cấp biến môi trường trong đúng terminal đang chạy worker |
-| Model timeout/không kết nối | Kiểm tra Ollama đang chạy, model đã tải và tên model khớp TOML |
-| Không tìm thấy Chromium | Chạy lệnh cài Chromium ở bước 2 bằng Python NailHub |
-| NailHub login lỗi | Kiểm tra `credential_file`, JSON đúng hai trường và quyền truy cập website |
-| NailHub run báo Owner IDs | Nhận numeric Owner ID được xác minh từ bên bàn giao; không để allowlist rỗng |
+| `triage`/`nailhub` không được nhận | Đang ở root source chưa? Chạy lại khối chuẩn bị terminal của đúng OS |
+| Python quá cũ hoặc không tạo được venv | Cài Python 3.12; Ubuntu/Debian kiểm tra package venv tương ứng |
+| Thiếu Telegram API ID/hash | Cấp biến trong đúng terminal chạy worker; `.env` không tự được nạp |
+| `Data directory ... 0700` | macOS/Linux: chạy lại `chmod 700` ở bước 2; dùng đúng tài khoản sở hữu thư mục |
+| Credential file không đọc được | JSON đúng hai trường, UTF-8 không BOM; macOS/Linux cần owner đúng và mode `0600` |
+| Lỗi model lock/không có quyền `/run/agentfleet` | Chạy lại dòng `AGENTFLEET_LOCK_DIR` ở bước 2 cho cả hai terminal |
+| Model timeout/không kết nối | Ollama đang chạy, model đã tải, đủ tài nguyên và tên model đúng; cấu hình khác cần bên giao xác nhận |
+| Không có Chromium/thiếu shared libraries | Cài browser trong NailHub venv; Linux chạy thêm `install-deps chromium` |
+| Website login/probe thất bại | Kiểm tra tài khoản, quyền website và selector khớp bản website đang dùng |
+| NailHub run báo Owner IDs | Nhận numeric Owner ID đã xác minh; không để allowlist rỗng |
 
-## Tham chiếu
+**Giới hạn kiểm chứng:** hướng dẫn được đối chiếu với source và tài liệu dependency. Máy thực thi hiện tại là Windows; chưa xác minh end-to-end trên máy macOS/Linux sạch hoặc đăng nhập tài khoản thật. Các phiên bản dependency chưa có lockfile chung nên cần lưu phiên bản đã cài khi nghiệm thu. Console vẫn có lỗi contract/đóng gói đang được xử lý riêng.
 
-- [Telegram Triage README](listener/README.md)
-- [NailHub README](nailhub/README.md)
-- [Cấu hình mẫu Triage](config/listener.example.toml)
-- [Cấu hình mẫu NailHub](config/nailhub.example.toml)
-
-Hướng dẫn được đối chiếu với source; chưa thực hiện đăng nhập tài khoản hoặc chạy worker thật trong lượt cập nhật tài liệu này.
+Tham chiếu: [Triage](listener/README.md), [NailHub](nailhub/README.md), [TOML Triage](config/listener.example.toml), [TOML NailHub](config/nailhub.example.toml).
