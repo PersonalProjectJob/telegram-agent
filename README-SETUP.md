@@ -1,6 +1,6 @@
 # Setup nhanh Telegram Triage và NailHub
 
-Cập nhật: 26/10/2026 · Phiên bản: 1.0.4
+Cập nhật: 26/10/2026 · Phiên bản: 1.0.5
 
 Chạy trực tiếp bằng CLI, **không cần Console UI hoặc Node.js**. Chỉ cài/chạy worker bạn cần. Hướng dẫn dành cho Windows PowerShell và macOS/Linux Bash hoặc Zsh, dùng tài khoản người dùng thông thường.
 
@@ -11,7 +11,7 @@ Cài **Git**, **Python 3.12** (source yêu cầu tối thiểu 3.11) và [Ollama
 NailHub còn cần hệ điều hành/CPU được [Playwright hỗ trợ](https://playwright.dev/python/docs/intro#system-requirements). Không thể bảo đảm mọi máy hoặc hệ điều hành cũ đều chạy được. Model local cần đủ RAM/dung lượng; máy không đủ tài nguyên cần bên bàn giao cấp cấu hình provider phù hợp.
 
 ```sh
-git clone --branch codex/cross-platform-cli-setup https://github.com/PersonalProjectJob/telegram-agent.git AgentBuilder
+git clone --branch codex/configurable-nailhub-owner https://github.com/PersonalProjectJob/telegram-agent.git AgentBuilder
 cd AgentBuilder
 ```
 
@@ -184,7 +184,19 @@ Chạy lần lượt; `login` dùng file JSON ở bước 3. `probe` kiểm tra 
 
 ### Nếu cần chạy liên tục và nhận command Telegram
 
-Nhờ bên bàn giao cấp **numeric Owner ID đã xác minh** để điền `[worker] owner_ids` trong `nailhub.toml`. Source hiện khóa Owner username ở `SotaThao`; không đổi tùy ý sang tài khoản khác. `owner_ids = []` khiến `run` không khởi động, kể cả preview.
+Owner cần có **Telegram username và numeric user ID của cùng một tài khoản**; username không phải tên hiển thị hoặc số điện thoại. Điền cả hai trong bảng `[worker]` của `nailhub.toml`. Username `TeamOwner` và ID `123456789` trong ví dụ đều là giả lập, phải thay bằng tài khoản người thật do bạn chọn; Owner phải khác tài khoản Telegram đăng nhập listener NailHub:
+
+```toml
+owner_username = ""
+owner_ids = []
+# Ví dụ giả lập, thay cả hai bằng tài khoản của bạn trước khi run:
+# owner_username = "TeamOwner"
+# owner_ids = [123456789]
+```
+
+Username gồm 5–32 ký tự ASCII: bắt đầu bằng chữ cái, sau đó là chữ cái, số hoặc `_`. Có thể nhập `@TeamOwner`; một dấu `@` đầu được bỏ, so khớp không phân biệt hoa thường. Chỉ cho phép một ID nguyên dương. Khi khởi động, chính client Telegram NailHub tra cả username và ID, yêu cầu cùng một người dùng không phải bot và khác tài khoản listener; chỉ ID số đã xác minh được dùng để cho phép DM. Không lấy username hiển thị trong tin nhắn làm quyền truy cập.
+
+Mẫu để trống cả hai trường và không ngầm chọn tài khoản nào. Thiếu một trong hai trường khiến `run` không khởi động, kể cả mode preview; CLI website `login`/`probe`/`preview` vẫn dùng được với mode preview mà không cần Owner binding. Mode live còn cần contract evidence đã review.
 
 Trong terminal đã có Telegram credentials và `AGENTFLEET_LOCK_DIR` ở bước 2:
 
@@ -214,7 +226,7 @@ Giữ mode preview khi thử nghiệm. Lần sau chỉ cần chuẩn bị termin
 | Model timeout/không kết nối | Ollama đang chạy, model đã tải, đủ tài nguyên và tên model đúng; cấu hình khác cần bên giao xác nhận |
 | Không có Chromium/thiếu shared libraries | Cài browser trong NailHub venv; Linux chạy thêm `install-deps chromium` |
 | Website login/probe thất bại | Kiểm tra tài khoản, quyền website và selector khớp bản website đang dùng |
-| NailHub run báo Owner IDs | Nhận numeric Owner ID đã xác minh; không để allowlist rỗng |
+| NailHub run báo Owner binding hoặc verification failed | Điền username và một numeric ID của cùng người thật; Owner phải khác listener, không phải bot; kiểm tra tài khoản còn giữ username đó |
 
 **Giới hạn kiểm chứng:** hướng dẫn được đối chiếu với source và tài liệu dependency. Máy thực thi hiện tại là Windows; chưa xác minh end-to-end trên máy macOS/Linux sạch hoặc đăng nhập tài khoản thật. Các phiên bản dependency chưa có lockfile chung nên cần lưu phiên bản đã cài khi nghiệm thu. Console vẫn có lỗi contract/đóng gói đang được xử lý riêng.
 

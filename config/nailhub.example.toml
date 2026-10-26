@@ -8,8 +8,10 @@ mode = "preview"                     # Live requires independent review and cont
 db_path = "/var/lib/agentfleet/nailhub/jobs.sqlite3"
 profile_path = "/var/lib/agentfleet/nailhub/profile"
 credential_file = ""                  # Optional Owner-authorized local {email,password} JSON, mode0600.
-owner_username = "SotaThao"            # Bootstrap verifies username↔numeric binding; DM auth uses ID only.
-owner_ids = []                        # Empty denies ALL commands. Verify @SotaThao numeric ID with this service client.
+owner_username = ""                    # Set your Owner username; one leading @ is optional and removed.
+owner_ids = []                         # One positive numeric ID; both fields required for run/live.
+# Example only: owner_username = "TeamOwner" and owner_ids = [123456789]. Replace both.
+# Bootstrap verifies username↔numeric binding with this service client; DM auth uses ID only.
 interval_seconds = 600
 max_batch = 1
 max_pages = 50

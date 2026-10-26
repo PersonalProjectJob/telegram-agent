@@ -88,12 +88,12 @@ class TransientTests(unittest.IsolatedAsyncioTestCase):
 
 class StartupTests(unittest.IsolatedAsyncioTestCase):
     def make_config(self,directory):
-        return replace(settings(directory,owner_ids=(OWNER,)),telegram_session=str(Path(directory)/'session/nailhub.session'))
+        return replace(settings(directory,owner_ids=(OWNER,),owner_username='TeamOwner'),telegram_session=str(Path(directory)/'session/nailhub.session'))
 
     async def test_registered_handler_verified_owner_and_ignored_variants(self):
         with tempfile.TemporaryDirectory() as directory:
             cfg=self.make_config(directory);disconnected=asyncio.Event();registered=asyncio.Event()
-            user=SimpleNamespace(id=OWNER,bot=False,username='SotaThao')
+            user=SimpleNamespace(id=OWNER,bot=False,username='TeamOwner')
             handlers=[]
             def add(handler,builder):handlers.append(handler);registered.set()
             client=SimpleNamespace(add_event_handler=Mock(side_effect=add),remove_event_handler=Mock(),connect=AsyncMock(),
@@ -147,11 +147,15 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await asyncio.to_thread(cli.main,['run']),1)
 
     async def test_deterministic_startup_failures_exit_two_without_workers(self):
-        for kind in ('empty_owner_ids','not_logged_in','bot_session'):
+        for kind in ('empty_owner_ids','blank_username','invalid_username','malformed_ids','not_logged_in','bot_session','missing_session_metadata'):
             with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
                 cfg=self.make_config(directory)
                 if kind=='empty_owner_ids':cfg=replace(cfg,owner_ids=())
+                if kind=='blank_username':cfg=replace(cfg,owner_username='')
+                if kind=='invalid_username':cfg=replace(cfg,owner_username=None)
+                if kind=='malformed_ids':cfg=replace(cfg,owner_ids=None)
                 me=None if kind=='not_logged_in' else SimpleNamespace(id=42,bot=kind=='bot_session')
+                if kind=='missing_session_metadata':me=SimpleNamespace(id=42)
                 client=SimpleNamespace(add_event_handler=Mock(),remove_event_handler=Mock(),connect=AsyncMock(),get_me=AsyncMock(return_value=me),disconnect=AsyncMock())
                 fake=SimpleNamespace(worker=AsyncMock(),scheduler=AsyncMock(),command=Mock())
                 with patch.dict('sys.modules',{'telethon':fake_telethon(lambda:object())}),patch('nailhub.telegram.make_client',return_value=client),patch('nailhub.telegram.Service',return_value=fake),patch('nailhub.__main__.load_config',return_value=cfg),patch('nailhub.telegram.install_signal_handlers',return_value=lambda:None),self.assertLogs('nailhub.telegram',level='ERROR') as logs,redirect_stdout(io.StringIO()):
@@ -159,7 +163,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
                 fake.worker.assert_not_called();fake.scheduler.assert_not_called()
                 client.disconnect.assert_awaited_once();client.remove_event_handler.assert_called_once()
                 self.assertTrue(any('operator action required' in r.getMessage() for r in logs.records))
-                if kind=='empty_owner_ids':client.connect.assert_not_awaited()
+                if kind in ('empty_owner_ids','blank_username','invalid_username','malformed_ids'):client.connect.assert_not_awaited()
 
     async def test_transient_connect_and_verification_failures_exit_one(self):
         for phase,error in (('connect',OSError('PRIVATE')),('connect',FakeFloodWaitError(capture=60)),('verify',RuntimeError('PRIVATE'))):

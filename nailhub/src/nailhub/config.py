@@ -1,6 +1,7 @@
 """Strict deployment configuration. No browser or credentials are loaded on import."""
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -37,7 +38,7 @@ class NailHubConfig:
     api_origin: str = "https://api.nailhub.ai"
     max_pages: int = 50
     range_policy: str = 'upper_floor_100'
-    owner_username: str = 'SotaThao'
+    owner_username: str = ''
     num_predict: int = 2048
     categories: tuple = SUPPORTED_CATEGORIES
     provider: str = "ollama"
@@ -46,6 +47,29 @@ class NailHubConfig:
     key_file: str = ""
     console_revision: str = ""
     telegram_session: str = "/var/lib/agentfleet/nailhub/nailhub.session"
+
+
+def normalize_owner_username(value):
+    """Accept an ordinary Telegram username, optionally prefixed by one @."""
+    if not isinstance(value, str):
+        raise ConfigError('Owner username must be a Telegram username or empty')
+    username = value[1:] if value.startswith('@') else value
+    if value and not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', username):
+        raise ConfigError('Owner username must contain 5-32 ASCII letters, digits or underscores, starting with a letter')
+    return username
+
+
+def owner_binding(config):
+    """Return a complete binding, or deny malformed direct dataclass configuration."""
+    try:
+        username = normalize_owner_username(getattr(config, 'owner_username', None))
+    except ConfigError:
+        return None
+    ids = getattr(config, 'owner_ids', None)
+    if (not username or not isinstance(ids, (tuple, list)) or len(ids) != 1
+            or type(ids[0]) is not int or ids[0] <= 0):
+        return None
+    return username, ids[0]
 
 
 def load_optional(env=None):
@@ -71,11 +95,9 @@ def load_config(path):
         if not isinstance(session, str) or not (Path(session).is_absolute() or PurePosixPath(session).is_absolute()):
             raise ConfigError("Telegram session must be an absolute path")
         ids = worker.get("owner_ids", [])
-        if not isinstance(ids, list) or any(type(i) is not int or i <= 0 for i in ids):
-            raise ValueError()
-        username = worker.get('owner_username', 'SotaThao')
-        if not isinstance(username, str) or username.casefold() != 'sotathao' or len(ids) > 1:
-            raise ConfigError('NailHub Owner binding must be @SotaThao and one numeric ID')
+        if not isinstance(ids, list) or len(ids) > 1 or any(type(i) is not int or i <= 0 for i in ids):
+            raise ConfigError('Owner IDs must be empty or contain one positive integer')
+        username = normalize_owner_username(worker.get('owner_username', ''))
         mode = worker.get("mode", "preview")
         interval, batch = worker.get("interval_seconds", 600), worker.get("max_batch", 1)
         timeout = model.get("timeout_seconds", 600)
@@ -119,8 +141,8 @@ def load_config(path):
         reference = contract.get("verification_ref", "")
         if not isinstance(reference, str):
             raise ValueError()
-        if mode == "live" and (not verified or not reference.strip() or not ids):
-            raise ConfigError("Live NailHub needs VERIFIED contract, evidence reference and numeric Owner IDs")
+        if mode == "live" and (not verified or not reference.strip() or not username or not ids):
+            raise ConfigError("Live NailHub needs VERIFIED contract, evidence reference and a complete Owner username/numeric ID binding")
         credential_file = worker.get('credential_file', '')
         if not isinstance(credential_file, str) or (credential_file and not Path(credential_file).is_absolute()):
             raise ValueError()

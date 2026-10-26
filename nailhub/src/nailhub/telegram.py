@@ -12,6 +12,7 @@ from pathlib import Path
 from ._errors import ConfigError
 from ._runtime import ProcessLock
 from .commands import make_owner_notice_sender, route_command, verify_owner
+from .config import owner_binding
 from .service import Service, wait_for_stop
 
 LOG = logging.getLogger(__name__)
@@ -156,11 +157,12 @@ async def _run_locked(config):
 
     async def initialize():
         try:
-            if not config.owner_ids:
-                raise ConfigError('Owner IDs are required before startup')
+            if owner_binding(config) is None:
+                raise ConfigError('A complete Owner username/numeric ID binding is required before startup')
             await client.connect()
             me = await client.get_me()
-            if me is None or getattr(me, 'bot', False):
+            if (type(getattr(me, 'id', None)) is not int or me.id <= 0
+                    or getattr(me, 'bot', None) is not False):
                 raise ConfigError('Human Telegram login required: run login-telegram')
             while not stop.is_set():
                 try:
