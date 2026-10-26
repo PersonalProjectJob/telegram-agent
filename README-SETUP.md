@@ -1,6 +1,6 @@
 # Setup nhanh Telegram Triage và NailHub
 
-Cập nhật: 26/10/2026 · Phiên bản: 1.0.3
+Cập nhật: 26/10/2026 · Phiên bản: 1.0.4
 
 Chạy trực tiếp bằng CLI, **không cần Console UI hoặc Node.js**. Chỉ cài/chạy worker bạn cần. Hướng dẫn dành cho Windows PowerShell và macOS/Linux Bash hoặc Zsh, dùng tài khoản người dùng thông thường.
 
@@ -142,6 +142,20 @@ File chứa mật khẩu dạng rõ. Dùng thư mục riêng của tài khoản,
 
 ## 4. Chạy Telegram Triage
 
+### Chuẩn bị tài khoản listener — lần đầu
+
+Listener đăng nhập bằng **tài khoản Telegram người dùng**, không dùng Bot Token. Nên dùng một tài khoản riêng cho listener và thêm tài khoản đó vào các nhóm cần theo dõi.
+
+1. Đăng nhập [my.telegram.org](https://my.telegram.org) bằng tài khoản Telegram dùng để đăng ký application.
+2. Vào **API development tools**, điền form tạo application để nhận `api_id` và `api_hash`. Xem [hướng dẫn chính thức Telegram](https://core.telegram.org/api/obtaining_api_id).
+3. Điền hai giá trị này vào `TG_API_ID` và `TG_API_HASH` trong khối chuẩn bị terminal ở bước 2; không đặt Bot Token vào các trường này.
+4. Trong `listener.toml`, đặt `[telegram] chat_ids` thành numeric ID của các nhóm được phép theo dõi. Nhận ID chính xác từ bên bàn giao; không giữ ID mẫu, không dùng tên nhóm hoặc username thay numeric ID.
+5. Khi chạy `triage login`, nhập số điện thoại **của tài khoản listener**, có mã quốc gia (ví dụ `+84...`), mã đăng nhập được Telegram gửi và mật khẩu 2FA nếu được hỏi. Tài khoản đó phải có quyền truy cập các nhóm đã cấu hình.
+
+API ID/hash xác định application; tài khoản listener thực tế được chọn ở bước đăng nhập bằng số điện thoại. Không gửi API hash, OTP hoặc mật khẩu 2FA vào chat/tài liệu bàn giao.
+
+### Đăng nhập và chạy
+
 Trong terminal đã chuẩn bị ở bước 2:
 
 ```sh
@@ -150,7 +164,7 @@ triage login
 triage run
 ```
 
-Chỉ chạy lệnh kế tiếp khi lệnh trước thành công. `login` yêu cầu phone/OTP/2FA lần đầu. `run` giữ terminal mở; dừng bằng `Ctrl+C`.
+Chỉ chạy lệnh kế tiếp khi lệnh trước thành công. Đăng nhập thành công tạo file `gateway.session` tại `[telegram] session_path` đã cấu hình. File này giữ quyền truy cập tài khoản: bảo vệ như mật khẩu, không commit hoặc đưa vào ZIP source. `run` giữ terminal mở; dừng bằng `Ctrl+C`.
 
 Thử gửi tin từ tài khoản khác trong nhóm đã cấu hình: listener bỏ qua tin outgoing của chính tài khoản đang đăng nhập. **Dry-run không tạo GitHub issue nhưng vẫn có thể thả reaction Telegram.**
 
