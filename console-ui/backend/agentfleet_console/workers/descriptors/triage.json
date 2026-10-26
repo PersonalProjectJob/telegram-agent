@@ -1,0 +1,668 @@
+{
+  "id": "triage",
+  "displayName": "Telegram Triage",
+  "description": "Theo dõi tin nhắn, phân loại nội dung và tạo GitHub issue.",
+  "schemaVersion": 1,
+  "contractRevision": "triage-6fdb7db-v1",
+  "capabilities": {
+    "settings": true,
+    "probe": true,
+    "usage": true
+  },
+  "groups": [
+    {
+      "id": "ai",
+      "label": "AI & API",
+      "sections": [
+        {
+          "id": "provider",
+          "title": "Model xử lý",
+          "description": "Chọn nguồn AI cho service này. Cấu hình của service còn lại được giữ riêng."
+        },
+        {
+          "id": "connection",
+          "title": "Thông tin kết nối",
+          "description": "Thử bản nháp trước khi lưu. Mỗi service dùng API key riêng."
+        },
+        {
+          "id": "fallback",
+          "title": "Fallback local",
+          "description": "Dùng Ollama dự phòng khi cloud không xử lý được.",
+          "disabledWhen": {
+            "equals": {
+              "field": "provider",
+              "value": "ollama"
+            }
+          },
+          "disabledHelp": "Ollama đang là model chính. Giá trị fallback được giữ lại và sẽ dùng khi chuyển sang cloud."
+        },
+        {
+          "id": "limits",
+          "title": "Giới hạn xử lý",
+          "description": "Cloud dùng nội dung dạng text và đầu ra JSON; kiểm tra nghiệp vụ vẫn do runtime thực hiện."
+        },
+        {
+          "id": "probe",
+          "title": "Kiểm tra kết nối",
+          "description": "Gửi một mẫu JSON tổng hợp đến endpoint. Cloud provider có thể tính phí cho lượt test."
+        }
+      ]
+    },
+    {
+      "id": "operation",
+      "label": "Vận hành",
+      "sections": [
+        {
+          "id": "mode",
+          "title": "Chế độ hoạt động",
+          "description": "Thay đổi mode chỉ có hiệu lực khi áp dụng cho service."
+        },
+        {
+          "id": "workload",
+          "title": "Độ tin cậy",
+          "description": "Giữ nội dung chưa chắc chắn để người kiểm tra."
+        }
+      ]
+    },
+    {
+      "id": "telegram",
+      "label": "Telegram",
+      "sections": [
+        {
+          "id": "groups",
+          "title": "Nhóm Telegram",
+          "description": "Dùng group ID âm, mỗi dòng một ID."
+        },
+        {
+          "id": "proxy",
+          "title": "Proxy Telegram",
+          "description": "Bỏ trống host để kết nối trực tiếp."
+        }
+      ]
+    },
+    {
+      "id": "aggregation",
+      "label": "Gom tin",
+      "sections": [
+        {
+          "id": "window",
+          "title": "Cửa sổ gom tin",
+          "description": "Gom các tin liên quan trước khi phân loại."
+        }
+      ]
+    },
+    {
+      "id": "files",
+      "label": "Tệp đính kèm",
+      "sections": [
+        {
+          "id": "attachments",
+          "title": "Tệp đính kèm",
+          "description": "Ảnh và tài liệu có giới hạn từng case riêng."
+        }
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "ollama",
+      "label": "Ollama",
+      "note": "Local",
+      "defaults": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "model": "qwen3.5:9b"
+      },
+      "requiresKey": false
+    },
+    {
+      "id": "anthropic",
+      "label": "Claude",
+      "note": "Anthropic API",
+      "defaults": {
+        "baseUrl": "https://api.anthropic.com",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "note": "OpenAI API",
+      "defaults": {
+        "baseUrl": "https://api.openai.com/v1",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "note": "DeepSeek API",
+      "defaults": {
+        "baseUrl": "https://api.deepseek.com",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "compatible",
+      "label": "Custom API",
+      "note": "OpenAI-compatible",
+      "defaults": {
+        "baseUrl": "",
+        "model": ""
+      },
+      "requiresKey": true
+    }
+  ],
+  "fields": [
+    {
+      "id": "provider",
+      "type": "enum",
+      "label": "Provider",
+      "default": "ollama",
+      "group": "ai",
+      "section": "provider",
+      "help": "",
+      "widget": "provider",
+      "options": [
+        {
+          "value": "ollama",
+          "label": "Ollama"
+        },
+        {
+          "value": "anthropic",
+          "label": "Claude"
+        },
+        {
+          "value": "openai",
+          "label": "OpenAI"
+        },
+        {
+          "value": "deepseek",
+          "label": "DeepSeek"
+        },
+        {
+          "value": "compatible",
+          "label": "Custom API"
+        }
+      ]
+    },
+    {
+      "id": "model",
+      "type": "string",
+      "label": "Model ID",
+      "default": "qwen3.5:9b",
+      "group": "ai",
+      "section": "connection",
+      "help": "Nhập model ID được cấp cho tài khoản của bạn.",
+      "widget": "text",
+      "maxLength": 200,
+      "wide": true,
+      "placeholder": "Model ID từ nhà cung cấp"
+    },
+    {
+      "id": "baseUrl",
+      "type": "string",
+      "label": "Base URL",
+      "default": "http://127.0.0.1:11434",
+      "group": "ai",
+      "section": "connection",
+      "help": "Endpoint theo provider; không kèm API key trong URL.",
+      "widget": "text",
+      "maxLength": 8000,
+      "wide": true,
+      "disabledWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "anthropic",
+            "openai",
+            "deepseek"
+          ]
+        }
+      }
+    },
+    {
+      "id": "timeout",
+      "type": "integer",
+      "label": "Thời gian chờ (giây)",
+      "default": 600,
+      "group": "ai",
+      "section": "limits",
+      "help": "Giới hạn thời gian cho một lần gọi.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 1800
+    },
+    {
+      "id": "maxOutput",
+      "type": "integer",
+      "label": "Giới hạn output (token)",
+      "default": 2048,
+      "group": "ai",
+      "section": "limits",
+      "help": "Giới hạn số token trả về.",
+      "widget": "number",
+      "minimum": 256,
+      "maximum": 8192
+    },
+    {
+      "id": "think",
+      "type": "boolean",
+      "label": "Suy luận (thinking)",
+      "default": true,
+      "group": "ai",
+      "section": "limits",
+      "help": "Adapter hiện chỉ bật thinking cho Ollama.",
+      "widget": "toggle",
+      "disabledWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "anthropic",
+            "openai",
+            "deepseek",
+            "compatible"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloudConsent",
+      "type": "boolean",
+      "label": "Cho phép gửi nội dung tác vụ đến cloud",
+      "default": false,
+      "group": "ai",
+      "section": "connection",
+      "help": "Cho phép service này gửi nội dung đến provider đã chọn. Tắt để runtime dừng xử lý bằng cloud.",
+      "widget": "toggle",
+      "visibleWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "anthropic",
+            "openai",
+            "deepseek",
+            "compatible"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mode",
+      "type": "enum",
+      "label": "Chế độ",
+      "default": "dry-run",
+      "group": "operation",
+      "section": "mode",
+      "help": "Live có thể tạo issue hoặc thay đổi bài thật.",
+      "widget": "select",
+      "options": [
+        {
+          "value": "dry-run",
+          "label": "Dry run — không tạo issue"
+        },
+        {
+          "value": "live",
+          "label": "Live — tạo GitHub issue"
+        }
+      ]
+    },
+    {
+      "id": "confidence",
+      "type": "number",
+      "label": "Ngưỡng tin cậy",
+      "default": 0.7,
+      "group": "operation",
+      "section": "workload",
+      "help": "Giá trị từ 0 đến 1.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "step": 0.05
+    },
+    {
+      "id": "issueLimit",
+      "type": "integer",
+      "label": "Issue mỗi giờ",
+      "default": 20,
+      "group": "operation",
+      "section": "mode",
+      "help": "Giới hạn issue trong một giờ.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    {
+      "id": "window",
+      "type": "integer",
+      "label": "Thời gian gom tin (phút)",
+      "default": 2,
+      "group": "aggregation",
+      "section": "window",
+      "help": "0 = không đợi gom tin.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 1440
+    },
+    {
+      "id": "maxCase",
+      "type": "integer",
+      "label": "Tin mỗi case",
+      "default": 20,
+      "group": "aggregation",
+      "section": "window",
+      "help": "Số tin tối đa trong một case.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    {
+      "id": "maxWindow",
+      "type": "integer",
+      "label": "Tin mỗi cửa sổ",
+      "default": 40,
+      "group": "aggregation",
+      "section": "window",
+      "help": "Số tin tối đa mỗi lần phân tích.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    {
+      "id": "allGroups",
+      "type": "boolean",
+      "label": "Nghe tất cả nhóm",
+      "default": false,
+      "group": "telegram",
+      "section": "groups",
+      "help": "Khi bật, danh sách nhóm riêng không được dùng.",
+      "widget": "toggle"
+    },
+    {
+      "id": "chatIds",
+      "type": "string",
+      "label": "Nhóm Telegram",
+      "default": "-1001234567890",
+      "group": "telegram",
+      "section": "groups",
+      "help": "Danh sách nhóm trong cấu hình đã nối.",
+      "widget": "textarea",
+      "maxLength": 8000,
+      "wide": true,
+      "disabledWhen": {
+        "equals": {
+          "field": "allGroups",
+          "value": true
+        }
+      }
+    },
+    {
+      "id": "ignored",
+      "type": "string",
+      "label": "Lệnh bỏ qua",
+      "default": "/nailhub",
+      "group": "telegram",
+      "section": "groups",
+      "help": "Một lệnh mỗi dòng, ví dụ /nailhub.",
+      "widget": "textarea",
+      "maxLength": 8000,
+      "wide": true
+    },
+    {
+      "id": "proxyHost",
+      "type": "string",
+      "label": "Proxy host",
+      "default": "",
+      "group": "telegram",
+      "section": "proxy",
+      "help": "Không chứa proxy secret.",
+      "widget": "text",
+      "maxLength": 8000
+    },
+    {
+      "id": "proxyPort",
+      "type": "integer",
+      "label": "Proxy port",
+      "default": 443,
+      "group": "telegram",
+      "section": "proxy",
+      "help": "Port từ 1 đến 65535.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    {
+      "id": "maxMB",
+      "type": "number",
+      "label": "Dung lượng file (MiB)",
+      "default": 10,
+      "group": "files",
+      "section": "attachments",
+      "help": "Dung lượng tối đa mỗi file; cho phép phần lẻ MiB.",
+      "widget": "number",
+      "minimum": 9.5367431640625e-07,
+      "maximum": 100,
+      "step": 9.5367431640625e-07
+    },
+    {
+      "id": "maxImages",
+      "type": "integer",
+      "label": "Ảnh mỗi case",
+      "default": 5,
+      "group": "files",
+      "section": "attachments",
+      "help": "0 = tắt upload ảnh.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    {
+      "id": "maxDocs",
+      "type": "integer",
+      "label": "Tài liệu mỗi case",
+      "default": 5,
+      "group": "files",
+      "section": "attachments",
+      "help": "0 = tắt upload tài liệu.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    {
+      "id": "maxUploads",
+      "type": "integer",
+      "label": "Upload mỗi giờ",
+      "default": 60,
+      "group": "files",
+      "section": "attachments",
+      "help": "Tính chung ảnh và tài liệu.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    {
+      "id": "fallback",
+      "type": "enum",
+      "label": "Khi cloud không xử lý được",
+      "default": "ollama",
+      "group": "ai",
+      "section": "fallback",
+      "help": "Chọn Tắt để giữ tác vụ lại khi cloud gặp sự cố.",
+      "widget": "select",
+      "options": [
+        {
+          "value": "ollama",
+          "label": "Ollama"
+        },
+        {
+          "value": "none",
+          "label": "Tắt"
+        }
+      ],
+      "wide": true
+    },
+    {
+      "id": "fallbackModel",
+      "type": "string",
+      "label": "Model fallback",
+      "default": "qwen3.5:9b",
+      "group": "ai",
+      "section": "fallback",
+      "help": "Model Ollama dùng riêng cho lượt xử lý dự phòng.",
+      "widget": "text",
+      "maxLength": 200,
+      "disabledWhen": {
+        "equals": {
+          "field": "fallback",
+          "value": "none"
+        }
+      },
+      "wide": true
+    },
+    {
+      "id": "fallbackThink",
+      "type": "boolean",
+      "label": "Thinking cho fallback",
+      "default": true,
+      "group": "ai",
+      "section": "fallback",
+      "help": "Chỉ áp dụng cho model fallback; không đổi thinking của model chính.",
+      "widget": "toggle",
+      "disabledWhen": {
+        "equals": {
+          "field": "fallback",
+          "value": "none"
+        }
+      }
+    }
+  ],
+  "mapping": {
+    "provider": {
+      "section": "model",
+      "key": "provider",
+      "codec": "identity"
+    },
+    "model": {
+      "section": "model",
+      "key": "model",
+      "codec": "identity"
+    },
+    "baseUrl": {
+      "section": "model",
+      "key": "base_url",
+      "codec": "identity"
+    },
+    "timeout": {
+      "section": "model",
+      "key": "timeout_seconds",
+      "codec": "identity"
+    },
+    "maxOutput": {
+      "section": "model",
+      "key": "num_predict",
+      "codec": "identity"
+    },
+    "think": {
+      "section": "model",
+      "key": "think",
+      "codec": "identity"
+    },
+    "cloudConsent": {
+      "section": "model",
+      "key": "cloud_consent",
+      "codec": "identity"
+    },
+    "mode": {
+      "section": "",
+      "key": "mode",
+      "codec": "identity"
+    },
+    "confidence": {
+      "section": "ollama",
+      "key": "confidence_threshold",
+      "codec": "identity"
+    },
+    "issueLimit": {
+      "section": "github",
+      "key": "max_issues_per_hour",
+      "codec": "identity"
+    },
+    "window": {
+      "section": "aggregation",
+      "key": "window_minutes",
+      "codec": "identity"
+    },
+    "maxCase": {
+      "section": "aggregation",
+      "key": "max_messages_per_case",
+      "codec": "identity"
+    },
+    "maxWindow": {
+      "section": "aggregation",
+      "key": "max_messages_per_window",
+      "codec": "identity"
+    },
+    "allGroups": {
+      "section": "telegram",
+      "key": "listen_all_groups",
+      "codec": "identity"
+    },
+    "chatIds": {
+      "section": "telegram",
+      "key": "chat_ids",
+      "codec": "negative_ids"
+    },
+    "ignored": {
+      "section": "telegram",
+      "key": "ignored_command_prefixes",
+      "codec": "lines"
+    },
+    "proxyHost": {
+      "section": "telegram.proxy",
+      "key": "host",
+      "codec": "identity"
+    },
+    "proxyPort": {
+      "section": "telegram.proxy",
+      "key": "port",
+      "codec": "identity"
+    },
+    "maxMB": {
+      "section": "attachments",
+      "key": "max_bytes",
+      "codec": "mib_bytes"
+    },
+    "maxImages": {
+      "section": "attachments",
+      "key": "max_per_case",
+      "codec": "identity"
+    },
+    "maxDocs": {
+      "section": "attachments",
+      "key": "max_documents_per_case",
+      "codec": "identity"
+    },
+    "maxUploads": {
+      "section": "attachments",
+      "key": "max_per_hour",
+      "codec": "identity"
+    },
+    "fallback": {
+      "section": "model",
+      "key": "fallback",
+      "codec": "identity"
+    },
+    "fallbackModel": {
+      "section": "model",
+      "key": "fallback_model",
+      "codec": "identity"
+    },
+    "fallbackThink": {
+      "section": "model",
+      "key": "fallback_think",
+      "codec": "identity"
+    }
+  }
+}

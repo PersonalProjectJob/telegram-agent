@@ -49,6 +49,98 @@ class ListingAgeProofTests(unittest.TestCase):
             listing_age_days(posting_from_data(raw), receipt, today=date(2026, 10, 14))
 
 
+class VerifiedListingRowsTests(unittest.IsolatedAsyncioTestCase):
+    # Literal UI fixtures keep the test independent of the adapter's header constants.
+    LAYOUTS = (
+        (['Title', 'Business Name', 'Posted By', 'State', 'City', 'Zip Code',
+          'Category', 'Status', 'Created', 'Actions'],
+         ['Cần Thợ Nails.', 'Twilight Nails', '-', 'IL', 'Downers Grove', '60516',
+          'JobPosting', 'Draft', '10/23/2026', 'View']),
+        (['Title', 'Business Name', 'Posted By', 'State', 'City', 'Zip Code',
+          'Category', 'Schedule', 'Apply By', 'Status', 'Created', 'Actions'],
+         ['Cần Thợ Nails.', 'Twilight Nails', '-', 'IL', 'Downers Grove', '60516',
+          'JobPosting', '-', '-', 'Draft', '10/23/2026', 'View']),
+        (['', 'Title', 'Business Name', 'Posted By', 'State', 'City', 'Zip Code',
+          'Category', 'Urgent', 'Status', 'Created', 'Actions'],
+         ['', 'Cần Thợ Nails.', 'Twilight Nails', '-', 'IL', 'Downers Grove', '60516',
+          'JobPosting', '-', 'Draft', '10/23/2026', 'View']),
+    )
+
+    async def verify_rows(self, headers, cells, *, raw_changes=None, row_count=1):
+        raw = raw_post(title='Cần Thợ Nails.', businessName='Twilight Nails', state='IL',
+                       city='Downers Grove', zipCode='60516', created='2026-10-23T12:00:00')
+        raw.update(raw_changes or {})
+        row = SimpleNamespace(wait_for=AsyncMock(), locator=Mock(side_effect=lambda selector:
+            SimpleNamespace(all_inner_texts=AsyncMock(return_value=cells)) if selector == 'td'
+            else self.fail('unexpected row selector: ' + selector)))
+        rows = SimpleNamespace(count=AsyncMock(return_value=row_count), nth=Mock(return_value=row))
+        def table_locator(selector):
+            if selector == 'thead th':
+                return SimpleNamespace(all_inner_texts=AsyncMock(return_value=headers))
+            self.assertEqual(selector, 'tbody > tr')
+            return rows
+        table = SimpleNamespace(locator=Mock(side_effect=table_locator),
+                                count=AsyncMock(return_value=1), wait_for=AsyncMock(),
+                                is_visible=AsyncMock(return_value=True))
+        def page_locator(selector):
+            self.assertEqual(selector, 'table')
+            return table
+        with tempfile.TemporaryDirectory() as directory:
+            browser = Browser(settings(directory), page=SimpleNamespace(locator=page_locator))
+            bound = await browser._verified_listing_rows({'items': [raw]})
+        self.assertEqual(len(bound), 1)
+        post, actual_row, receipt = bound[0]
+        self.assertIs(actual_row, row)
+        self.assertEqual(post.fingerprint, posting_from_data(raw).fingerprint)
+        self.assertEqual(receipt['id'], raw['id'])
+        self.assertEqual(receipt['source_hash'], post.fingerprint)
+        self.assertEqual(receipt['visible_created'], '10/23/2026')
+        self.assertEqual(receipt['created'], raw['created'])
+        self.assertEqual(receipt['shared_source']['status'], 'Draft')
+
+    async def test_all_three_exact_layouts_bind_source_status_and_created(self):
+        for headers, cells in self.LAYOUTS:
+            with self.subTest(headers=headers):
+                await self.verify_rows(headers, cells)
+
+    async def test_unknown_missing_duplicate_and_reordered_headers_fail_closed(self):
+        for headers, cells in self.LAYOUTS:
+            unknown = [*headers[:-1], 'Unknown']
+            duplicate = [*headers[:-1], 'Created']
+            reordered = list(headers)
+            reordered[1], reordered[2] = reordered[2], reordered[1]
+            for invalid in (unknown, headers[:-1], duplicate, reordered):
+                with self.subTest(headers=invalid), self.assertRaisesRegex(NeedsHuman, 'columns'):
+                    await self.verify_rows(invalid, cells)
+
+    async def test_each_core_field_and_status_must_match_identified_source(self):
+        for headers, cells in self.LAYOUTS:
+            for field in ('Title', 'Business Name', 'Posted By', 'State', 'City',
+                          'Zip Code', 'Category', 'Status'):
+                wrong = list(cells)
+                wrong[headers.index(field)] = 'Wrong source value'
+                with self.subTest(headers=headers, field=field), self.assertRaisesRegex(NeedsHuman, 'visible row'):
+                    await self.verify_rows(headers, wrong)
+
+    async def test_created_requires_valid_same_day_source_date(self):
+        for headers, cells in self.LAYOUTS:
+            for invalid in ('10/22/2026', '', 'not a date'):
+                wrong = list(cells)
+                wrong[headers.index('Created')] = invalid
+                with self.subTest(headers=headers, date=invalid), self.assertRaises(NeedsHuman):
+                    await self.verify_rows(headers, wrong)
+            with self.subTest(headers=headers, source_date='missing'), self.assertRaises(NeedsHuman):
+                await self.verify_rows(headers, cells, raw_changes={'created': None})
+
+    async def test_row_width_and_count_must_match_verified_contract(self):
+        for headers, cells in self.LAYOUTS:
+            for wrong in (cells[:-1], [*cells, 'extra']):
+                with self.subTest(headers=headers, width=len(wrong)), self.assertRaisesRegex(NeedsHuman, 'visible row'):
+                    await self.verify_rows(headers, wrong)
+            with self.subTest(headers=headers, row_count=2), self.assertRaisesRegex(NeedsHuman, 'table rows'):
+                await self.verify_rows(headers, cells, row_count=2)
+
+
 class AgeStateTests(unittest.TestCase):
     def test_old_existing_detail_cas_is_retained_and_manual_queue_excludes_skip(self):
         with tempfile.TemporaryDirectory() as directory:

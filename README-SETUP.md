@@ -1,8 +1,22 @@
 # Chạy Telegram Triage và NailHub từ source
 
-Cập nhật: 26/10/2026 · Phiên bản: 1.0.1
+Cập nhật: 26/10/2026 · Phiên bản: 1.0.2
 
 Console UI hiện chưa khả dụng. Hướng dẫn này chạy trực tiếp bằng CLI trên **Windows / PowerShell**. Chỉ làm phần của worker cần dùng; muốn chạy cả hai thì mở hai terminal riêng.
+
+## Nhận source trên máy mới
+
+Cài Git và Python 3.11+, sau đó mở PowerShell:
+
+```powershell
+git clone --branch codex/worker-cli-setup https://github.com/PersonalProjectJob/telegram-agent.git AgentBuilder
+cd AgentBuilder
+git rev-parse HEAD
+```
+
+Branch này chứa bản bàn giao đầy đủ, gồm Telegram Triage từ `main` và các thay đổi local của Console/NailHub. Sau khi PR được merge, có thể clone branch `main` thay thế. Repository riêng tư yêu cầu tài khoản có quyền đọc. Lưu commit được in ra để xác định đúng bản đang cài.
+
+Console hiện chưa qua gate tương thích worker: metadata vẫn pin baseline cũ. Không dùng Console Save/Apply hoặc ZIP Console làm đường setup; chạy hai worker bằng CLI theo các bước bên dưới.
 
 ## 1. Chuẩn bị
 

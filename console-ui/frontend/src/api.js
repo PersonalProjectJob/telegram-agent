@@ -2,6 +2,8 @@
 'use strict';
 window.AgentFleetAPI = (() => {
   let csrfToken = '';
+  let registry = new Map();
+  let bootstrapJob = 0;
   class APIError extends Error {
     constructor(message, code, status, field) { super(message); this.code = code; this.status = status; this.field = field; }
   }
@@ -23,15 +25,25 @@ window.AgentFleetAPI = (() => {
     } finally { clearTimeout(timer); }
   }
   const servicePath = id => {
-    if (!['triage','nailhub'].includes(id)) throw new APIError('Service không hợp lệ.', 'INVALID_SERVICE', 400);
-    return `/api/services/${id}`;
+    if (typeof id !== 'string' || !registry.has(id)) throw new APIError('Service không hợp lệ.', 'INVALID_SERVICE', 400);
+    return `/api/services/${encodeURIComponent(id)}`;
   };
+  const contract = id => ({contractRevision:registry.get(id)?.contractRevision});
   return {
     APIError,
-    async bootstrap() { const data = await request('/api/bootstrap', {timeout:15000}); csrfToken = data.csrfToken; return data; },
-    usage() { return request('/api/usage', {timeout:15000}); },
-    test(id, settings, apiKey) { return request(`${servicePath(id)}/test`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {})},timeout:120000}); },
-    save(id, settings, apiKey, expectedRevision) { return request(`${servicePath(id)}/save`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {}),expectedRevision},timeout:30000}); },
-    apply(id, expectedRevision) { return request(`${servicePath(id)}/apply`, {method:'POST',body:{expectedRevision},timeout:210000}); }
+    async bootstrap() {
+      const job = ++bootstrapJob;
+      const data = await request('/api/bootstrap', {timeout:15000});
+      if (job === bootstrapJob) { csrfToken = data.csrfToken; registry = new Map(Object.entries(data.descriptors || {})); }
+      return data;
+    },
+    usage(id) {
+      const path = servicePath(id);
+      if (!registry.get(id)?.capabilities?.usage) throw new APIError('Service không hỗ trợ dữ liệu chi phí.', 'UNSUPPORTED_CAPABILITY', 400);
+      return request(`${path}/usage`, {timeout:15000});
+    },
+    test(id, settings, apiKey) { return request(`${servicePath(id)}/test`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {}),...contract(id)},timeout:120000}); },
+    save(id, settings, apiKey, expectedRevision) { return request(`${servicePath(id)}/save`, {method:'POST',body:{settings,...(apiKey ? {apiKey} : {}),expectedRevision,...contract(id)},timeout:30000}); },
+    apply(id, expectedRevision) { return request(`${servicePath(id)}/apply`, {method:'POST',body:{expectedRevision,...contract(id)},timeout:210000}); }
   };
 })();

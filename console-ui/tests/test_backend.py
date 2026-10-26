@@ -14,8 +14,10 @@ import types
 import time
 import unittest
 from unittest.mock import patch
-sys.path.insert(0,str(Path(__file__).resolve().parent))
-from backend import Store, APIError, patch_toml
+CONSOLE=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(CONSOLE/'backend'))
+sys.path.insert(0,str(CONSOLE))
+from agentfleet_console.store import Store, APIError, patch_toml
 from run import ConsoleServer
 from tg_triage.ai_transport import complete, ProviderError, validate_endpoint
 
@@ -25,6 +27,12 @@ class BackendTests(unittest.TestCase):
         self.store=Store(self.temp.name,transport=lambda *args:{'message':{'content':'{"ok":true}'}})
     def draft(self,id='triage'):return self.store.public(id)['settings']
     def save(self,id='triage',**kwargs):return self.store.save(id,{'settings':self.draft(id),'expectedRevision':self.store.public(id)['revision'],**kwargs})
+    def test_patch_targets_the_executing_storage_module(self):
+        from agentfleet_console import store
+        self.assertIs(Store,store.Store)
+        self.assertFalse((CONSOLE/'backend.py').exists())
+        sentinel=object()
+        with patch('agentfleet_console.store.read_key',sentinel):self.assertIs(store.read_key,sentinel)
     def test_isolation_persistence_and_stale_revision(self):
         before=self.store.paths['nailhub'].read_bytes();self.save()
         self.assertEqual(before,self.store.paths['nailhub'].read_bytes())
@@ -54,7 +62,7 @@ class BackendTests(unittest.TestCase):
         code="""import sys,time
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
-from backend import Store,APIError
+from agentfleet_console.store import Store,APIError
 s=Store(sys.argv[2]);d=s.public('triage')['settings']
 Path(sys.argv[3]).write_text('ready')
 while not Path(sys.argv[4]).exists():time.sleep(.01)
@@ -65,7 +73,7 @@ except APIError as e:print(e.code)
         try:
             for index in range(2):
                 ready=self.store.directory/('ready'+str(index))
-                processes.append(subprocess.Popen([sys.executable,'-c',code,str(Path(__file__).resolve().parent),str(self.store.directory),str(ready),str(start)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True))
+                processes.append(subprocess.Popen([sys.executable,'-c',code,str(CONSOLE/'backend'),str(self.store.directory),str(ready),str(start)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True))
             deadline=time.monotonic()+10
             while not all((self.store.directory/('ready'+str(i))).exists() for i in range(2)):
                 if time.monotonic()>deadline:self.fail('child setup deadline')
@@ -160,7 +168,7 @@ except APIError as e:print(e.code)
                 return types.SimpleNamespace(returncode=0,stdout='active\n88\n')
             self.store.runner=runner
             ticks=iter(range(1000))
-            with self.subTest(mismatch=mismatch),patch.object(self.store,'capability',return_value=True),patch('backend.time.monotonic',side_effect=lambda:next(ticks)),patch('backend.time.sleep'),self.assertRaises(APIError) as error:
+            with self.subTest(mismatch=mismatch),patch.object(self.store,'capability',return_value=True),patch('agentfleet_console.store.time.monotonic',side_effect=lambda:next(ticks)),patch('agentfleet_console.store.time.sleep'),self.assertRaises(APIError) as error:
                 self.store.apply('triage',{'expectedRevision':revision})
             self.assertEqual(error.exception.code,'readiness_failed');self.assertIsNone(self.store.public('triage')['appliedRevision'])
     def test_fractional_mib_preserves_exact_bytes(self):
@@ -190,6 +198,17 @@ except APIError as e:print(e.code)
         def req(method,path,body=None,headers=None):
             connection=http.client.HTTPConnection('127.0.0.1',server.server_port,timeout=5);connection.request(method,path,body,headers or {});response=connection.getresponse();result=(response.status,response.read());connection.close();return result
         status,body=req('GET','/api/bootstrap');self.assertEqual(status,200);token=json.loads(body)['csrfToken']
+        frontend=CONSOLE/'frontend'
+        for url,relative in {'/':'index.html','/index.html':'index.html','/app.js':'src/app.js','/api.js':'src/api.js','/styles.css':'assets/styles.css','/tokens.css':'assets/tokens.css'}.items():
+            with self.subTest(asset=url):
+                expected=(frontend/relative).read_bytes()
+                self.assertEqual(req('GET',url),(200,expected))
+                self.assertEqual(req('GET',url+'?version=phase1'),(200,expected))
+                self.assertEqual(req('HEAD',url),(200,b''))
+        for path in ('/run.py','/backend.py','/package.py','/backend/agentfleet_console/store.py','/backend/agentfleet_console/paths.py','/frontend/index.html','/frontend/src/app.js','/src/app.js','/assets/styles.css','/../backend/agentfleet_console/store.py','/%2e%2e/backend.py'):
+            for method in ('GET','HEAD'):
+                with self.subTest(private_path=path,method=method):
+                    self.assertEqual(req(method,path)[0],404)
         self.assertEqual(req('GET','/api/bootstrap',headers={'Host':'attacker.invalid'})[0],403)
         self.assertEqual(req('GET','/../config/listener.example.toml')[0],404)
         self.assertEqual(req('POST','/api/services/triage/test','{}',{'Content-Type':'application/json'})[0],403)
@@ -273,7 +292,7 @@ class UsageTests(unittest.TestCase):
         original=os.open
         def spy(path,*a,**k):
             opened.append(str(path));return original(path,*a,**k)
-        with patch('backend.os.open',side_effect=spy):self.store.usage()
+        with patch('agentfleet_console.store.os.open',side_effect=spy):self.store.usage()
         self.assertEqual([Path(x).name for x in opened],['agentfleet-usage.json'])
     def test_huge_integers_are_invalid_not_server_errors(self):
         huge=10**400
@@ -369,7 +388,7 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ProviderError):complete('ollama',url,'model',[],{},timeout=2)
 
     def test_identical_transport_packages(self):
-        root=Path(__file__).resolve().parents[1]
+        root=CONSOLE.parent
         self.assertEqual((root/'listener/src/tg_triage/ai_transport.py').read_bytes(),(root/'nailhub/src/nailhub/ai_transport.py').read_bytes())
     def test_all_protocols_request_and_normalization(self):
         for provider,base in [('ollama','http://127.0.0.1:11434'),('anthropic','https://api.anthropic.com'),('openai','https://api.openai.com/v1'),('deepseek','https://api.deepseek.com'),('compatible','https://public.example/v1')]:

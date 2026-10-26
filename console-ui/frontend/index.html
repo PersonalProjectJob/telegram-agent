@@ -8,19 +8,19 @@
   <link rel="stylesheet" href="tokens.css">
   <link rel="stylesheet" href="styles.css">
   <script src="api.js" defer></script>
+  <script src="schema-form.js" defer></script>
+  <script src="state.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Đến nội dung chính</a>
   <div class="shell">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#triage" aria-label="AgentFleet, Telegram Triage"><span class="brand-mark" aria-hidden="true">af</span>AgentFleet<span class="brand-point" aria-hidden="true">.</span></a>
+      <a class="brand" href="#overview" aria-label="AgentFleet"><span class="brand-mark" aria-hidden="true">af</span>AgentFleet<span class="brand-point" aria-hidden="true">.</span></a>
       <div class="workspace"><span class="machine-icon" aria-hidden="true">▤</span><div><strong id="binding-name">LOCAL</strong><span id="binding-mode">Đang kết nối backend</span></div><span class="offline-dot" aria-hidden="true"></span></div>
       <nav aria-label="Điều hướng chính">
         <a href="#overview" data-page="overview"><span class="nav-icon" aria-hidden="true">▦</span>Tổng quan</a>
         <p class="nav-label">Dịch vụ</p>
-        <a href="#triage" data-page="triage"><span class="service-monogram" aria-hidden="true">T</span>Telegram Triage<span class="nav-indicator" aria-hidden="true"></span></a>
-        <a href="#nailhub" data-page="nailhub"><span class="service-monogram" aria-hidden="true">N</span>NailHub Worker<span class="nav-indicator" aria-hidden="true"></span></a>
         <p class="nav-label">Quản lý</p>
         <a href="#usage" data-page="usage"><span class="nav-icon" aria-hidden="true">$</span>Chi phí API</a>
         <a href="#history" data-page="history"><span class="nav-icon" aria-hidden="true">↶</span>Lịch sử thay đổi</a>
@@ -28,14 +28,14 @@
       <div class="sidebar-bottom"><span class="account-mark">O</span><div><strong>Owner</strong><span>Phiên local</span></div><span class="version">UI / 02</span></div>
     </aside>
     <div class="workspace-main">
-      <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-toggle" aria-expanded="false" aria-controls="sidebar" aria-label="Mở điều hướng">☰</button><span>Workspace</span><span aria-hidden="true">/</span><strong id="crumb">Telegram Triage</strong></div><button class="search-button" id="open-search"><span>Tìm màn hình</span><kbd>Ctrl K</kbd></button></header>
+      <header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-toggle" aria-expanded="false" aria-controls="sidebar" aria-label="Mở điều hướng">☰</button><span>Workspace</span><span aria-hidden="true">/</span><strong id="crumb"></strong></div><button class="search-button" id="open-search"><span>Tìm màn hình</span><kbd>Ctrl K</kbd></button></header>
       <div class="preview-strip" id="connection-banner" role="status"><span class="preview-label">Đang kết nối</span><span>Đang đọc cấu hình từ backend local…</span></div>
       <main id="main" tabindex="-1"></main>
       <footer class="page-footer"><span>AgentFleet Console</span><span>Cấu hình riêng. Áp dụng riêng.</span><span>Owner · nội bộ</span></footer>
     </div>
   </div>
   <dialog id="review-dialog" aria-labelledby="review-title"><div class="dialog-header"><h2 id="review-title">Xem lại thay đổi</h2><button class="icon-button" data-close aria-label="Đóng xem thay đổi">×</button></div><p id="review-subtitle" class="muted"></p><div id="review-body"></div><div class="test-result" id="save-error" role="alert" hidden></div><div class="dialog-actions"><button class="button" data-close>Quay lại</button><button class="button primary" id="confirm-save">Lưu cấu hình</button></div></dialog>
-  <dialog id="search-dialog" aria-labelledby="search-title"><h2 id="search-title">Đi đến màn hình</h2><label class="sr-only" for="search-input">Tìm màn hình</label><input id="search-input" type="search" placeholder="Telegram, NailHub, lịch sử…" autocomplete="off"><div id="search-results"></div><button class="button" data-close>Đóng</button></dialog>
+  <dialog id="search-dialog" aria-labelledby="search-title"><h2 id="search-title">Đi đến màn hình</h2><label class="sr-only" for="search-input">Tìm màn hình</label><input id="search-input" type="search" placeholder="Tên dịch vụ, lịch sử…" autocomplete="off"><div id="search-results"></div><button class="button" data-close>Đóng</button></dialog>
   <dialog id="leave-dialog" aria-labelledby="leave-title"><h2 id="leave-title">Thay đổi chưa lưu</h2><p>Bản nháp vẫn được giữ trong phiên này. Bạn có thể quay lại để tiếp tục.</p><div class="dialog-actions"><button class="button" data-close>Ở lại</button><button class="button primary" id="confirm-leave">Chuyển màn hình</button></div></dialog>
   <p class="sr-only" id="announcement" role="status" aria-live="polite"></p>
 </body>

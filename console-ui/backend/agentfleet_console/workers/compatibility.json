@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "gitCommit": "6fdb7db7da22247052782e2450f861375e79668f",
+  "workers": {
+    "triage": {
+      "contractRevision": "triage-6fdb7db-v1",
+      "files": {
+        "package/__init__.py": {
+          "sha256": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
+          "size": 83
+        },
+        "package/__main__.py": {
+          "sha256": "9a44176792ace330472591d3c21c0e9e220d8c86eb6e24ee05c2c1382c2c558d",
+          "size": 3674
+        },
+        "package/ai_transport.py": {
+          "sha256": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
+          "size": 12041
+        },
+        "package/attachments.py": {
+          "sha256": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
+          "size": 21003
+        },
+        "package/classifier.py": {
+          "sha256": "cc13f99c6048c468ef29c77006c82dbbe8c44f1045b342b8b5071b14152bbdcd",
+          "size": 21995
+        },
+        "package/config.py": {
+          "sha256": "b49f6473d463be758502f3f6f346fbf63562251ab401e7822c386d1c5a11c8b3",
+          "size": 17102
+        },
+        "package/github_issues.py": {
+          "sha256": "61c965fd8fd33bc363dde00f7a3a4394dab230f3c0e8e00a66d7f549db81980a",
+          "size": 3176
+        },
+        "package/group_notices.py": {
+          "sha256": "8caad52bb944b54705beae26eb22a11d02403408a2f1b8290345d91673d612ce",
+          "size": 3704
+        },
+        "package/issue_format.py": {
+          "sha256": "98216b5d943cc29a6bcbd5f1a6aa561e9a9de0e903c6e165ae5edf9a8db34f73",
+          "size": 25038
+        },
+        "package/model_lock.py": {
+          "sha256": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
+          "size": 8380
+        },
+        "package/models.py": {
+          "sha256": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
+          "size": 8724
+        },
+        "package/pipeline.py": {
+          "sha256": "8ff90dc0978c68ad0b77acbb228026fe24c685afd7e8006ba7b4b086cd4d6067",
+          "size": 47848
+        },
+        "package/provider.py": {
+          "sha256": "1d711a03af1be078fda90e47497fcd3c2fc83403a4540a240d424985d8e3e337",
+          "size": 7449
+        },
+        "package/reactions.py": {
+          "sha256": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
+          "size": 1484
+        },
+        "package/receipt.py": {
+          "sha256": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
+          "size": 771
+        },
+        "package/rules.py": {
+          "sha256": "93778eef5df2abe88ae4424179ec509595cd6dcf14d5d94ddb70d5852454bccd",
+          "size": 1860
+        },
+        "package/runtime.py": {
+          "sha256": "558a876aa86f2e2c7be8d54587ea9510e0762686bbf2a3a8dd9742db596b1862",
+          "size": 2260
+        },
+        "package/store.py": {
+          "sha256": "14d23bbca20a9d511ebba080a41ae890c663ce13723539a728a1281b2777ae0d",
+          "size": 48973
+        },
+        "package/telegram_io.py": {
+          "sha256": "3beafadec6111e07288cd4049c848762bdcbf5494d2e4e8954a56af1891f73e4",
+          "size": 24319
+        },
+        "package/usage.py": {
+          "sha256": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
+          "size": 7741
+        },
+        "data/case.md": {
+          "sha256": "2833bd13d69f4cc47b4845d547f3f351613e487ff01123fa3006f472dafa4e3c",
+          "size": 4881
+        },
+        "data/classify.md": {
+          "sha256": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
+          "size": 2580
+        },
+        "data/topics.md": {
+          "sha256": "261c24996b4de407dbe25bd39e55de1940079adb230276abcd1258a5762d2fd1",
+          "size": 6098
+        }
+      }
+    },
+    "nailhub": {
+      "contractRevision": "nailhub-6fdb7db-v1",
+      "files": {
+        "package/__init__.py": {
+          "sha256": "4fae4b6b87186e8ef5e608f71ff62d2d8466a1c7552531ea57cf352b852b0aed",
+          "size": 46
+        },
+        "package/__main__.py": {
+          "sha256": "824e8664a3dc78fd2bd91bcb6df49760ef041e61af939005119420f2f7bcac6e",
+          "size": 2743
+        },
+        "package/_errors.py": {
+          "sha256": "7e0e9fbaca9711e045af1a5a49ff736b1a7bae462f833a228c8ee125199f665d",
+          "size": 120
+        },
+        "package/_runtime.py": {
+          "sha256": "5edcb1ad8703b52eee0e48f05600c12a9261babf25a6d33f8d099f1c283fd316",
+          "size": 1796
+        },
+        "package/_text.py": {
+          "sha256": "77d141d3bde6864b39f7018da0e0a54d20974ed7f0acf8cbdf085bc539f5ac14",
+          "size": 459
+        },
+        "package/ai_transport.py": {
+          "sha256": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
+          "size": 12041
+        },
+        "package/browser.py": {
+          "sha256": "88055d1e1ac96d1380894860905b8ad9b10206c14e030780cbb16509c799f0a2",
+          "size": 47775
+        },
+        "package/categories.py": {
+          "sha256": "cb2e9344ad4e4befd7acd891b25b8d41d74bfd77e83a9d706f344ef5e20f4d0f",
+          "size": 11083
+        },
+        "package/commands.py": {
+          "sha256": "2eddd852f6342e309827dc64a7c6ff2ef172d7aa3799641d4e0bfa234e6a30f2",
+          "size": 3368
+        },
+        "package/config.py": {
+          "sha256": "958da712d42545d621cdce5c03af4261a477a886f36dc5b46cd86e9ef9423851",
+          "size": 8273
+        },
+        "package/credentials.py": {
+          "sha256": "ae6f927ac0deb6b037b16317fd2bf56a27abd5f2ea4c38444105635a07c36a14",
+          "size": 1686
+        },
+        "package/diagnostics.py": {
+          "sha256": "89aec8924aefea948a7b33a0cf7a1e7615ec306e0e487bd03225d1adaf6cdb00",
+          "size": 3977
+        },
+        "package/model.py": {
+          "sha256": "d2309c33682fd87b2dc5e80d3160418457d3e7719fc97098f9d057b3e134f231",
+          "size": 16915
+        },
+        "package/model_lock.py": {
+          "sha256": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
+          "size": 8380
+        },
+        "package/notices.py": {
+          "sha256": "85c1c6eb4deaabdd7026dc051f47d62ffa6a99bf388ff84df18764c81052dc82",
+          "size": 7896
+        },
+        "package/publication.py": {
+          "sha256": "424bc84e60f9e578b0e58f1790efea6210380d206bec0a8030eaaa4c87169222",
+          "size": 4044
+        },
+        "package/receipt.py": {
+          "sha256": "49848e8e1d512d6913157377285d9184fbdd8b1a104c010a8b9a13b9747745c9",
+          "size": 770
+        },
+        "package/service.py": {
+          "sha256": "d0916a4555176a91d175d0823c1e03e5ba1c6aa9d9fef8c1a5a8bc0ac4a68b1d",
+          "size": 17336
+        },
+        "package/state.py": {
+          "sha256": "c74057e2043d66d3c7ffb92c26428cd3f6e4987df084d0e99d7d1388e59d4472",
+          "size": 10519
+        },
+        "package/telegram.py": {
+          "sha256": "3b12e55e8aeb6389b24f5e1e6dca31a7fb35b36202dee9a666c402ae5c79998a",
+          "size": 8841
+        },
+        "package/validation.py": {
+          "sha256": "912c8c3fdf4f4d4ee1ac6a5a54743179b45a960ba111910a46af3b7ffb48fc7b",
+          "size": 144085
+        }
+      }
+    }
+  }
+}

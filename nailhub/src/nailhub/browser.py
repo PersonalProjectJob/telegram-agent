@@ -37,6 +37,8 @@ LISTING_HEADERS_10 = ('Title','Business Name','Posted By','State','City','Zip Co
                       'Category','Status','Created','Actions')
 LISTING_HEADERS_12 = ('Title','Business Name','Posted By','State','City','Zip Code',
                       'Category','Schedule','Apply By','Status','Created','Actions')
+LISTING_HEADERS_CHECKBOX_URGENT_12 = ('','Title','Business Name','Posted By','State','City',
+                                     'Zip Code','Category','Urgent','Status','Created','Actions')
 LISTING_TIMEZONE = timezone(timedelta(hours=7), 'Asia/Saigon')
 MAX_POST_AGE_DAYS = 45
 
@@ -479,8 +481,9 @@ class Browser:
         """Bind every response item and Created date to its visible table row."""
         table = await self.one('table')
         headers = tuple(await table.locator('thead th').all_inner_texts())
-        if headers not in (LISTING_HEADERS_10, LISTING_HEADERS_12):
+        if headers not in (LISTING_HEADERS_10, LISTING_HEADERS_12, LISTING_HEADERS_CHECKBOX_URGENT_12):
             raise NeedsHuman('listing table columns differ from verified contract')
+        core_offset = 1 if headers == LISTING_HEADERS_CHECKBOX_URGENT_12 else 0
         status_index, created_index = (7, 8) if headers == LISTING_HEADERS_10 else (9, 10)
         rows = table.locator('tbody > tr')
         items = data['items']
@@ -498,7 +501,7 @@ class Browser:
                 raw.get('postedByUserName') or raw.get('postedByName') or '-',
                 raw.get('state') or '-', raw.get('city') or '-', raw.get('zipCode') or '-',
                 raw['postingCategory'], raw['status']]
-            visible = [*cells[:7], cells[status_index]] if len(cells) == len(headers) else []
+            visible = [*cells[core_offset:core_offset + 7], cells[status_index]] if len(cells) == len(headers) else []
             if [compact(value) for value in visible] != [compact(value) for value in expected]:
                 raise NeedsHuman('listing visible row differs from identified response')
             receipt = listing_date_receipt(raw, cells[created_index].strip())
