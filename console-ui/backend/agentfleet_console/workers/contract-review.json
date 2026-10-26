@@ -1,0 +1,24 @@
+{
+  "descriptors": {
+    "console-ui/backend/agentfleet_console/workers/descriptors/nailhub.json": {
+      "contractRevision": "nailhub-6fdb7db-v1",
+      "id": "nailhub",
+      "sha256": "3491d59e20c1230c739c9499d62a0513e0dbf4e0fb93b717a721e6286add9914"
+    },
+    "console-ui/backend/agentfleet_console/workers/descriptors/triage.json": {
+      "contractRevision": "triage-6fdb7db-v1",
+      "id": "triage",
+      "sha256": "d3913ebb7eba8eaa5c46ccf6adcacb4c5f277562e271cd46ae972261d53940ef"
+    }
+  },
+  "gitCommit": "6fdb7db7da22247052782e2450f861375e79668f",
+  "manifestSha256": "e2e795ac33e145c7a61307413709800a188cbbe9d54be168298fd3a88c089e3c",
+  "owner": "AlexChu",
+  "reviewedModules": {
+    "console-ui/backend/agentfleet_console/registry.py": "c352ef88a56626ef41585ce89acb5570b81dad0d78d5f93d83afd897d6d39c81",
+    "console-ui/backend/agentfleet_console/schema.py": "b76f663888435b98a44f59256074b15839a3e7a232a09713ceb49b2ec94e3dd3",
+    "console-ui/backend/agentfleet_console/worker_sources.py": "285253c07aed34f1e564df65d4c344cd1b952bdfe0b0e17119c500968e357b9e",
+    "console-ui/backend/agentfleet_console/workers/adapters.py": "ebc230fa8d23c96d0c14463bb5f1a73ad13bb0c29ffdc3d1b44494b319e39204"
+  },
+  "schemaVersion": 1
+}

@@ -17,19 +17,13 @@ import threading
 import time
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT/'listener'/'src'))
-sys.path.insert(0, str(ROOT/'nailhub'/'src'))
-from tg_triage.ai_transport import complete, validate_endpoint, ProviderError, read_key
-
-class APIError(Exception):
-    def __init__(self, code, message, status=400, field=None):
-        self.code,self.message,self.status,self.field=code,message,status,field
-
-COMMON={'provider':('model','provider'),'model':('model','model'),'baseUrl':('model','base_url'),'timeout':('model','timeout_seconds'),'maxOutput':('model','num_predict'),'think':('model','think'),'cloudConsent':('model','cloud_consent')}
-MAPS={'triage':{**COMMON,'mode':('','mode'),'confidence':('ollama','confidence_threshold'),'issueLimit':('github','max_issues_per_hour'),'window':('aggregation','window_minutes'),'maxCase':('aggregation','max_messages_per_case'),'maxWindow':('aggregation','max_messages_per_window'),'allGroups':('telegram','listen_all_groups'),'chatIds':('telegram','chat_ids'),'ignored':('telegram','ignored_command_prefixes'),'proxyHost':('telegram.proxy','host'),'proxyPort':('telegram.proxy','port'),'maxMB':('attachments','max_bytes'),'maxImages':('attachments','max_per_case'),'maxDocs':('attachments','max_documents_per_case'),'maxUploads':('attachments','max_per_hour')},'nailhub':{**COMMON,'mode':('worker','mode'),'interval':('worker','interval_seconds'),'batch':('worker','max_batch'),'pages':('worker','max_pages'),'headless':('worker','headless'),'rangePolicy':('worker','range_policy'),'salaryRange':('contract','salary_range'),'salaryPlaces':('contract','salary_places')}}
-RANGES={'timeout':(1,1800),'maxOutput':(256,8192),'issueLimit':(1,10000),'window':(0,1440),'maxCase':(1,1000),'maxWindow':(1,1000),'proxyPort':(1,65535),'maxImages':(0,100),'maxDocs':(0,100),'maxUploads':(0,10000),'interval':(10,86400),'batch':(1,20),'pages':(1,500),'salaryPlaces':(0,2)}
-BOOL={'think','cloudConsent','allGroups','headless','salaryRange'}
+from .paths import ROOT
+from .errors import APIError
+from .worker_sources import ProviderError, read_key
+from .registry import default_registry
+from .schema import validate_settings
+from .compatibility import Compatibility, require_compatible
+from .policy import verify_binding
 
 def secure_state_directory(path):
     """Provision a private state ACL before any credential or journal is written."""
@@ -219,41 +213,91 @@ def validate_usage(raw,now):
 def _reject_json_constant(name):raise UsageInvalid()
 
 class Store:
-    def __init__(self, state_dir, installed=False, runner=subprocess.run, transport=None):
+    def __init__(self, state_dir, installed=False, runner=subprocess.run, transport=None, registry=None, compatibility=None):
         self.directory=Path(state_dir).resolve();secure_state_directory(self.directory)
         self.installed=installed;self.runner=runner;self.transport=transport
-        self.paths={'triage':Path('/etc/tg-triage/listener.toml'),'nailhub':Path('/etc/nailhub/nailhub.toml')} if installed else {k:self.directory/(k+'.toml') for k in MAPS}
+        self.registry=registry if registry is not None else default_registry()
+        self.compatibility=compatibility if compatibility is not None else Compatibility()
+        self.paths={id:entry['adapter'].binding.config if installed else self.directory/(id+'.toml') for id,entry in self.registry.entries.items()}
         self.locks={id:ServiceLock(path.with_name(path.name+'.console.lock')) for id,path in self.paths.items()}
-        for id in MAPS:
+        # Installed startup/observation never creates /etc locks, replays journals,
+        # initializes metadata or mutates config. Only explicit guarded actions may.
+        if installed:return
+        for id,entry in self.registry.entries.items():
             with self.locks[id]:
-                if not self.paths[id].exists() and not installed:
-                    example=ROOT/'config'/('listener.example.toml' if id=='triage' else 'nailhub.example.toml')
-                    text=example.read_text(encoding='utf-8')
-                    # Local storage paths are usable by the current OS; never initialize live.
-                    updates={('storage','db_path'):str(self.directory/'triage.sqlite3'),('telegram','session_path'):str(self.directory/'triage.session')} if id=='triage' else {('worker','db_path'):str(self.directory/'nailhub.sqlite3'),('worker','profile_path'):str(self.directory/'profile')}
+                if not self.paths[id].exists():
+                    text,updates=entry['adapter'].initial(self.directory)
                     atomic(self.paths[id],patch_toml(text,updates))
                 self.recover(id)
-                if self.paths[id].exists() and not self.meta_path(id).exists():
+                if not self.meta_path(id).exists():
                     raw,data=self.load(id);meta=self.meta(id)
                     meta['fingerprint']=hashlib.sha256(raw.encode()).hexdigest()
                     meta['revision']=value(data,'console','revision',0)
                     atomic(self.meta_path(id),json.dumps(meta))
+    def entry(self,id,capability=None):return self.registry.require(id,capability)
+    def adapter(self,id):return self.entry(id)['adapter']
+    def compatibility_state(self,id):
+        if not self.installed:return {'state':'local','reason':'Local configuration files; no installed service.'}
+        return self.compatibility.check(id,self.entry(id))
+    def observed_compatibility(self,id):
+        """Read-only display snapshot; action guards never reuse this result."""
+        result=self.compatibility_state(id)
+        if self.installed and result['state']=='verified':
+            try:verify_binding(self.adapter(id).binding,self.runner)
+            except APIError as error:return {'state':'unverified','reason':error.message}
+            return {'state':'verified','reason':'Installed worker files and effective service binding match the tested Console contract.'}
+        return result
+    def guard(self,id,body,capability='settings'):
+
+        entry=self.entry(id,capability)
+        if 'contractRevision' in body and body['contractRevision']!=entry['public']['contractRevision']:
+            raise APIError('contract_conflict','Worker contract changed; reload before retrying.',409)
+        if self.installed:require_compatible(self.compatibility_state(id))
+        return entry
     def write_config(self,id,text):
         group=None
         if self.installed:
             import grp
-            group=grp.getgrnam('tglistener' if id=='triage' else 'tgnailhub').gr_gid
+            group=grp.getgrnam(self.adapter(id).binding.group).gr_gid
         atomic(self.paths[id],text,group)
     def meta_path(self,id):return self.directory/(id+'.json')
     def meta(self,id):
         p=self.meta_path(id)
-        return json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'revision':0,'appliedRevision':None,'history':[],'fingerprint':None}
+        if p.exists():return json.loads(p.read_text(encoding='utf-8'))
+        meta={'revision':0,'appliedRevision':None,'history':[],'fingerprint':None}
+        if self.installed and self.paths[id].exists():
+            raw,data=self.load(id);meta['revision']=value(data,'console','revision',0);meta['fingerprint']=hashlib.sha256(raw.encode()).hexdigest()
+        return meta
+    def observed_meta(self,meta,raw):
+        """Expose drift without writing during installed observation.
+
+        A deterministic fingerprint revision lets a reload authorize a later
+        guarded Save, while a stale browser or another edit still conflicts.
+        """
+        fingerprint=hashlib.sha256(raw.encode()).hexdigest()
+        if meta['fingerprint'] and fingerprint!=meta['fingerprint']:
+            meta=copy.deepcopy(meta);meta['revision']='external:'+fingerprint
+            meta['fingerprint']=fingerprint;meta['appliedRevision']=None;meta['mainPid']=None
+        return meta
     def recover(self,id):
+        self.entry(id)
+        if not (self.directory/(id+'.pending.json')).exists():return
+        if self.installed:
+            require_compatible(self.compatibility_state(id))
+            verify_binding(self.adapter(id).binding,self.runner)
+        with self.locks[id]:self._recover(id)
+    def _recover(self,id):
         p=self.directory/(id+'.pending.json')
         if p.exists():
+            if self.installed:
+                require_compatible(self.compatibility_state(id))
+                verify_binding(self.adapter(id).binding,self.runner)
             pending=json.loads(p.read_text(encoding='utf-8'))
             current=hashlib.sha256(self.paths[id].read_bytes()).hexdigest() if self.paths[id].exists() else None
             candidate=hashlib.sha256(pending['config'].encode()).hexdigest()
+            if self.installed:
+                require_compatible(self.compatibility_state(id))
+                verify_binding(self.adapter(id).binding,self.runner)
             if current in (pending.get('beforeFingerprint'),candidate):
                 self.write_config(id,pending['config']);atomic(self.meta_path(id),json.dumps(pending['meta']))
             p.unlink()
@@ -261,22 +305,11 @@ class Store:
         try:
             raw=self.paths[id].read_text(encoding='utf-8');return raw,tomllib.loads(raw)
         except Exception:raise APIError('config_unavailable','Service configuration is unavailable.',503) from None
-    def settings(self,id,data):
-        result={}
-        defaults={'provider':'ollama','model':'qwen3.5:9b','baseUrl':'http://127.0.0.1:11434','timeout':600,'maxOutput':2048,'think':id=='triage','cloudConsent':False,'window':2,'maxCase':20,'maxWindow':40,'maxMB':10485760,'maxImages':5,'maxDocs':5,'maxUploads':60,'allGroups':False,'ignored':[],'proxyHost':'','proxyPort':443}
-        for key,(sec,prop) in MAPS[id].items():
-            v=value(data,sec,prop,defaults.get(key))
-            if key=='baseUrl' and value(data,sec,prop) is None:v=value(data,'ollama' if id=='triage' else 'model','url',v)
-            if key=='chatIds':v='\n'.join(str(x) for x in (v or []))
-            if key=='ignored':v='\n'.join(v or [])
-            if key=='maxMB':v=v/1048576
-            result[key]=v
-        return result
-    def capability(self,id):
-        if not self.installed or sys.platform!='linux':return False
-        marker=Path('/opt/agentfleet/listener/.venv/lib') if id=='triage' else Path('/opt/agentfleet/nailhub/.venv/lib')
-        # Installed runtime must contain the acknowledgement implementation, not merely old binaries.
-        return any(marker.glob('python*/site-packages/'+('tg_triage' if id=='triage' else 'nailhub')+'/receipt.py')) and Path('/run/systemd/system').exists()
+    def settings(self,id,data):return self.adapter(id).settings(self.entry(id)['descriptor'],data)
+    def capability(self,id,compatibility=None):
+        if not self.installed or sys.platform!='linux' or not Path('/run/systemd/system').exists():return False
+        result=compatibility if compatibility is not None else self.compatibility_state(id)
+        return result['state']=='verified'
     def reconcile(self,id):
         self.recover(id);raw,data=self.load(id);meta=self.meta(id)
         fingerprint=hashlib.sha256(raw.encode()).hexdigest()
@@ -287,26 +320,45 @@ class Store:
             atomic(self.meta_path(id),json.dumps(meta))
         return raw,data
     def public(self,id):
+        self.entry(id)
+        if self.installed:return self._public(id)
         with self.locks[id]:
             self.reconcile(id)
             return self._public(id)
     def _public(self,id):
-        raw,data=self.load(id);meta=self.meta(id);settings=self.settings(id,data)
-        scope=settings['provider']+'|'+settings['baseUrl'];key_path=value(data,'model','key_file','')
-        try:has=bool(read_key(key_path,scope,group_name='tglistener' if id=='triage' else 'tgnailhub')) if key_path else False
+        entry=self.entry(id);raw,data=self.load(id);meta=self.meta(id);settings=self.settings(id,data)
+        if self.installed:meta=self.observed_meta(meta,raw)
+        scope=settings.get('provider','')+'|'+settings.get('baseUrl','');key_path=value(data,'model','key_file','')
+        try:has=bool(read_key(key_path,scope,group_name=entry['adapter'].binding.group)) if key_path else False
         except ProviderError:has=False
-        return {'settings':settings,'revision':meta['revision'],'appliedRevision':meta['appliedRevision'],'hasKey':has,'keyScope':scope if has else '', 'status':{'state':('last_acknowledged' if meta.get('appliedRevision')==meta['revision'] and meta.get('mainPid') else 'unknown') if self.installed else 'local','mainPid':meta.get('mainPid'),'message':'Readiness must be proven by apply.' if self.installed else 'Local configuration files; no installed service.'},'canApply':self.capability(id)}
+        compatibility=self.observed_compatibility(id)
+        return {'settings':settings,'revision':meta['revision'],'appliedRevision':meta['appliedRevision'],'hasKey':has,'keyScope':scope if has else '', 'status':{'state':('last_acknowledged' if meta.get('appliedRevision')==meta['revision'] and meta.get('mainPid') else 'unknown') if self.installed else 'local','mainPid':meta.get('mainPid'),'message':'Readiness must be proven by apply.' if self.installed else 'Local configuration files; no installed service.'},'canApply':self.capability(id,compatibility),'available':True,'canSave':entry['public']['capabilities']['settings'] and (not self.installed or compatibility['state']=='verified'),'contractRevision':entry['public']['contractRevision'],'compatibility':compatibility}
+    def unavailable(self,id,reason):
+        return {'available':False,'canSave':False,'canApply':False,'contractRevision':None,'settings':{},'revision':None,'appliedRevision':None,'hasKey':False,'keyScope':'','status':{'state':'unavailable','mainPid':None,'message':reason},'compatibility':{'state':'unverified','reason':reason}}
     def history(self):
         entries=[]
-        for id in MAPS:
-            with self.locks[id]:entries.extend(self.meta(id)['history'])
+        for id in self.registry.entries:
+            if self.installed:
+                try:entries.extend(self.meta(id)['history'])
+                except (APIError,OSError,ValueError,KeyError):continue
+            else:
+                with self.locks[id]:entries.extend(self.meta(id)['history'])
         return sorted(entries,key=lambda h:h['timestamp'],reverse=True)[:100]
     def bootstrap(self):
-        return {'services':{id:self.public(id) for id in MAPS},'history':self.history(),'host':{'mode':'installed' if self.installed else 'local','label':'Installed host' if self.installed else 'Local files','platform':sys.platform,'canApply':any(self.capability(id) for id in MAPS)}}
-    def usage(self):
-        """Read-only view of the triage runtime's cost summary file next to its DB. Never opens the DB itself."""
+        services={id:self.unavailable(id,reason) for id,reason in self.registry.invalid.items()}
+        for id in self.registry.entries:
+            try:services[id]=self.public(id)
+            except (APIError,OSError,ValueError,KeyError):services[id]=self.unavailable(id,'Service configuration is unavailable.')
+        result={'contractVersion':1,'descriptors':self.registry.public(),'services':services,'history':self.history(),'host':{'mode':'installed' if self.installed else 'local','label':'Installed host' if self.installed else 'Local files','platform':sys.platform,'canApply':any(s['canApply'] for s in services.values())}}
+        if len(json.dumps(result,ensure_ascii=False).encode())>1024*1024:raise APIError('contract_limit','Console contract exceeds its supported size.',503)
+        return result
+    def usage(self,id=None):
+        """Read-only view of the selected worker runtime summary next to its DB. Never opens the DB itself."""
         try:
-            _,data=self.load('triage');db_path=value(data,'storage','db_path')
+            id=id or self.registry.default_usage()
+            if id is None:return {'status':'missing','usage':None}
+            adapter=self.entry(id,'usage')['adapter']
+            _,data=self.load(id);db_path=adapter.db_path(data)
             if not isinstance(db_path,str) or not db_path:return {'status':'missing','usage':None}
             path=Path(db_path).parent/USAGE_FILE
         except (APIError,ValueError,OSError,AttributeError):return {'status':'missing','usage':None}
@@ -326,92 +378,60 @@ class Store:
         except (UsageInvalid,ValueError,RecursionError,OverflowError):return {'status':'invalid','usage':None}
         return {'status':'stale' if now-usage['generatedAt']>USAGE_STALE_SECONDS else 'ok','usage':usage}
     def validate(self,id,settings):
-        if not isinstance(settings,dict) or set(settings)!=set(MAPS[id]):raise APIError('invalid_settings','Expected complete service settings.')
-        for key,v in settings.items():
-            if key not in BOOL and key not in RANGES and key not in ('confidence','maxMB') and not isinstance(v,str):raise APIError('invalid_field','Expected text.',field=key)
-            if key in BOOL and type(v) is not bool:raise APIError('invalid_field','Expected true or false.',field=key)
-            if key in RANGES:
-                lo,hi=RANGES[key]
-                if type(v) is not int or not lo<=v<=hi:raise APIError('invalid_field','Number outside allowed range.',field=key)
-            if isinstance(v,str) and (len(v)>8000 or any(ord(c)<32 and c not in '\n\r\t' for c in v)):raise APIError('invalid_field','Invalid text.',field=key)
-        if 'maxMB' in settings:
-            mb=settings['maxMB']
-            if type(mb) not in (int,float) or not math.isfinite(mb) or not 0<mb<=100 or float(mb*1048576).is_integer() is False:
-                raise APIError('invalid_field','Expected positive exact file size up to 100 MiB.',field='maxMB')
-        try:validate_endpoint(settings['provider'],settings['baseUrl'])
-        except ProviderError:raise APIError('invalid_endpoint','Endpoint is not allowed.',field='baseUrl') from None
-        if not isinstance(settings['model'],str) or not settings['model'].strip() or len(settings['model'])>200:raise APIError('invalid_model','Model ID is required.',field='model')
-        if settings['provider']!='ollama' and settings['think']:raise APIError('thinking_unsupported','Thinking is supported only by Ollama.',field='think')
-        if settings['mode'] not in (('dry-run','live') if id=='triage' else ('preview','live')):raise APIError('invalid_field','Invalid mode.',field='mode')
-        if id=='triage':
-            if type(settings['confidence']) not in (float,int) or not 0<=settings['confidence']<=1:raise APIError('invalid_field','Invalid confidence.',field='confidence')
-            if not settings['allGroups'] and not re.fullmatch(r'-\d+(?:\s*[,\n]\s*-\d+)*',settings['chatIds'].strip()):raise APIError('invalid_field','Group IDs must be negative integers.',field='chatIds')
-        elif settings['rangePolicy'] not in ('hold','upper_floor_100'):raise APIError('invalid_field','Invalid range policy.',field='rangePolicy')
-        return copy.deepcopy(settings)
+        entry=self.entry(id);settings=validate_settings(entry['public'],settings)
+        entry['adapter'].validate(settings)
+        return settings
     def key(self,id,settings,provided):
         if provided is not None and (not isinstance(provided,str) or len(provided)>8192 or any(ord(c)<33 for c in provided)):raise APIError('invalid_key','Invalid credential.',field='apiKey')
-        if settings['provider']=='ollama':return ''
+        if not self.entry(id)['public']['providers'] or settings['provider']=='ollama':return ''
         if provided:return provided
         _,data=self.load(id);scope=settings['provider']+'|'+settings['baseUrl']
         path=value(data,'model','key_file','')
-        try:key=read_key(path,scope,group_name='tglistener' if id=='triage' else 'tgnailhub') if path else ''
+        try:key=read_key(path,scope,group_name=self.adapter(id).binding.group) if path else ''
         except ProviderError:key=''
         if not key:raise APIError('key_required','Enter a key for this provider and endpoint.',field='apiKey')
         return key
     def test(self,id,body):
-        settings=self.validate(id,body.get('settings'));key=self.key(id,settings,body.get('apiKey') or None);start=time.monotonic()
-        try:
-            options={'transport':self.transport} if self.transport else {}
-            from tg_triage.model_lock import ModelLock, LockStopped
-            model_lock=ModelLock() if self.installed else ModelLock(self.directory/'model-lock')
-            stop=threading.Event();timer=threading.Timer(30,stop.set);timer.daemon=True;timer.start()
-            with model_lock.enter(background=id=='nailhub',stop=stop):
-                result=complete(settings['provider'],settings['baseUrl'],settings['model'],[{'role':'user','content':'Return JSON {"ok": true}. This is a synthetic connection probe.'}],{'type':'object','properties':{'ok':{'type':'boolean'}},'required':['ok'],'additionalProperties':False},key=key,timeout=max(1,min(settings['timeout'],30-(time.monotonic()-start))),max_output=256,think=settings['think'],**options)
-            if result!={'ok':True} or type(result.get('ok')) is not bool:raise ProviderError('invalid_json')
-            return {'status':'success','code':'connected','message':'Provider returned the expected JSON.','elapsedMs':int((time.monotonic()-start)*1000)}
-        except ProviderError as e:return {'status':'error','code':e.code,'message':'Provider probe failed: '+e.code.replace('_',' ')+'.','elapsedMs':int((time.monotonic()-start)*1000)}
-        except LockStopped:return {'status':'error','code':'timeout','message':'Shared model lock wait timed out.','elapsedMs':int((time.monotonic()-start)*1000)}
-        except OSError:return {'status':'error','code':'model_lock_unavailable','message':'Shared model lock is unavailable.','elapsedMs':int((time.monotonic()-start)*1000)}
-        finally:
-            if 'timer' in locals():timer.cancel()
+        entry=self.guard(id,body,'probe');settings=self.validate(id,body.get('settings'))
+        key=self.key(id,settings,body.get('apiKey') or None)
+        return entry['adapter'].probe(settings,key,self.directory,self.installed,self.transport)
     def save(self,id,body):
+        self.guard(id,body)
+        if self.installed:verify_binding(self.adapter(id).binding,self.runner)
         with self.locks[id]:
+            self.guard(id,body)
+            if self.installed:verify_binding(self.adapter(id).binding,self.runner)
             self.recover(id);settings=self.validate(id,body.get('settings'));key=self.key(id,settings,body.get('apiKey') or None);raw,data=self.load(id);meta=self.meta(id)
             fingerprint=hashlib.sha256(raw.encode()).hexdigest()
+            if self.installed:
+                stored_revision=meta['revision'];meta=self.observed_meta(meta,raw)
+                if meta['revision']!=stored_revision:
+                    meta['history'].append({'service':id,'action':'external_change','revision':meta['revision'],'timestamp':time.time(),'message':'External configuration change detected.'})
             if body.get('expectedRevision')!=meta['revision'] or (meta['fingerprint'] and fingerprint!=meta['fingerprint']):raise APIError('revision_conflict','Configuration changed; reload before saving.',409)
-            updates={}
-            for name,(sec,k) in MAPS[id].items():
-                v=settings[name]
-                if name=='chatIds':v=[] if settings['allGroups'] else [int(x) for x in re.split(r'[,\s]+',v.strip())]
-                if name=='ignored':v=[x for x in v.splitlines() if x]
-                if name=='maxMB':v=int(v*1048576)
-                updates[sec,k]=v
+            updates=self.adapter(id).updates(self.entry(id)['descriptor'],settings)
             revision=secrets.token_hex(16);updates['console','revision']=revision
             # Immutable key generations: secret write precedes config transaction. Old credentials stay valid on crash.
             if key:
-                key_directory=Path('/etc/tg-triage/private' if id=='triage' else '/etc/nailhub/private') if self.installed else self.directory/'secrets'
+                key_directory=self.adapter(id).binding.private if self.installed else self.directory/'secrets'
                 group=None
                 if self.installed:
                     import grp
-                    group=grp.getgrnam('tglistener' if id=='triage' else 'tgnailhub').gr_gid
+                    group=grp.getgrnam(self.adapter(id).binding.group).gr_gid
                     info=key_directory.stat()
                     if info.st_gid!=group or info.st_mode & 0o027:raise APIError('credentials_permissions','Provision the private per-service credential directory.',503)
                 secret=key_directory/(id+'-'+secrets.token_hex(16)+'.json')
                 updates['model','key_file']=str(secret)
-            else:updates['model','key_file']=''
+            elif self.entry(id)['public']['providers']:updates['model','key_file']=''
             candidate=patch_toml(raw,updates)
             # Runtime contract validation preserves existing protected fields and fail-closed live prerequisites.
             fd,tmp=tempfile.mkstemp(suffix='.toml');os.close(fd)
             try:
                 Path(tmp).write_text(candidate,encoding='utf-8')
-                if id=='nailhub':
-                    from nailhub.config import load_config
-                    load_config(str(Path(tmp).resolve()))
-                else:
-                    from tg_triage.config import load_config
-                    load_config(tmp,validate_only=True)
+                self.adapter(id).validate_candidate(Path(tmp))
             except Exception:raise APIError('runtime_config_invalid','Runtime rejected settings or protected live prerequisites.',field='mode') from None
             finally:Path(tmp).unlink(missing_ok=True)
+            self.guard(id,body)
+            if self.installed:verify_binding(self.adapter(id).binding,self.runner)
             if key:atomic(secret,json.dumps({'scope':settings['provider']+'|'+settings['baseUrl'],'key':key}),group)
             meta['revision']=revision;meta['fingerprint']=hashlib.sha256(candidate.encode()).hexdigest();meta['history'].append({'service':id,'action':'save','revision':revision,'timestamp':time.time(),'message':'Service settings saved.'});meta['history']=meta['history'][-100:]
             pending=self.directory/(id+'.pending.json');atomic(pending,json.dumps({'config':candidate,'meta':meta,'beforeFingerprint':fingerprint}));self.write_config(id,candidate);atomic(self.meta_path(id),json.dumps(meta));pending.unlink()
@@ -421,14 +441,21 @@ class Store:
         service=self._apply(id,body)
         return {'service':service,'history':self.history()}
     def _apply(self,id,body):
+        self.guard(id,body)
+        if self.installed:verify_binding(self.adapter(id).binding,self.runner)
         with self.locks[id]:
+            self.guard(id,body)
+            if self.installed:verify_binding(self.adapter(id).binding,self.runner)
+            self.recover(id)
             raw,data=self.load(id);meta=self.meta(id)
             if body.get('expectedRevision')!=meta['revision'] or meta['fingerprint']!=hashlib.sha256(raw.encode()).hexdigest():raise APIError('revision_conflict','Saved configuration changed; reload before applying.',409)
             if value(data,'console','revision')!=meta['revision']:raise APIError('revision_conflict','Save the externally changed configuration before applying.',409)
             if not self.capability(id):raise APIError('apply_unavailable','Installed runtime acknowledgement and systemd are required.',503)
-            unit={'triage':'tg-triage.service','nailhub':'tg-nailhub.service'}[id]
-            receipt=Path(value(data,'storage' if id=='triage' else 'worker','db_path')).parent/'agentfleet-ready.json'
+            unit=self.adapter(id).binding.unit
+            receipt=self.adapter(id).receipt(data)
             try:
+                self.guard(id,body)
+                if self.installed:verify_binding(self.adapter(id).binding,self.runner)
                 started=time.time()
                 result=self.runner(['systemctl','--no-ask-password','restart',unit],capture_output=True,timeout=165)
                 if result.returncode:raise APIError('restart_failed','Service restart failed; check host permissions and diagnostics.',503)

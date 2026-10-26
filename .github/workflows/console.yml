@@ -1,0 +1,67 @@
+name: Console contracts and portable ZIP
+
+on:
+  push:
+    paths:
+      - 'console-ui/**'
+      - 'listener/**'
+      - 'nailhub/**'
+      - 'config/**'
+      - 'start-console.*'
+      - '.github/workflows/console.yml'
+  pull_request:
+    paths:
+      - 'console-ui/**'
+      - 'listener/**'
+      - 'nailhub/**'
+      - 'config/**'
+      - 'start-console.*'
+      - '.github/workflows/console.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  console:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The trusted compatibility pin must resolve from Git objects.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check reviewed source contracts
+        run: python console-ui/scripts/check-contracts.py
+      - name: Run Console fixture regressions
+        run: python -m unittest discover -s console-ui/tests -p 'test_*.py' -v
+      - name: Check frontend syntax and state regressions
+        run: |
+          node --check console-ui/frontend/src/app.js
+          node --check console-ui/frontend/src/api.js
+          node --check console-ui/frontend/src/state.js
+          node --check console-ui/frontend/src/schema-form.js
+          node console-ui/tests/test_frontend.cjs
+      - name: Build and verify portable archive
+        run: |
+          python console-ui/package.py --output dist/agentfleet-console.zip
+          python console-ui/package.py --verify dist/agentfleet-console.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentfleet-console-${{ matrix.os }}-py${{ matrix.python }}
+          path: dist/agentfleet-console.zip
+          if-no-files-found: error

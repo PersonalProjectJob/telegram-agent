@@ -101,7 +101,7 @@ main { padding:var(--space-xl) var(--space-md) 0; max-width:1480px; margin-inlin
 .button { display:inline-flex; align-items:center; justify-content:center; gap:var(--space-xs); min-height:var(--control-height); padding:var(--space-xs) var(--space-md); font-weight:500; font-size:var(--text-sm); border-color:var(--color-rule-2); transition:transform var(--dur-micro) var(--ease-out); }
 .button.primary { background:var(--color-accent); color:var(--color-accent-ink); border-color:var(--color-accent); }
 .button:active:not(:disabled) { transform:translateY(1px); }
-button:disabled,input:disabled { opacity:.55; cursor:not-allowed; }
+button:disabled,input:disabled,select:disabled,textarea:disabled { opacity:.55; cursor:not-allowed; }
 .button[data-state=loading]::before { content:''; width:14px; height:14px; border:2px solid currentColor; border-right-color:var(--color-transparent); border-radius:50%; animation:spin 1s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 .test-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-sm); }

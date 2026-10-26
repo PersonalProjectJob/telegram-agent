@@ -1,0 +1,452 @@
+{
+  "id": "nailhub",
+  "displayName": "NailHub Worker",
+  "description": "Cấu hình chu kỳ quét, xử lý và kiểm tra bài đăng NailHub.",
+  "schemaVersion": 1,
+  "contractRevision": "nailhub-6fdb7db-v1",
+  "capabilities": {
+    "settings": true,
+    "probe": true,
+    "usage": false
+  },
+  "groups": [
+    {
+      "id": "ai",
+      "label": "AI & API",
+      "sections": [
+        {
+          "id": "provider",
+          "title": "Model xử lý",
+          "description": "Chọn nguồn AI cho service này. Cấu hình của service còn lại được giữ riêng."
+        },
+        {
+          "id": "connection",
+          "title": "Thông tin kết nối",
+          "description": "Thử bản nháp trước khi lưu. Mỗi service dùng API key riêng."
+        },
+        {
+          "id": "limits",
+          "title": "Giới hạn xử lý",
+          "description": "Cloud dùng nội dung dạng text và đầu ra JSON; kiểm tra nghiệp vụ vẫn do runtime thực hiện."
+        },
+        {
+          "id": "probe",
+          "title": "Kiểm tra kết nối",
+          "description": "Gửi một mẫu JSON tổng hợp đến endpoint. Cloud provider có thể tính phí cho lượt test."
+        }
+      ]
+    },
+    {
+      "id": "operation",
+      "label": "Vận hành",
+      "sections": [
+        {
+          "id": "mode",
+          "title": "Chế độ hoạt động",
+          "description": "Thay đổi mode chỉ có hiệu lực khi áp dụng cho service."
+        },
+        {
+          "id": "workload",
+          "title": "Khối lượng mỗi lượt",
+          "description": "Giới hạn phạm vi xử lý để dễ theo dõi."
+        }
+      ]
+    },
+    {
+      "id": "rules",
+      "label": "Quy tắc",
+      "sections": [
+        {
+          "id": "salary",
+          "title": "Quy tắc giá và lương",
+          "description": "Đổi cấu hình không bỏ bước xác minh dữ liệu từ bài gốc."
+        }
+      ]
+    },
+    {
+      "id": "connection",
+      "label": "Kết nối",
+      "sections": [
+        {
+          "id": "browser",
+          "title": "Trình duyệt NailHub",
+          "description": "Worker kiểm tra session và quyền trước khi xử lý bài."
+        }
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "ollama",
+      "label": "Ollama",
+      "note": "Local",
+      "defaults": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "model": "qwen3.5:9b"
+      },
+      "requiresKey": false
+    },
+    {
+      "id": "anthropic",
+      "label": "Claude",
+      "note": "Anthropic API",
+      "defaults": {
+        "baseUrl": "https://api.anthropic.com",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI",
+      "note": "OpenAI API",
+      "defaults": {
+        "baseUrl": "https://api.openai.com/v1",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "note": "DeepSeek API",
+      "defaults": {
+        "baseUrl": "https://api.deepseek.com",
+        "model": ""
+      },
+      "requiresKey": true
+    },
+    {
+      "id": "compatible",
+      "label": "Custom API",
+      "note": "OpenAI-compatible",
+      "defaults": {
+        "baseUrl": "",
+        "model": ""
+      },
+      "requiresKey": true
+    }
+  ],
+  "fields": [
+    {
+      "id": "provider",
+      "type": "enum",
+      "label": "Provider",
+      "default": "ollama",
+      "group": "ai",
+      "section": "provider",
+      "help": "",
+      "widget": "provider",
+      "options": [
+        {
+          "value": "ollama",
+          "label": "Ollama"
+        },
+        {
+          "value": "anthropic",
+          "label": "Claude"
+        },
+        {
+          "value": "openai",
+          "label": "OpenAI"
+        },
+        {
+          "value": "deepseek",
+          "label": "DeepSeek"
+        },
+        {
+          "value": "compatible",
+          "label": "Custom API"
+        }
+      ]
+    },
+    {
+      "id": "model",
+      "type": "string",
+      "label": "Model ID",
+      "default": "qwen3.5:9b",
+      "group": "ai",
+      "section": "connection",
+      "help": "Nhập model ID được cấp cho tài khoản của bạn.",
+      "widget": "text",
+      "maxLength": 200,
+      "wide": true,
+      "placeholder": "Model ID từ nhà cung cấp"
+    },
+    {
+      "id": "baseUrl",
+      "type": "string",
+      "label": "Base URL",
+      "default": "http://127.0.0.1:11434",
+      "group": "ai",
+      "section": "connection",
+      "help": "Endpoint theo provider; không kèm API key trong URL.",
+      "widget": "text",
+      "maxLength": 8000,
+      "wide": true,
+      "disabledWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "anthropic",
+            "openai",
+            "deepseek"
+          ]
+        }
+      }
+    },
+    {
+      "id": "timeout",
+      "type": "integer",
+      "label": "Thời gian chờ (giây)",
+      "default": 600,
+      "group": "ai",
+      "section": "limits",
+      "help": "Giới hạn thời gian cho một lần gọi.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 1800
+    },
+    {
+      "id": "maxOutput",
+      "type": "integer",
+      "label": "Giới hạn output (token)",
+      "default": 2048,
+      "group": "ai",
+      "section": "limits",
+      "help": "Giới hạn số token trả về.",
+      "widget": "number",
+      "minimum": 256,
+      "maximum": 8192
+    },
+    {
+      "id": "think",
+      "type": "boolean",
+      "label": "Suy luận (thinking)",
+      "default": false,
+      "group": "ai",
+      "section": "limits",
+      "help": "NailHub giữ thinking tắt theo policy hiện tại.",
+      "widget": "toggle",
+      "disabledWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "ollama",
+            "anthropic",
+            "openai",
+            "deepseek",
+            "compatible"
+          ]
+        }
+      }
+    },
+    {
+      "id": "cloudConsent",
+      "type": "boolean",
+      "label": "Cho phép gửi nội dung tác vụ đến cloud",
+      "default": false,
+      "group": "ai",
+      "section": "connection",
+      "help": "Cho phép service này gửi nội dung đến provider đã chọn. Tắt để runtime dừng xử lý bằng cloud.",
+      "widget": "toggle",
+      "visibleWhen": {
+        "in": {
+          "field": "provider",
+          "values": [
+            "anthropic",
+            "openai",
+            "deepseek",
+            "compatible"
+          ]
+        }
+      }
+    },
+    {
+      "id": "mode",
+      "type": "enum",
+      "label": "Chế độ",
+      "default": "preview",
+      "group": "operation",
+      "section": "mode",
+      "help": "Live có thể tạo issue hoặc thay đổi bài thật.",
+      "widget": "select",
+      "options": [
+        {
+          "value": "preview",
+          "label": "Preview — chỉ xem đề xuất"
+        },
+        {
+          "value": "live",
+          "label": "Live — cập nhật bài"
+        }
+      ]
+    },
+    {
+      "id": "interval",
+      "type": "integer",
+      "label": "Chu kỳ quét (giây)",
+      "default": 600,
+      "group": "operation",
+      "section": "mode",
+      "help": "Thời gian giữa hai lượt quét.",
+      "widget": "number",
+      "minimum": 10,
+      "maximum": 86400
+    },
+    {
+      "id": "batch",
+      "type": "integer",
+      "label": "Bài mỗi lượt",
+      "default": 1,
+      "group": "operation",
+      "section": "workload",
+      "help": "Từ 1 đến 20 bài.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 20
+    },
+    {
+      "id": "pages",
+      "type": "integer",
+      "label": "Số trang tối đa",
+      "default": 50,
+      "group": "operation",
+      "section": "workload",
+      "help": "Từ 1 đến 500 trang.",
+      "widget": "number",
+      "minimum": 1,
+      "maximum": 500
+    },
+    {
+      "id": "headless",
+      "type": "boolean",
+      "label": "Chạy browser headless",
+      "default": true,
+      "group": "connection",
+      "section": "browser",
+      "help": "Browser chạy nền trên máy worker.",
+      "widget": "toggle"
+    },
+    {
+      "id": "rangePolicy",
+      "type": "enum",
+      "label": "Quy tắc khoảng giá",
+      "default": "upper_floor_100",
+      "group": "rules",
+      "section": "salary",
+      "help": "Policy hiện có của worker.",
+      "widget": "select",
+      "options": [
+        {
+          "value": "upper_floor_100",
+          "label": "Cận trên, làm tròn xuống $100"
+        },
+        {
+          "value": "hold",
+          "label": "Giữ lại để kiểm tra"
+        }
+      ],
+      "wide": true
+    },
+    {
+      "id": "salaryRange",
+      "type": "boolean",
+      "label": "Hiển thị khoảng giá",
+      "default": false,
+      "group": "rules",
+      "section": "salary",
+      "help": "Giá trị phải phù hợp contract đã xác minh.",
+      "widget": "toggle"
+    },
+    {
+      "id": "salaryPlaces",
+      "type": "integer",
+      "label": "Số chữ số thập phân",
+      "default": 2,
+      "group": "rules",
+      "section": "salary",
+      "help": "Từ 0 đến 2 chữ số thập phân.",
+      "widget": "number",
+      "minimum": 0,
+      "maximum": 2
+    }
+  ],
+  "mapping": {
+    "provider": {
+      "section": "model",
+      "key": "provider",
+      "codec": "identity"
+    },
+    "model": {
+      "section": "model",
+      "key": "model",
+      "codec": "identity"
+    },
+    "baseUrl": {
+      "section": "model",
+      "key": "base_url",
+      "codec": "identity"
+    },
+    "timeout": {
+      "section": "model",
+      "key": "timeout_seconds",
+      "codec": "identity"
+    },
+    "maxOutput": {
+      "section": "model",
+      "key": "num_predict",
+      "codec": "identity"
+    },
+    "think": {
+      "section": "model",
+      "key": "think",
+      "codec": "identity"
+    },
+    "cloudConsent": {
+      "section": "model",
+      "key": "cloud_consent",
+      "codec": "identity"
+    },
+    "mode": {
+      "section": "worker",
+      "key": "mode",
+      "codec": "identity"
+    },
+    "interval": {
+      "section": "worker",
+      "key": "interval_seconds",
+      "codec": "identity"
+    },
+    "batch": {
+      "section": "worker",
+      "key": "max_batch",
+      "codec": "identity"
+    },
+    "pages": {
+      "section": "worker",
+      "key": "max_pages",
+      "codec": "identity"
+    },
+    "headless": {
+      "section": "worker",
+      "key": "headless",
+      "codec": "identity"
+    },
+    "rangePolicy": {
+      "section": "worker",
+      "key": "range_policy",
+      "codec": "identity"
+    },
+    "salaryRange": {
+      "section": "contract",
+      "key": "salary_range",
+      "codec": "identity"
+    },
+    "salaryPlaces": {
+      "section": "contract",
+      "key": "salary_places",
+      "codec": "identity"
+    }
+  }
+}
