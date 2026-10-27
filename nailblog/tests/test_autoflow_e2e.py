@@ -87,6 +87,7 @@ class FakePipeline:
 
     def __init__(self):
         self.runs = []
+        self.cover = (1600, 900)    # staging + subscription wants 1376x768
 
     def __call__(self, config, **_kw):
         return self
@@ -99,7 +100,7 @@ class FakePipeline:
             rng = random.Random(f'{run_id}-{i}')
             tiny = Image.new('L', (9, 8))
             tiny.putdata([rng.randrange(256) for _ in range(72)])
-            size = (1600, 900) if i == 0 else (1200, 675)
+            size = self.cover if i == 0 else (1200, 675)
             path = out / ('cover.webp' if i == 0 else f'body-{i}.webp')
             tiny.resize(size, Image.NEAREST).convert('RGB').save(path, 'WEBP', quality=70)
             paths.append(str(path))
@@ -218,7 +219,7 @@ class FakeClient:
 
 
 class Harness:
-    def __init__(self, case, *, slots=SLOTS):
+    def __init__(self, case, *, slots=SLOTS, overrides=None):
         self.case = case
         temp = tempfile.TemporaryDirectory()
         case.addCleanup(temp.cleanup)
@@ -227,12 +228,13 @@ class Harness:
         self.stop = asyncio.Event()
         self.client, self.remote, self.pipeline, self.ask = FakeClient(), Remote(), FakePipeline(), FakeAsk()
         self.requests = []
-        self.config = settings(
-            temp.name, mode='live', slots=SLOTS,
+        values = dict(
+            mode='live', slots=SLOTS,
             contract=ContractConfig(verified=True, media_origin=PRODUCTION_MEDIA_ORIGIN),
             image=ImageConfig(review_bypass=True),
             admin=AdminConfig(category_ids=dict(CATEGORY_IDS), publish_timeout_seconds=30, daily_publish_limit=4),
             autoflow=AutoflowConfig(enabled=True, runs_dir=str(self.root / 'runs')))
+        self.config = settings(temp.name, **{**values, **(overrides or {})})
         for name, target in (('nailblog.onepost.ImagePipeline', self.pipeline),
                              ('nailblog.admin.Admin', lambda config: FakeAdmin(self.remote, config))):
             patcher = patch(name, side_effect=target)

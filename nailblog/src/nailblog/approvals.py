@@ -19,6 +19,8 @@ VN_TZ = timezone(timedelta(hours=7))
 DASH = '—'
 MAX_REASON = 500
 MAX_ISSUES = 20
+AUTO_BY = 'auto'
+AUTO_REASON = 'owner_approval=false (D-034)'
 CARD_LIMIT = 4096  # Telegram text message limit
 
 
@@ -150,6 +152,42 @@ class ApprovalStore:
                                       1 if flagged else 0, request_id))
             return _result(True, 'recorded', db.execute('SELECT * FROM approval_requests WHERE id=?',
                                                         (request_id,)).fetchone())
+
+    def auto_approve(self, kind, run_id, snapshot, deadline, now, *, quality, requires_override=False, issues=None):
+        """Machine approval (D-034, `autoflow.owner_approval = false`): writes ONE verified `approved` row bound to this
+        exact (run_id, kind, snapshot): decided_by='auto', override=0. Refused (ApprovalError('not_auto_approvable'),
+        nothing written) unless the quality verdict is exactly `pass` with no issues and the request neither requires an
+        override nor carries issues; facts/Han/medical issues can therefore never be auto-approved. A row that already
+        exists for the snapshot is honoured only if it is a plain pending/approved one (never an override request,
+        never rejected/expired/superseded). The caller (the engine) decides when the config allows calling this."""
+        if kind not in KINDS:
+            raise ApprovalError('invalid_kind')
+        if not isinstance(run_id, str) or not run_id or not isinstance(snapshot, str) or not snapshot:
+            raise ApprovalError('invalid_request')
+        if requires_override or _issue_list(issues):
+            raise ApprovalError('not_auto_approvable')
+        if not isinstance(quality, dict) or quality.get('verdict') != 'pass' or quality.get('issues'):
+            raise ApprovalError('not_auto_approvable')
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            same = db.execute('SELECT * FROM approval_requests WHERE run_id=? AND kind=? AND snapshot=?',
+                              (run_id, kind, snapshot)).fetchone()
+            if same:
+                if same['requires_override'] or _issue_list(json.loads(same['issues'] or '[]')):
+                    raise ApprovalError('not_auto_approvable')
+                if same['status'] == 'approved':
+                    return same['id']
+                if same['status'] != 'pending':
+                    raise ApprovalError('not_auto_approvable')
+                db.execute("UPDATE approval_requests SET status='approved', reason=?, decided_at=?, decided_by=?, "
+                           "override=0 WHERE id=?", (AUTO_REASON, now, AUTO_BY, same['id']))
+                return same['id']
+            db.execute("UPDATE approval_requests SET status='superseded' WHERE run_id=? AND kind=? AND status='pending'",
+                       (run_id, kind))
+            return db.execute('INSERT INTO approval_requests(run_id,kind,snapshot,status,reason,created_at,deadline,'
+                              "decided_at,decided_by,requires_override,issues,override) "
+                              "VALUES(?,?,?,'approved',?,?,?,?,?,0,'[]',0)",
+                              (run_id, kind, snapshot, AUTO_REASON, now, deadline, now, AUTO_BY)).lastrowid
 
     def is_approved(self, run_id, kind, snapshot):
         """True only for an `approved` row of exactly this (run_id, kind, snapshot)."""

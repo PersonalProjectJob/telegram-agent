@@ -169,7 +169,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(names(module.ImageConfig), {"provider", "candidates", "max_rounds", "timeout_seconds",
                                                       "review_bypass"})
         self.assertEqual(names(module.BudgetConfig), {"ledger_db_path"})
-        self.assertEqual(names(module.AutoflowConfig), {"enabled", "runs_dir"})
+        self.assertEqual(names(module.AutoflowConfig), {"enabled", "runs_dir", "owner_approval"})
         self.assertNotIn("cloudflare", names(module.NailBlogConfig))
         self.assertFalse(hasattr(module, "CloudflareConfig"))
         for gone in ("KEY_SOURCES", "UNIT_PRICE_SIZES"):

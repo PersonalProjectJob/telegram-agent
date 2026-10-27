@@ -249,8 +249,9 @@ class OnePost:
         self.store(run_id, phase, document)
 
     async def prepare(self, run_id, topic_id, out, *, text=None, article=None, images_document=None,
-                      before_dispatch=None, subscription_enabled=True):
-        """Text job(s) -> gate -> images. `text` is the Agy `ask(prompt, schema, *, purpose, deadline=None)` (sync);
+                      before_dispatch=None, subscription_enabled=True, hold_overridable=False):
+        """`hold_overridable` (machine approval, D-034): no Owner can override, so an overridable hold stops before images.
+        Text job(s) -> gate -> images. `text` is the Agy `ask(prompt, schema, *, purpose, deadline=None)` (sync);
         default `service.text_model()`. A run held by the gate with only overridable issues still gets its images and
         carries `requires_override` for the Owner cards; any other hold stops before images."""
         self.active()
@@ -308,7 +309,7 @@ class OnePost:
             if article is None:
                 draft = await self.text_jobs(run_id, topic, text, cache['posts'], today, before_dispatch)
                 article, result = draft.article, draft.result
-                overridable = draft.held and draft.can_override
+                overridable = draft.held and draft.can_override and not hold_overridable
                 extra = {'text_dispatches': draft.asks}
                 if overridable:
                     extra.update(requires_override=True, override_issues=draft.issues)

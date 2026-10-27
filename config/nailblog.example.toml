@@ -109,6 +109,8 @@ app = "https://nailhub.ai/"           # cta.target = app: get the app
 # text_model.provider = "agy", all four [admin.category_ids], contract.environment = "staging",
 # an absolute budget.ledger_db_path, and admin.daily_publish_limit >= the number of service.slots.
 enabled = false
+# owner_approval = true   # default. false (D-034, staging only): no Owner cards; the machine approves images + Draft
+#                         # itself, only for a run that passed the quality gate with no issues. Failing runs are held.
 # runs_dir = "/var/lib/agentfleet/nailblog/runs"   # absolute; required when enabled.
 
 [subscription]
