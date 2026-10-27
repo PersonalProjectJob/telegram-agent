@@ -11,12 +11,13 @@ import hashlib
 from html.parser import HTMLParser
 from collections import Counter
 from copy import deepcopy
+from dataclasses import dataclass
 import re
 import unicodedata
 from urllib.parse import quote, urlparse
 
 from .config import LinksConfig
-from .text import TextModelError, array_schema, object_schema, string_schema
+from .text import TextModelError, array_schema, check_schema, object_schema, string_schema
 
 OUTLINE_TOKENS = 4096
 SECTION_TOKENS = 900
@@ -1520,4 +1521,236 @@ def render_html(article, images=(), *, site_origin="https://nailhub.ai"):
                 if data["updated"]:
                     out.append(f"<p>Cập nhật ngày {esc(str(data['updated']))}.</p>")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Agy path: the whole article in ONE call, plus at most ONE repair call (Agy turns take 1 to 4 minutes each).
+#
+# `ask` is the callable S1 provides (`AgyText.ask`): `ask(prompt: str, schema: dict, *, purpose: str) -> dict`, synchronous,
+# validated against `schema`. Its errors carry a `.code` and are never swallowed here. Everything else is the same
+# as write_article: code builds the links, the sources list, the JSON-LD and (through render_html) all the HTML.
+# ---------------------------------------------------------------------------------------------------------------------
+AGY_MAX_ASKS = 2
+AGY_WRITE_PURPOSE, AGY_REPAIR_PURPOSE = "nailblog-write", "nailblog-repair"
+# Gate codes an Owner can never override: unsupported facts, unexpected Han, a medical claim. Every other `hold`
+# is structural; only `fixable` issues (and none of these) can be overridden by the Owner.
+NEVER_OVERRIDE = ("facts", "unexpected_han", "medical_claim")
+MEDICAL_TERMS = ("chữa", "điều trị", "viêm", "nấm móng", "không gây hại")
+_MEDICAL = re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, MEDICAL_TERMS)) + r")(?!\w)")
+
+
+def agy_schema(hints=None):
+    """Outline + sections in one schema (the shape of the article that already passed the gate with Agy)."""
+    schema = deepcopy(OUTLINE_SCHEMA)
+    body = deepcopy(SECTION_SCHEMA["properties"])
+    body.pop("claims")
+    body.update(h2=string_schema(5, 70), kind={"type": "string", "enum": list(SECTION_KINDS)}, image_slot=IMAGE_SLOT)
+    schema["properties"]["sections"] = array_schema(optional(object_schema(body), "bullets", "steps", "h3",
+                                                              "image_slot"), MIN_KEPT_SECTIONS, MAX_SECTIONS)
+    schema["properties"]["claims"] = array_schema(CLAIM, 0, 16)
+    schema["properties"]["meta_title"] = string_schema(3, 60)
+    schema["required"] = list(schema["required"]) + ["meta_title"]
+    for name, value in (hints or {}).items():
+        schema["properties"][name] = ({"type": "string", "enum": [value]} if name == "primary_keyword"
+                                      else {**array_schema({"type": "string", "enum": value}, len(value), len(value)),
+                                            "enum": [value]})
+    return schema
+
+
+AGY_SYSTEM = (
+    "Bạn là biên tập viên blog của NailHub, dành cho thợ nail và chủ tiệm người Việt tại Mỹ, đọc trên điện thoại. "
+    "Viết HOÀN CHỈNH MỘT bài blog tiếng Việt trong MỘT lượt, chỉ xuất JSON đúng schema. " + RULES +
+    "Không khẳng định hot nhất, bán chạy, chuyên gia dự báo, độ bền, hiệu quả y tế/sức khỏe hay điều trị, và không nêu "
+    "tên hãng sơn khi tư liệu không nói; xu hướng chỉ được nêu khi tư liệu chứng minh. Lời khuyên phối màu là gợi ý "
+    "thẩm mỹ. Không tool, không đọc file hay mạng. "
+    "Trường: primary_keyword là MỘT cụm tiếng Việt có dấu (2 đến 5 từ) lấy từ chủ đề; secondary_keywords 2 đến 4 biến thể. "
+    "title tối đa 90 ký tự. title_seo và meta_title tối đa 60 ký tự, chứa primary_keyword, không kèm tên site. "
+    "meta_description và summary khác nhau, mỗi cái đúng 140 đến 160 ký tự; meta_description chứa primary_keyword. "
+    "slug không dấu, chữ thường, nối bằng dấu gạch, tối đa 60 ký tự, chứa đủ các từ của primary_keyword. "
+    "intro đúng 2 đoạn, TỔNG 50 đến 90 từ, primary_keyword nằm trong đoạn đầu. key_takeaways 3 đến 4 dòng, mỗi dòng "
+    "tối đa 20 từ. sections: đúng 5 mục theo khuôn của danh mục; h2 tối đa 70 ký tự, ít nhất một h2 chứa primary_keyword "
+    "hoặc một từ khóa phụ; kind là paragraphs, steps, list hoặc mixed. Mỗi đoạn paragraphs 40 đến 90 từ và 2 đến 4 câu "
+    "(ưu tiên 45 đến 60 từ, 3 đến 4 câu); câu trung bình không quá 20 từ, không câu nào quá 35 từ; không quá 3 đoạn văn "
+    "liền nhau (dùng bullets, steps hoặc h3 để ngắt). kind=steps: một đoạn dẫn rồi steps (3 đến 7 dòng, mỗi dòng tối đa "
+    "25 từ); kind=list: một đoạn dẫn rồi bullets (3 đến 7 dòng, mỗi dòng tối đa 25 từ); kind=mixed: paragraphs kèm "
+    "bullets, steps hoặc h3. image_slot {brief, alt, caption} đúng 3 mục là mục 1, 3 và 5; mục 2 và 4 để image_slot "
+    "null; brief mô tả ảnh AI minh họa (không chữ, không giả ảnh tiệm thật), alt 5 đến 15 từ, caption có thể để trống. "
+    "faq 3 câu hỏi, mỗi câu trả lời 30 đến 60 từ (ưu tiên 30 đến 45 từ), trả lời ngay câu đầu. cta.text tối đa 45 từ: điều "
+    "cần nhớ và một hành động cụ thể; cta.target là jobs, salon_sale, app hoặc post. hashtags 3 đến 5 từ khóa liền "
+    "nhau không dấu. sources_used là id các tư liệu đã dùng. Từ khóa chính chiếm 0,5 đến 2,5% số từ, không nhồi. "
+    + CLAIM_RULE + "Claims gom MỌI con số trong toàn bài. Chỉ trả JSON đúng schema.")
+
+
+def agy_prompt(topic, sources, today, hints=None):
+    """One prompt: system rules + the category brief with the word budget + the sources (data only)."""
+    category = topic["category"]
+    low, high = word_range(category)
+    budget = word_budget(category, 5)
+    request = _category_brief(topic, budget, sources, today).replace(
+        f"Ngân sách từ: cả bài tối đa {budget['target']} từ (trần {budget['ceiling']})",
+        f"Ngân sách từ: tổng thân bài (mở bài, tóm tắt, các mục, FAQ, CTA) từ {low + 50} đến {high - 80} từ")
+    if hints:
+        request += "\nTừ khóa đã duyệt, giữ nguyên văn (dữ liệu): " + str(hints)
+    return AGY_SYSTEM + "\n\n" + request
+
+
+class AgyWriteError(TextModelError):
+    """The Agy reply is unusable or the call budget is exhausted; `.code` like the errors `ask` raises."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass
+class AgyDraft:
+    """Result of `write_agy`. `held` is True while any gate issue remains; `issues` lists them (code, kind, field,
+    message, overridable). `overridable` is False for facts/Han/medical claims and for every structural hold: the
+    Owner may only override `fixable` issues. `can_override` is True when no remaining issue is non-overridable."""
+    article: dict
+    content: str
+    images: list
+    ungrounded: list
+    result: object
+    words: int
+    repaired: list
+    asks: int
+    held: bool
+    issues: list
+    can_override: bool
+
+
+def _agy_article(data, topic, sources, site_origin, today, related_posts, links):
+    planned, audit = plan_image_slots({"sections": [{**section, "image_slot": section.get("image_slot") or None}
+                                                    for section in data["sections"]]})
+    sections = [{"h2": " ".join(section["h2"].split()), "kind": section["kind"],
+                 "paragraphs": [paragraph.strip() for paragraph in section["paragraphs"]],
+                 "bullets": section.get("bullets", []), "steps": section.get("steps", []),
+                 "h3": section.get("h3", []), "image_slot": _section_slot(section)}
+                for section in planned["sections"]]
+    cta = {"text": data["cta"]["text"].strip(), "target": data["cta"]["target"]}
+    known = {source["id"] for source in sources}
+    article = {
+        "topic": topic["title"], "category": topic["category"], "product_promo": bool(topic.get("product_promo")),
+        "primary_keyword": " ".join(data["primary_keyword"].split()),
+        "secondary_keywords": [" ".join(word.split()) for word in data["secondary_keywords"]],
+        "title_seo": " ".join(data["title_seo"].split()), "title": " ".join(data["title"].split()),
+        "meta_title": " ".join(data["meta_title"].split()),
+        "meta_description": " ".join(data["meta_description"].split()),
+        "summary": " ".join(data["summary"].split()), "intro": [part.strip() for part in data["intro"]],
+        "key_takeaways": [" ".join(item.split()) for item in data["key_takeaways"]],
+        "sections": sections, "faq": data["faq"], "cta": cta,
+        "links": build_links(site_origin, topic["category"], related_posts or (), cta, links, sections,
+                             minimum=2 if related_posts is not None else 1),
+        "hashtags": data["hashtags"], "slug": slugify_vi(data["slug"]) or slugify_vi(data["title_seo"]),
+        "claims": list(data["claims"]), "source_ids": [source["id"] for source in sources],
+        "sources_used": [source for source in dict.fromkeys(data["sources_used"]) if source in known],
+        "writer_audit": audit + ["agy_single_call"]}
+    article["sources"], article["sources_updated"] = build_sources(article, sources, today)
+    return article
+
+
+def _agy_assess(article, topic, context, config):
+    """The checks Service._assess runs (render, facts, gate, Han hold) plus the medical-claim hold."""
+    from . import facts
+    from .quality import HOLD, Issue, QualityResult, gate
+    site = config.contract.site_origin
+    posts = context.get("posts")
+    images = placeholder_images(article)
+    content = render_html(article, images, site_origin=site)
+    ungrounded = facts.check(article, context.get("sources", ()))
+    result = gate(article, category=topic["category"], slot_at=topic.get("slot_at"),
+                  product_promo=bool(topic.get("product_promo")),
+                  existing_slugs=[post.get("slug") for post in posts] if posts is not None else None,
+                  others=context.get("others", ()), ungrounded=ungrounded, site_origin=site, posts=posts,
+                  today=context.get("today"), content=content)
+    result = hold_unexpected_han(article, result)
+    medical = tuple(Issue("medical_claim", HOLD, path, "câu chứa khẳng định y tế/điều trị bị cấm")
+                    for path, value in article_texts(article)
+                    if _MEDICAL.search(unicodedata.normalize("NFC", value).casefold()))
+    return images, content, ungrounded, QualityResult(result.issues + medical)
+
+
+class _SyncAsk:
+    """Adapts the synchronous `ask(prompt, schema, *, purpose)` to the `await text.ask(purpose, system, user, schema,
+    ...)` call that `repair_article` makes, and counts every call (never more than AGY_MAX_ASKS in all)."""
+
+    def __init__(self, ask, counter):
+        self._ask, self._counter = ask, counter
+
+    async def ask(self, _purpose, system, user, schema, **_options):
+        if self._counter[0] >= AGY_MAX_ASKS:
+            raise AgyWriteError("agy_ask_budget_exhausted")
+        self._counter[0] += 1
+        return self._ask(system + "\n\n" + user, schema, purpose=AGY_REPAIR_PURPOSE)
+
+
+def _run_sync(coroutine):
+    """Drive a coroutine that never really suspends (its only 'await' is a synchronous call)."""
+    try:
+        coroutine.send(None)
+    except StopIteration as done:
+        return done.value
+    coroutine.close()
+    raise AgyWriteError("agy_ask_suspended")
+
+
+def repair_agy(ask, article, issues, *, sources=(), counter=None):
+    """ONE Agy repair call for the fixable `issues` (same field selection and safety checks as `repair_article`).
+
+    Returns (article, repaired field names); the caller runs the gate again. Errors of `ask` propagate."""
+    adapter = _SyncAsk(ask, counter if counter is not None else [0])
+    return _run_sync(repair_article(adapter, article, issues, sources=sources))
+
+
+def write_agy(ask, topic, context, config, *, hints=None):
+    """Write one whole article with at most AGY_MAX_ASKS (2) calls of `ask`.
+
+    Order: write (1 call) -> automatic repairs -> facts + gate -> [one `repair_agy` call when only fixable issues
+    remain] -> automatic repairs -> gate again. A failing gate does not raise: the AgyDraft has `held` and the
+    remaining `issues`. Errors of `ask` (they carry `.code`) propagate.
+
+    `topic`: {title, category, product_promo?, slot_at?, primary_keyword?, secondary_keywords?}.
+    `context`: {sources, today, related_posts?, posts?, others?}; `config`: NailBlogConfig (site origin, links)."""
+    sources = list(context.get("sources", ()))
+    today = context["today"]
+    site = config.contract.site_origin
+    hints = keyword_hints(topic) if hints is None else hints
+    counter = [1]
+    schema = agy_schema(hints)
+    data = ask(agy_prompt(topic, sources, today, hints), schema, purpose=AGY_WRITE_PURPOSE)
+    if check_schema(schema, data):
+        raise AgyWriteError("agy_schema_mismatch")
+    article = _agy_article(data, topic, sources, site, today, context.get("related_posts"),
+                           getattr(config, "links", None))
+    if han_fields(article):
+        article["writer_audit"] += ["unexpected_han_requires_review"]
+    else:
+        article, fit_audit = safe_fit_fields(article, sources)
+        article, keyword_audit = repair_keyword_fields(article, sources)
+        article["writer_audit"] = article["writer_audit"] + fit_audit + keyword_audit
+        article = trim_to_ceiling(article, sources)
+    article, repaired = rebalance_paragraphs(article, sources)
+    images, content, ungrounded, result = _agy_assess(article, topic, context, config)
+    if any(issue.code == "wall_of_text" for issue in result.issues):
+        article, wall = rebalance_paragraphs(article, sources, wall=True)
+        repaired += wall
+        images, content, ungrounded, result = _agy_assess(article, topic, context, config)
+    repair_issues = editorial_repair_issues(result, article)
+    if repair_issues:
+        article, model_repaired = repair_agy(ask, article, repair_issues, sources=sources, counter=counter)
+        article, balanced = rebalance_paragraphs(article, sources)
+        repaired += model_repaired + balanced
+        images, content, ungrounded, result = _agy_assess(article, topic, context, config)
+        trimmed = trim_list_items(article, sources)
+        if trimmed is not article:
+            article = trimmed
+            repaired += ["trim_items"]
+            images, content, ungrounded, result = _agy_assess(article, topic, context, config)
+    article = annotate_repair_outcome(article, result)
+    article["jsonld"] = build_jsonld(article, site, topic.get("slot_at"))
+    issues = [{**issue.as_dict(), "overridable": issue.kind == "fixable" and issue.code not in NEVER_OVERRIDE}
+              for issue in result.issues]
+    return AgyDraft(article, content, images, ungrounded, result, word_count(article), repaired, counter[0],
+                    bool(issues), issues, all(item["overridable"] for item in issues))
 
