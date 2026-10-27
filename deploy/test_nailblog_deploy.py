@@ -1,8 +1,10 @@
 """NailBlog deployment identity, reviewed snapshot and first-install safety."""
 import json
+import os
 import re
 import tempfile
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -115,6 +117,169 @@ class NailBlogDeploymentTests(unittest.TestCase):
         with patch('deploy.nailblog_bootstrap.os.umask') as umask:
             run_command(['install','-m','0600','private-source','private-target'],runner=Mock())
             umask.assert_not_called()
+
+
+class CutoverCheckTests(unittest.TestCase):
+    SECRET='SECRET-VALUE-MUST-NOT-APPEAR';BINDING='BINDING-MUST-NOT-APPEAR'
+
+    def build(self, root):
+        import sqlite3
+        root=Path(root);units=root/'units';(units/'tg-nailblog.service.d').mkdir(parents=True)
+        (units/'tg-nailblog.service').write_text('[Service]\nExecStart=/opt/x/python -m nailblog run\n')
+        (units/'tg-nailblog.service.d/zz-daily4-reporting.conf').write_text('[Service]\nExecStart=\nExecStart=/opt/x/report_bridge.py\n')
+        (units/'nailblog-daily4.timer').write_text('[Timer]\nOnCalendar=daily\n')
+        (units/'unrelated.service').write_text('[Service]\nExecStart=/bin/true\n')
+        db=root/'main.sqlite3'
+        with closing(sqlite3.connect(db)) as c:
+            c.executescript("CREATE TABLE control(id INTEGER PRIMARY KEY,paused INTEGER,image_mode TEXT,last_result TEXT,armed_binding TEXT NOT NULL DEFAULT '');"
+                            "INSERT INTO control VALUES(1,1,'subscription','paused','BINDING-MUST-NOT-APPEAR');"
+                            "CREATE TABLE onepost_runs(run_id TEXT PRIMARY KEY,binding TEXT,phase TEXT,document TEXT,post_id INTEGER,image_approval TEXT);"
+                            "CREATE TABLE onepost_topic_claims(topic_id INTEGER PRIMARY KEY,run_id TEXT UNIQUE);"
+                            "INSERT INTO onepost_runs VALUES('r1','b','done','{\"topic_id\": 7}',1,'');"
+                            "INSERT INTO onepost_runs VALUES('r2','b','text','{\"topic_id\": 8}',2,'');"
+                            "INSERT INTO onepost_topic_claims VALUES(7,'r1');")
+        ledger=root/'ledger.sqlite3'
+        with closing(sqlite3.connect(ledger)) as c:
+            c.executescript("CREATE TABLE paid_intents(id TEXT PRIMARY KEY,status TEXT,reserved INTEGER,at REAL);"
+                            "INSERT INTO paid_intents VALUES('a','settled',10,1.0);INSERT INTO paid_intents VALUES('b','uncertain',5,2.0);")
+        queue=root/'queue';job=queue/'job-1';job.mkdir(parents=True);(job/'request.json').write_text('{"prompt":"%s"}'%self.SECRET)
+        (job/'receipt.json').write_text('{"status":"complete","protocol":"nailblog-agy-text-v1","job_id":"job-1","secret":"%s"}'%self.SECRET)
+        (queue/'job-2').mkdir()
+        private=root/'private';private.mkdir();(private/'job-1.json').write_text('{"day":"2026-10-27","kind":"text","run_id":"r1","x":"%s"}'%self.SECRET)
+        config=root/'nailblog.toml'
+        config.write_text('[service]\nslots=["a","b","c","d"]\n[admin.category_ids]\nhot-trend="a1b2c3d4-e5f6-7890-abcd-ef1234567801"\n'
+                          'nail-job="11111111-2222-3333-4444-555555555555"\n')
+        env=root/'env';env.write_text('OTHER=1\nNAILBLOG_GEMINI_IMAGE_KEY=%s\n'%self.SECRET)
+        proc=root/'proc';(proc/'123').mkdir(parents=True);(proc/'123/cmdline').write_bytes(b'/snap/bin/agy\0--prompt\0'+self.SECRET.encode()+b'\0')
+        (proc/'123/comm').write_text('agy\n');(proc/'456').mkdir();(proc/'456/cmdline').write_bytes(b'/bin/sleep\0')
+        return ['--unit-dir',str(units),'--db',str(db),'--ledger',str(ledger),'--queue',str(queue),'--private-dir',str(private),
+                '--config',str(config),'--env-file',str(env),'--proc-root',str(proc),'--lock',str(root/'ollama.lock'),'--no-systemctl']
+
+    def snapshot(self, root):
+        import hashlib
+        return {str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path(root).rglob('*')) if p.is_file()}
+
+    def run_check(self, argv, systemctl=None):
+        import contextlib, io
+        from deploy import nailblog_cutover_check as check
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code=check.main(argv,systemctl=systemctl) if systemctl else check.main(argv)
+        self.assertEqual(code,0)
+        return out.getvalue()
+
+    def test_inventory_reports_every_section_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);before=self.snapshot(tmp)
+            text=self.run_check(argv);data=json.loads(text)
+            self.assertEqual(self.snapshot(tmp),before)
+            self.assertNotIn(self.SECRET,text);self.assertNotIn(self.BINDING,text)
+            self.assertTrue(data['systemd']['report_bridge_present'])
+            self.assertEqual([d['name'] for d in data['systemd']['timers']],['nailblog-daily4.timer'])
+            self.assertEqual([d['name'] for d in data['systemd']['units']],['tg-nailblog.service'])
+            self.assertEqual(data['database']['control'],[{'paused':1,'image_mode':'subscription','last_result':'paused','armed':True}])
+            self.assertEqual([r['run_id'] for r in data['database']['onepost_missing_claims']],['r2'])
+            self.assertEqual(data['database']['onepost_missing_claims'][0]['topic_id'],8)
+            jobs={j['job']:j for j in data['queue']['jobs']}
+            self.assertTrue(jobs['job-1']['marker']['exists']);self.assertTrue(jobs['job-1']['receipt']['exists'])
+            self.assertEqual(jobs['job-1']['receipt']['fields']['status'],'complete')
+            self.assertFalse(jobs['job-2']['marker']['exists']);self.assertFalse(jobs['job-2']['receipt']['exists'])
+            self.assertEqual(data['ledger']['paid_intents_rows'],2)
+            self.assertRegex(data['ledger']['paid_intents_sha256'],'^[0-9a-f]{64}$')
+            self.assertEqual([p['pid'] for p in data['processes']['agy']],[123])
+            self.assertEqual(data['config']['category_ids']['placeholder'],['hot-trend'])
+            self.assertEqual(data['config']['category_ids']['slugs_missing'],['nail-salon','did-you-know'])
+            self.assertFalse(data['config']['category_ids']['all_placeholder'])
+            self.assertIs(data['env']['gemini_image_key_present'],True)
+
+    def test_ledger_digest_is_stable_and_follows_content(self):
+        import sqlite3
+        from deploy import nailblog_cutover_check as check
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);ledger=argv[argv.index('--ledger')+1]
+            first=check.ledger_digest(ledger)['paid_intents_sha256'];self.assertEqual(first,check.ledger_digest(ledger)['paid_intents_sha256'])
+            with closing(sqlite3.connect(ledger)) as c:c.execute("UPDATE paid_intents SET status='settled' WHERE id='b'");c.commit()
+            self.assertNotEqual(first,check.ledger_digest(ledger)['paid_intents_sha256'])
+
+    def test_missing_paths_and_systemctl_stub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);before=self.snapshot(tmp)
+            calls=[]
+            def stub(args):
+                calls.append(args)
+                return 'nailblog-staging-a.service loaded failed failed x' if args[0]=='list-units' else 'enabled'
+            data=json.loads(self.run_check([a for a in argv if a!='--no-systemctl'],stub))
+            self.assertEqual(data['systemd']['failed'],['nailblog-staging-a.service'])
+            self.assertEqual(data['systemd']['units'][0]['enabled'],'enabled')
+            self.assertTrue(all(c[0] in ('is-enabled','is-active','list-units') for c in calls))
+            self.assertEqual(self.snapshot(tmp),before)
+            empty=json.loads(self.run_check(['--unit-dir',tmp+'/none','--db',tmp+'/none.db','--ledger',tmp+'/none.db','--queue',tmp+'/none',
+                                             '--config',tmp+'/none.toml','--env-file',tmp+'/none.env','--proc-root',tmp+'/none','--no-systemctl']))
+            self.assertFalse(empty['database']['exists']);self.assertFalse(empty['queue']['exists'])
+            self.assertIsNone(empty['env']['gemini_image_key_present'])
+
+    def test_script_refuses_mutating_systemctl_subcommands(self):
+        from deploy import nailblog_cutover_check as check
+        for verb in ('restart','stop','mask','enable','disable','reset-failed'):
+            with self.assertRaises(ValueError):check.run_systemctl([verb,'tg-nailblog'])
+
+    def test_service_units_match_agy_only_target(self):
+        text=(Path(__file__).resolve().parents[1]/'systemd/tg-nailblog.service').read_text()
+        self.assertNotIn('ollama.service',text);self.assertNotIn('cloudflare-quota',text)
+        self.assertRegex(text,r'(?m)^TimeoutStopSec=660$')
+        self.assertIn('ExecStartPre=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog startup-gate',text)
+        for keep in ('NoNewPrivileges=yes','ProtectSystem=strict','ProtectHome=yes','UMask=0077'):self.assertIn(keep,text)
+        self.assertNotIn('/ledger',text)
+        worker=(Path(__file__).resolve().parents[1]/'nailblog/deploy/tg-nailblog-subscription.service').read_text()
+        self.assertGreaterEqual(int(re.search(r'(?m)^TimeoutStopSec=(\d+)$',worker).group(1)),630)
+
+
+
+    def test_cleanly_closed_wal_db_gets_no_sidecars_and_keeps_its_sha(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);db=Path(argv[argv.index('--db')+1]);ledger=Path(argv[argv.index('--ledger')+1])
+            for path in (db,ledger):
+                with closing(sqlite3.connect(path)) as c:
+                    c.execute('PRAGMA journal_mode=WAL');c.commit()
+                for suffix in ('-wal','-shm'):
+                    self.assertFalse(Path(str(path)+suffix).exists(),suffix)   # closed cleanly: no sidecars
+            before=self.snapshot(tmp);listing=sorted(os.listdir(tmp))
+            data=json.loads(self.run_check(argv))
+            self.assertEqual(data['database']['control'][0]['paused'],1)
+            self.assertEqual(self.snapshot(tmp),before)
+            for path in (db,ledger):
+                self.assertFalse(Path(str(path)+'-wal').exists());self.assertFalse(Path(str(path)+'-shm').exists())
+            self.assertEqual(sorted(os.listdir(tmp)),listing)
+
+    def test_every_sqlite_open_is_read_only_and_on_a_private_copy(self):
+        import sqlite3
+        from urllib.parse import urlparse, unquote
+        real=sqlite3.connect;seen=[]
+        def spy(target,*args,**kwargs):
+            seen.append(target);return real(target,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);originals={Path(argv[argv.index(f)+1]).resolve() for f in ('--db','--ledger')}
+            with patch('deploy.nailblog_cutover_check.sqlite3.connect',spy):
+                self.run_check(argv)
+            self.assertGreaterEqual(len(seen),2)
+            for uri in seen:
+                self.assertTrue(str(uri).startswith('file:'),uri)
+                self.assertIn('mode=ro',str(uri))
+                opened=Path(unquote(urlparse(str(uri)).path.lstrip('/') if os.name=='nt' else urlparse(str(uri)).path)).resolve()
+                self.assertNotIn(opened,originals)
+                self.assertIn('nailblog-cutover-',str(opened))
+
+    def test_control_row_is_whitelisted_and_never_prints_the_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);text=self.run_check(argv);control=json.loads(text)['database']['control'][0]
+            self.assertEqual(set(control),{'paused','image_mode','last_result','armed'})
+            self.assertIs(control['armed'],True);self.assertNotIn(self.BINDING,text)
+
+
+    def test_bootstrap_no_longer_creates_cloudflare_quota_dir(self):
+        text=(Path(__file__).resolve().parent/'nailblog_bootstrap.py').read_text()
+        self.assertNotIn('cloudflare-quota',text)
 
 
 if __name__=='__main__':unittest.main()

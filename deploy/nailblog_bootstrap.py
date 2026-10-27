@@ -51,7 +51,7 @@ def plan(config, env_file, credential_file, *, playwright_version, telethon_vers
         ['useradd','--system','--gid','agentfleet','--home-dir','/var/lib/agentfleet/nailblog','--shell','/usr/sbin/nologin','tgnailblog'],
         ['install','-d','-m','0755','/opt/agentfleet/nailblog'],
         ['install','-d','-m','0700','-o','tgnailblog','-g','agentfleet','/etc/nailblog','/etc/nailblog/private',
-         '/var/lib/agentfleet/nailblog','/var/lib/agentfleet/nailblog/browser','/var/lib/agentfleet/nailblog-cloudflare-quota'],
+         '/var/lib/agentfleet/nailblog','/var/lib/agentfleet/nailblog/browser'],
         ['install','-m','0600','-o','tgnailblog','-g','agentfleet',str(config),'/etc/nailblog/nailblog.toml'],
         ['install','-m','0600','-o','tgnailblog','-g','agentfleet',str(credential_file),'/etc/nailblog/private/admin-credentials.json'],
         ['install','-m','0600',str(env_file),'/etc/agentfleet/tg-nailblog.env'],

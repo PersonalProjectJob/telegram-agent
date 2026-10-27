@@ -1,6 +1,6 @@
 [Unit]
 Description=NailBlog Owner Automation
-After=network-online.target ollama.service
+After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
 StartLimitBurst=5
@@ -19,13 +19,13 @@ Restart=always
 RestartSec=30
 RestartPreventExitStatus=2
 UMask=0077
-TimeoutStopSec=150
+TimeoutStopSec=660
 KillMode=mixed
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/agentfleet/nailblog /var/lib/agentfleet/nailblog-cloudflare-quota /run/agentfleet
+ReadWritePaths=/var/lib/agentfleet/nailblog /run/agentfleet
 
 [Install]
 WantedBy=multi-user.target
