@@ -111,14 +111,14 @@ class DuplicateScanTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.tmp.cleanup)
         self.c = build(self.tmp.name)
 
-    async def scan(self, first, second, title, slug):
+    async def scan(self, first, second, title, slug, *, meta1=None, meta2=None, button=True, exclude_id=None):
         admin = Admin(self.c)
-        admin.page = FakePage([FakeResponse({'items': second})], more=True)
+        admin.page = FakePage([FakeResponse({'items': second, **(meta2 or {})})], more=button)
 
         async def list_first():
-            return {'items': first}
+            return {'items': first, **(meta1 or {})}
         admin.list_first = list_first
-        return admin, await admin.find_duplicates(title, slug)
+        return admin, await admin.find_duplicates(title, slug, exclude_id)
 
     async def test_scans_every_page_and_status_by_slug_and_normalized_title(self):
         first = [{'id': ID_A, 'status': 'Published', 'title': 'Khác hẳn', 'slug': 'mau-mong-thu'},
@@ -126,7 +126,8 @@ class DuplicateScanTests(unittest.IsolatedAsyncioTestCase):
         second = [{'id': ID_B, 'status': 'Scheduled', 'translations': [
                       {'languageCode': 'VI', 'title': '  MẪU   Móng   Tay  Thu ', 'slug': 'other'}]},
                   {'id': ID_C, 'status': 'Draft', 'title': 'Mẫu móng tay thu', 'slug': 'z'}]
-        admin, found = await self.scan(first, second, 'Mẫu móng tay thu', 'mau-mong-thu')
+        admin, found = await self.scan(first, second, 'Mẫu móng tay thu', 'mau-mong-thu',
+                                       meta1={'hasNextPage': True}, meta2={'hasNextPage': False})
         self.assertEqual([(x['id'], x['status']) for x in found],
                          [(ID_A, 'Published'), (ID_B, 'Scheduled'), (ID_C, 'Draft')])
         self.assertEqual(set(found[0]), {'id', 'title', 'slug', 'status'})
@@ -139,9 +140,43 @@ class DuplicateScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(norm_title('Ấ b'), norm_title('Ấ  B'))
         self.assertNotEqual(norm_title(composed), norm_title('Mau'))
         _, found = await self.scan([{'id': ID_A, 'status': 'Draft', 'title': 'Bài khác', 'slug': 'bai-khac'}], [],
-                                   'Mẫu móng tay thu', 'mau-mong-thu')
+                                   'Mẫu móng tay thu', 'mau-mong-thu', meta1={'hasNextPage': False}, button=False)
         self.assertEqual(found, [])
         self.assertIsInstance(decomposed, str)
+
+
+class DuplicateScanSafetyTests(DuplicateScanTests):
+    ROWS1 = [{'id': ID_A, 'status': 'Draft', 'title': 'A', 'slug': 'a'}, {'id': ID_B, 'status': 'Draft', 'title': 'B', 'slug': 'b'}]
+    ROWS2 = [{'id': ID_C, 'status': 'Published', 'title': 'Mẫu thu', 'slug': 'mau-thu'}]
+
+    async def test_missing_next_button_before_everything_is_scanned_raises(self):
+        for meta in ({'hasNextPage': True}, {'totalPages': 2}, {'totalCount': 3}, {'pageSize': 2}, {}):
+            with self.subTest(meta=meta), self.assertRaisesRegex(AdminError, '^duplicate_scan_incomplete$'):
+                await self.scan(self.ROWS1, self.ROWS2, 'Mẫu thu', 'mau-thu', meta1=meta, button=False)
+
+    async def test_no_totals_stops_only_on_short_page_with_next_disabled(self):
+        _, found = await self.scan(self.ROWS1, self.ROWS2, 'Mẫu thu', 'mau-thu', meta1={'pageSize': 2}, meta2={'pageSize': 2})
+        self.assertEqual([x['id'] for x in found], [ID_C])
+
+    async def test_totals_from_the_api_complete_the_scan(self):
+        for meta in ({'totalPages': 2}, {'totalCount': 3}):
+            with self.subTest(meta=meta):
+                _, found = await self.scan(self.ROWS1, self.ROWS2, 'Mẫu thu', 'mau-thu', meta1=meta, meta2=meta)
+                self.assertEqual([x['id'] for x in found], [ID_C])
+
+    async def test_exclude_id_skips_only_own_draft(self):
+        rows = [{'id': ID_A, 'status': 'Draft', 'title': 'Mẫu thu', 'slug': 'mau-thu'},
+                {'id': ID_B, 'status': 'Published', 'title': 'Mẫu thu', 'slug': 'mau-thu'}]
+        _, both = await self.scan(rows, [], 'Mẫu thu', 'mau-thu', meta1={'hasNextPage': False}, button=False)
+        _, other = await self.scan(rows, [], 'Mẫu thu', 'mau-thu', meta1={'hasNextPage': False}, button=False,
+                                   exclude_id=ID_A)
+        self.assertEqual([x['id'] for x in both], [ID_A, ID_B])
+        self.assertEqual([x['id'] for x in other], [ID_B])
+
+    async def test_row_without_id_is_a_schema_error(self):
+        for bad in ({'status': 'Draft', 'title': 'Mẫu thu', 'slug': 'mau-thu'}, {'id': '', 'title': 'x'}, 'text'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(AdminError, '^duplicate_scan_bad_row$'):
+                await self.scan([bad], [], 'Mẫu thu', 'mau-thu', meta1={'hasNextPage': False}, button=False)
 
 
 class CreateTimeoutTests(unittest.IsolatedAsyncioTestCase):
@@ -242,6 +277,34 @@ class ReadbackBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('step=anonymous_article outcome=cancelled', text)
         self.assertIn('step=anonymous_readback outcome=readback_timeout', text)
         self.assertNotIn('http', text.replace('NailBlog publish', ''))
+
+
+class ReadbackCeilingTests(unittest.IsolatedAsyncioTestCase):
+    def test_ceiling_is_15s_under_service_with_30s_floor(self):
+        for service, expected in ((300, 285), (60, 45), (40, 30), (0.3, 0.3)):
+            with self.subTest(service=service):
+                c = SimpleNamespace(admin=SimpleNamespace(publish_timeout_seconds=service))
+                self.assertEqual(admin_module.readback_budget(c), expected)
+
+    async def test_readback_ends_before_the_service_ceiling(self):
+        with tempfile.TemporaryDirectory() as d:
+            admin = Admin(build(d, publish_timeout_seconds=0.6))
+            admin.read = hang
+            with patch.object(admin_module, 'readback_budget', return_value=0.1):
+                with self.assertRaisesRegex(AdminError, '^readback_timeout$'):
+                    async with asyncio.timeout(0.6):  # stands in for the service's own bound
+                        await admin.published_readback(POST_ID, payload())
+
+    async def test_foreign_timeout_is_not_relabelled_readback_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            admin = Admin(build(d))
+
+            async def boom(*a, **k):
+                raise TimeoutError('inner')
+            admin.read = boom
+            with self.assertRaises(TimeoutError) as caught:
+                await admin.published_readback(POST_ID, payload())
+            self.assertNotIsInstance(caught.exception, AdminError)
 
 
 class MimeDefectTests(unittest.TestCase):

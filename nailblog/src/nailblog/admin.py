@@ -107,6 +107,12 @@ def public_webp(config, url, *, cover, approved_sha=None):
         if connection: connection.close()
 
 
+def readback_budget(config):
+    """Readback ceiling: 15 s under the service's publish ceiling (min 30 s) so our coded error surfaces first."""
+    ceiling = config.admin.publish_timeout_seconds
+    return min(ceiling, max(30, ceiling - 15))
+
+
 def logged(name, *, post=False, budget=False):
     """Log one line per step: post id, step name, outcome code and elapsed ms; never URLs, payloads or API text."""
     def wrap(function):
@@ -118,10 +124,13 @@ def logged(name, *, post=False, budget=False):
             try:
                 if budget:
                     try:
-                        async with asyncio.timeout(self.config.admin.publish_timeout_seconds):
+                        async with asyncio.timeout(readback_budget(self.config)) as limit:
                             return await function(self, *args, **kwargs)
                     except TimeoutError:
-                        raise AdminError('readback_timeout') from None
+                        # Only our own ceiling expiring is a readback timeout; any other TimeoutError keeps its identity.
+                        if limit.expired():
+                            raise AdminError('readback_timeout') from None
+                        raise
                 return await function(self, *args, **kwargs)
             except asyncio.CancelledError:
                 outcome = 'cancelled'
@@ -380,13 +389,23 @@ class Admin:
                 results.append(actual)
         return results
 
-    async def find_duplicates(self, title, slug):
-        """Read-only scan of EVERY listing page and status for the same slug or normalized Vietnamese title."""
+    async def find_duplicates(self, title, slug, exclude_id=None):
+        """Read-only scan of EVERY listing page and status for the same slug or normalized Vietnamese title.
+
+        Call BEFORE Create to block duplicates (no exclude_id). Call AFTER Create (reconciliation) with
+        `exclude_id` set to your own Draft's id once it is known, so the Draft is not reported as its own duplicate.
+        An incomplete scan never returns a partial list: it raises `duplicate_scan_incomplete`.
+        """
         wanted_title, found, seen = norm_title(title), [], set()
         data = await self.list_first()
-        for _ in range(200):
-            for row in data['items']:
-                if not isinstance(row, dict):
+        page_size = data.get('pageSize') if type(data.get('pageSize')) is int else len(data['items'])
+        scanned = 0
+        for number in range(1, 201):
+            rows = data['items']
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id']:
+                    raise AdminError('duplicate_scan_bad_row')
+                if row['id'] == exclude_id:
                     continue
                 titles, slugs = [row.get('title')], [row.get('slug')]
                 for item in row.get('translations') or []:
@@ -395,17 +414,33 @@ class Admin:
                         slugs.append(item.get('slug'))
                 hit = ((bool(slug) and slug in slugs) or
                        (bool(wanted_title) and any(norm_title(t) == wanted_title for t in titles)))
-                if hit and row.get('id') not in seen:
-                    seen.add(row.get('id'))
+                if hit and row['id'] not in seen:
+                    seen.add(row['id'])
                     first = lambda xs: next((x for x in xs if isinstance(x, str) and x), '')
-                    found.append({'id': row.get('id'), 'title': first(titles), 'slug': first(slugs),
+                    found.append({'id': row['id'], 'title': first(titles), 'slug': first(slugs),
                                   'status': row.get('status')})
+            scanned += len(rows)
             next_page = self.page.get_by_role('button', name='Trang sau', exact=True)
-            if not await next_page.count() or not await next_page.is_enabled():
+            has_next = bool(await next_page.count() and await next_page.is_enabled())
+            # Does the API itself say more is coming? Total/paging fields win over button state.
+            if isinstance(data.get('hasNextPage'), bool):
+                more = data['hasNextPage']
+            elif type(data.get('totalPages')) is int:
+                more = number < data['totalPages']
+            elif type(data.get('totalCount')) is int:
+                more = scanned < data['totalCount']
+            else:
+                # No totals: finish only on a short page AND a disabled/absent next button.
+                more = len(rows) >= page_size or has_next
+            if not more:
                 return found
+            if not has_next:
+                raise AdminError('duplicate_scan_incomplete')
             async with self.page.expect_response(lambda r: self.response(r, BLOGS)) as response:
                 await next_page.click()
             data = await self.json_response(await response.value)
+            if not isinstance(data.get('items'), list):
+                raise AdminError('list_schema_changed')
         raise AdminError('duplicate_scan_page_limit')
 
     async def paste_html(self, content):
