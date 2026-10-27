@@ -174,11 +174,27 @@ class RepairTests(AgyBase):
         self.assertEqual([call["purpose"] for call in ask.calls], [AGY_REPAIR_PURPOSE])
         self.assertEqual((fixed["summary"], repaired), (GOOD_SUMMARY, ["summary"]))
 
+    def test_the_budget_is_two_asks_and_the_whole_route_never_exceeds_it(self):
+        self.assertEqual(AGY_MAX_ASKS, 2)
+        data = reply()
+        data["sections"][0]["paragraphs"][1] = "Màu này vô cùng hợp mùa đông. " + data["sections"][0]["paragraphs"][1]
+        calls = []
+
+        def always_bad(prompt, schema, *, purpose):
+            calls.append(purpose)
+            if len(calls) == 1:
+                return data
+            return {name: "chưa sửa gì" for name in schema["properties"]}
+        draft = write_agy(always_bad, TOPIC, self.context, self.config)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(draft.asks, 2)
+        self.assertTrue(draft.held)
+
     def test_repair_agy_never_makes_a_call_beyond_the_budget(self):
         article, issue = self.broken()
         ask = FakeAsk(AssertionError("must not be called"))
         with self.assertRaises(RuntimeError) as caught:
-            repair_agy(ask, article, [issue], sources=[fakes.SOURCE], counter=[AGY_MAX_ASKS])
+            repair_agy(ask, article, [issue], sources=[fakes.SOURCE], counter=[2])
         self.assertEqual(caught.exception.code, "agy_ask_budget_exhausted")
         self.assertEqual(ask.calls, [])
 
@@ -223,6 +239,38 @@ class HoldTests(AgyBase):
         self.assertTrue(draft.held)
         self.assertEqual([(issue["code"], issue["overridable"]) for issue in draft.issues],
                          [("slug_unverified", False)])
+        self.assertFalse(draft.can_override)
+
+
+class MedicalTermTests(AgyBase):
+    def codes(self, sentence):
+        data = reply()
+        data["sections"][3]["paragraphs"][0] = sentence + " " + data["sections"][3]["paragraphs"][0]
+        return {issue["code"] for issue in self.write(FakeAsk(data)).issues}
+
+    def test_innocent_words_containing_chua_are_not_held(self):
+        for sentence in ("Thợ sửa chữa móng gãy cho khách.", "Tiệm có bình chữa cháy gần cửa."):
+            self.assertNotIn("medical_claim", self.codes(sentence), sentence)
+
+    def test_medical_phrases_are_held_even_with_odd_spacing_hyphens_and_case(self):
+        for sentence in ("Gel này chữa khỏi nấm cho khách.", "Bài nói về nấm  móng ở tiệm.", "Bài nói về nấm-móng ở tiệm.",
+                         "Bài nói về nấm móng ở tiệm.", "Gel giúp điều trị tại tiệm.", "Gel giúp ĐIỀU TRỊ tại tiệm."):
+            self.assertIn("medical_claim", self.codes(sentence), sentence)
+
+
+class NeverOverrideTests(AgyBase):
+    def test_a_fixable_issue_with_a_never_override_code_is_still_not_overridable(self):
+        from unittest import mock
+        from nailblog import writer
+        from nailblog.quality import QualityResult
+        real = writer._agy_assess
+
+        def assess(*args):
+            images, content, ungrounded, result = real(*args)
+            return images, content, ungrounded, QualityResult(result.issues + (Issue("facts", "fixable", "content", "x"),))
+        with mock.patch.object(writer, "_agy_assess", assess):
+            draft = self.write(FakeAsk(reply()))
+        self.assertEqual([(i["code"], i["kind"], i["overridable"]) for i in draft.issues], [("facts", "fixable", False)])
         self.assertFalse(draft.can_override)
 
 

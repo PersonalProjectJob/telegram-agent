@@ -1535,8 +1535,14 @@ AGY_WRITE_PURPOSE, AGY_REPAIR_PURPOSE = "nailblog-write", "nailblog-repair"
 # Gate codes an Owner can never override: unsupported facts, unexpected Han, a medical claim. Every other `hold`
 # is structural; only `fixable` issues (and none of these) can be overridden by the Owner.
 NEVER_OVERRIDE = ("facts", "unexpected_han", "medical_claim")
-MEDICAL_TERMS = ("chữa", "điều trị", "viêm", "nấm móng", "không gây hại")
+MEDICAL_TERMS = ("chữa bệnh", "chữa khỏi", "chữa lành", "chữa trị", "điều trị", "viêm", "nấm móng", "không gây hại")
 _MEDICAL = re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, MEDICAL_TERMS)) + r")(?!\w)")
+
+
+def medical_claim(value):
+    """True when `value` has a banned medical phrase (NFC, case-free, hyphens/NBSP/repeated spaces count as one space)."""
+    folded = " ".join(unicodedata.normalize("NFC", str(value)).casefold().replace("-", " ").split())
+    return bool(_MEDICAL.search(folded))
 
 
 def agy_schema(hints=None):
@@ -1667,7 +1673,7 @@ def _agy_assess(article, topic, context, config):
     result = hold_unexpected_han(article, result)
     medical = tuple(Issue("medical_claim", HOLD, path, "câu chứa khẳng định y tế/điều trị bị cấm")
                     for path, value in article_texts(article)
-                    if _MEDICAL.search(unicodedata.normalize("NFC", value).casefold()))
+                    if medical_claim(value))
     return images, content, ungrounded, QualityResult(result.issues + medical)
 
 
