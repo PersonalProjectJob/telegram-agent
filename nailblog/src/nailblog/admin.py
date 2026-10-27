@@ -11,6 +11,8 @@ import re
 import socket
 import threading
 import time
+import unicodedata
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -105,7 +107,13 @@ def public_webp(config, url, *, cover, approved_sha=None):
         if connection: connection.close()
 
 
-def logged(name, *, post=False):
+def readback_budget(config):
+    """Readback ceiling: 15 s under the service's publish ceiling (min 30 s) so our coded error surfaces first."""
+    ceiling = config.admin.publish_timeout_seconds
+    return min(ceiling, max(30, ceiling - 15))
+
+
+def logged(name, *, post=False, budget=False):
     """Log one line per step: post id, step name, outcome code and elapsed ms; never URLs, payloads or API text."""
     def wrap(function):
         @functools.wraps(function)
@@ -114,6 +122,15 @@ def logged(name, *, post=False):
                 self.step_post = str(args[0])
             started, outcome = time.monotonic(), 'ok'
             try:
+                if budget:
+                    try:
+                        async with asyncio.timeout(readback_budget(self.config)) as limit:
+                            return await function(self, *args, **kwargs)
+                    except TimeoutError:
+                        # Only our own ceiling expiring is a readback timeout; any other TimeoutError keeps its identity.
+                        if limit.expired():
+                            raise AdminError('readback_timeout') from None
+                        raise
                 return await function(self, *args, **kwargs)
             except asyncio.CancelledError:
                 outcome = 'cancelled'
@@ -129,6 +146,11 @@ def logged(name, *, post=False):
                          getattr(self, 'step_post', '-'), name, outcome, (time.monotonic() - started) * 1000)
         return run
     return wrap
+
+
+def norm_title(value):
+    """Comparable Vietnamese title: NFC, casefold, collapsed whitespace."""
+    return ' '.join(unicodedata.normalize('NFC', value if isinstance(value, str) else '').casefold().split())
 
 
 class Admin:
@@ -168,6 +190,25 @@ class Admin:
         except BaseException:
             await self.__aexit__()
             raise
+
+    @asynccontextmanager
+    async def step(self, name):
+        """Sub-step log line (same shape as `logged`): never URLs, payloads or API text."""
+        started, outcome = time.monotonic(), 'ok'
+        try:
+            yield
+        except asyncio.CancelledError:
+            outcome = 'cancelled'
+            raise
+        except AdminError as error:
+            outcome = str(error) if CODE.fullmatch(str(error)) else 'AdminError'
+            raise
+        except BaseException as error:
+            outcome = 'error_' + type(error).__name__
+            raise
+        finally:
+            LOG.info('NailBlog publish post=%s step=%s outcome=%s elapsed_ms=%d',
+                     self.step_post, name, outcome, (time.monotonic() - started) * 1000)
 
     async def bounded(self, awaitable, what):
         """Bounded shutdown step: a hung close must never hold the process or the profile lock."""
@@ -348,6 +389,60 @@ class Admin:
                 results.append(actual)
         return results
 
+    async def find_duplicates(self, title, slug, exclude_id=None):
+        """Read-only scan of EVERY listing page and status for the same slug or normalized Vietnamese title.
+
+        Call BEFORE Create to block duplicates (no exclude_id). Call AFTER Create (reconciliation) with
+        `exclude_id` set to your own Draft's id once it is known, so the Draft is not reported as its own duplicate.
+        An incomplete scan never returns a partial list: it raises `duplicate_scan_incomplete`.
+        """
+        wanted_title, found, seen = norm_title(title), [], set()
+        data = await self.list_first()
+        page_size = data.get('pageSize') if type(data.get('pageSize')) is int else len(data['items'])
+        scanned = 0
+        for number in range(1, 201):
+            rows = data['items']
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id']:
+                    raise AdminError('duplicate_scan_bad_row')
+                if row['id'] == exclude_id:
+                    continue
+                titles, slugs = [row.get('title')], [row.get('slug')]
+                for item in row.get('translations') or []:
+                    if isinstance(item, dict) and str(item.get('languageCode', '')).upper() == 'VI':
+                        titles.append(item.get('title'))
+                        slugs.append(item.get('slug'))
+                hit = ((bool(slug) and slug in slugs) or
+                       (bool(wanted_title) and any(norm_title(t) == wanted_title for t in titles)))
+                if hit and row['id'] not in seen:
+                    seen.add(row['id'])
+                    first = lambda xs: next((x for x in xs if isinstance(x, str) and x), '')
+                    found.append({'id': row['id'], 'title': first(titles), 'slug': first(slugs),
+                                  'status': row.get('status')})
+            scanned += len(rows)
+            next_page = self.page.get_by_role('button', name='Trang sau', exact=True)
+            has_next = bool(await next_page.count() and await next_page.is_enabled())
+            # Does the API itself say more is coming? Total/paging fields win over button state.
+            if isinstance(data.get('hasNextPage'), bool):
+                more = data['hasNextPage']
+            elif type(data.get('totalPages')) is int:
+                more = number < data['totalPages']
+            elif type(data.get('totalCount')) is int:
+                more = scanned < data['totalCount']
+            else:
+                # No totals: finish only on a short page AND a disabled/absent next button.
+                more = len(rows) >= page_size or has_next
+            if not more:
+                return found
+            if not has_next:
+                raise AdminError('duplicate_scan_incomplete')
+            async with self.page.expect_response(lambda r: self.response(r, BLOGS)) as response:
+                await next_page.click()
+            data = await self.json_response(await response.value)
+            if not isinstance(data.get('items'), list):
+                raise AdminError('list_schema_changed')
+        raise AdminError('duplicate_scan_page_limit')
+
     async def paste_html(self, content):
         # Clipboard + keyboard paste is a real Quill user interaction; no DOM/editor state injection.
         await self.page.evaluate('''async html => {
@@ -485,10 +580,18 @@ class Admin:
         def valid(q):
             body = q.post_data_json
             return matches(body, payload, self.config) and not body.get('id')
+        limit = self.config.admin.create_timeout_seconds
+        from playwright.async_api import TimeoutError as BrowserTimeout
         with self.guard.allow('POST', BLOGS, valid):
-            async with self.page.expect_response(lambda r: self.response(r, BLOGS, 'POST')) as response:
-                await dialog.get_by_role('button', name='Create', exact=True).click()
-            created_response = await response.value
+            # Exactly one click, never retried: a timeout leaves the Create outcome UNKNOWN.
+            try:
+                async with asyncio.timeout(limit):
+                    async with self.page.expect_response(lambda r: self.response(r, BLOGS, 'POST'),
+                                                         timeout=limit * 1000) as response:
+                        await dialog.get_by_role('button', name='Create', exact=True).click()
+                    created_response = await response.value
+            except (TimeoutError, BrowserTimeout):
+                raise AdminError('create_timeout') from None
         return await self.create_receipt(created_response, payload)
 
     @logged('image_bytes')
@@ -551,54 +654,59 @@ class Admin:
             if not 200 <= (await response.value).status < 300:
                 raise AdminError('publish_http_error')
 
-    @logged('published_readback', post=True)
+    @logged('published_readback', post=True, budget=True)
     async def published_readback(self, post_id, expected):
-        admin = await self.read(post_id)
-        if not matches(admin, expected, self.config, status='Published', post_id=post_id, published=True):
-            raise AdminError('published_admin_mismatch')
+        async with self.step('readback_admin_row'):
+            admin = await self.read(post_id)
+            if not matches(admin, expected, self.config, status='Published', post_id=post_id, published=True):
+                raise AdminError('published_admin_mismatch')
         slug = admin.get('slug')
         if not isinstance(slug, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', slug):
             raise AdminError('public_slug_invalid')
         public_path = '/api/v1/blogs/' + slug
-        async with self.page.expect_response(lambda r: self.response(r, public_path)) as response:
-            result = await self.page.goto(self.config.contract.site_origin + '/blog/' + slug, wait_until='domcontentloaded')
-        public = await self.json_response(await response.value)
-        if not result or result.status != 200 or not matches(public, expected, self.config, status='Published', post_id=post_id, published=True):
-            raise AdminError('published_public_mismatch')
-        await self.page.get_by_role('heading', name=expected['translations'][0]['title'], exact=True).wait_for()
+        async with self.step('readback_public_api'):
+            async with self.page.expect_response(lambda r: self.response(r, public_path)) as response:
+                result = await self.page.goto(self.config.contract.site_origin + '/blog/' + slug, wait_until='domcontentloaded')
+            public = await self.json_response(await response.value)
+            if not result or result.status != 200 or not matches(public, expected, self.config, status='Published', post_id=post_id, published=True):
+                raise AdminError('published_public_mismatch')
+            await self.page.get_by_role('heading', name=expected['translations'][0]['title'], exact=True).wait_for()
         public_evidence = await self.anonymous_readback(slug, expected)
         return {'readback': {'admin_id': post_id, 'slug': slug, 'publishedAt': admin['publishedAt'],
                              **self.env, 'snapshot': snapshot(admin, self.config), **public_evidence}}
 
-    @logged('anonymous_readback')
+    @logged('anonymous_readback', budget=True)
     async def anonymous_readback(self, slug, expected):
         """Prove actual unauthenticated page/images and a homepage card click, never inject DOM."""
         image_checks = await self.image_bytes(expected)
-        browser = await self.manager.chromium.launch(headless=self.config.admin.headless)
+        async with self.step('anonymous_browser_launch'):
+            browser = await self.manager.chromium.launch(headless=self.config.admin.headless)
         try:
-            context = await browser.new_context(viewport={'width':1440,'height':900}, timezone_id='Asia/Ho_Chi_Minh',
-                                                service_workers='block')
-            guard = Guard(self.config)
-            await context.route('**/*', guard.route)
-            page = await context.new_page()
-            page.set_default_timeout(self.config.admin.timeout_seconds*1000)
-            response = await page.goto(self.config.contract.site_origin+'/blog/'+slug,wait_until='domcontentloaded')
-            if not response or response.status != 200:
-                raise AdminError('anonymous_article_unavailable')
-            await page.get_by_role('heading',name=expected['translations'][0]['title'],exact=True).wait_for()
-            expected_images = [expected['coverImage'],*expected['images']]
-            for image in expected_images:
-                await page.locator('img[src='+json.dumps(image['imageUrl'])+']').first.scroll_into_view_if_needed()
-                await page.wait_for_function('''url => Array.from(document.images).some(img =>
-                    img.src === url && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0)''',
-                    arg=image['imageUrl'])
-            for image in Markup(expected['translations'][0]['content']).images:
-                await page.wait_for_function('''wanted => Array.from(document.images).some(img =>
-                    img.src === wanted.src && img.getAttribute('alt') === wanted.alt &&
-                    img.closest('figure') && img.closest('figure').querySelector('figcaption'))''', arg=image)
-            response = await page.goto(self.config.contract.site_origin+'/',wait_until='domcontentloaded')
-            if not response or response.status != 200:
-                raise AdminError('anonymous_homepage_unavailable')
+            async with self.step('anonymous_article'):
+                context = await browser.new_context(viewport={'width':1440,'height':900}, timezone_id='Asia/Ho_Chi_Minh',
+                                                    service_workers='block')
+                guard = Guard(self.config)
+                await context.route('**/*', guard.route)
+                page = await context.new_page()
+                page.set_default_timeout(self.config.admin.timeout_seconds*1000)
+                response = await page.goto(self.config.contract.site_origin+'/blog/'+slug,wait_until='domcontentloaded')
+                if not response or response.status != 200:
+                    raise AdminError('anonymous_article_unavailable')
+                await page.get_by_role('heading',name=expected['translations'][0]['title'],exact=True).wait_for()
+                expected_images = [expected['coverImage'],*expected['images']]
+                for image in expected_images:
+                    await page.locator('img[src='+json.dumps(image['imageUrl'])+']').first.scroll_into_view_if_needed()
+                    await page.wait_for_function('''url => Array.from(document.images).some(img =>
+                        img.src === url && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0)''',
+                        arg=image['imageUrl'])
+                for image in Markup(expected['translations'][0]['content']).images:
+                    await page.wait_for_function('''wanted => Array.from(document.images).some(img =>
+                        img.src === wanted.src && img.getAttribute('alt') === wanted.alt &&
+                        img.closest('figure') && img.closest('figure').querySelector('figcaption'))''', arg=image)
+            async with self.step('anonymous_homepage'):
+                response = await page.goto(self.config.contract.site_origin+'/',wait_until='domcontentloaded')
+                if not response or response.status != 200:
+                    raise AdminError('anonymous_homepage_unavailable')
             navigation = await self.homepage_card_click(page, slug, expected['translations'][0]['title'])
             return {'anonymous_homepage_click':True,'anonymous_image_count':len(expected_images),
                     'homepage_navigation':navigation,'image_byte_checks':image_checks}
