@@ -383,3 +383,21 @@ rollback command. It validates backup integrity and restores DB with all writers
 If restoration reports failure, preserve backups/failed code and perform manual recovery.
 The controller independently verifies real login/browser/systemd and monitors both services
 for 24h after cutover; offline tests do not establish those production facts.
+
+## NailBlog Agy-only cutover (2026-10-27)
+
+Read-only inventory before and after cutover, run as root on the host (prints JSON, writes nothing, never prints a secret):
+
+~~~sh
+python3 deploy/nailblog_cutover_check.py > inventory.json
+~~~
+
+Every path is a flag with the host default (`--unit-dir`, `--db`, `--ledger`, `--queue`, `--private-dir`, `--config`,
+`--env-file`, `--lock`, `--proc-root`; `--no-systemctl` skips enabled/active/failed). Step list, backups, rollback and the
+Owner stop points: `Docs/02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md`.
+
+Target units: `systemd/tg-nailblog.service` (`TimeoutStopSec=660`, no `ollama.service`, no Cloudflare quota path, ledger is
+read-only so it is not in `ReadWritePaths`) and `nailblog/deploy/tg-nailblog-subscription.service` (`TimeoutStopSec=630`).
+Install `nailblog/deploy/nailblog-text-only.md` next to `nailblog-image-only.md` in the Snap agents directory
+(`~startechai/snap/antigravity-cli/common/.gemini/config/agents/`, owner startechai, mode 0640).
+`.gitattributes` forces LF for `nailblog/**`, the example config and `systemd/*.service`, so the pinned policy hashes match on Windows checkouts.
