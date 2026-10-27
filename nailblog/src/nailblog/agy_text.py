@@ -45,9 +45,14 @@ def classify(error):
     return 'unknown'
 
 
-# Fixed tail of every text prompt: agy does not enforce --json-schema, so say it in the prompt itself.
-PROMPT_SUFFIX = ("\n\nTrả lời bằng đúng MỘT JSON object khớp schema đã cho (không phải mảng, không markdown, "
-                 "không giải thích). Không cần và không được gọi tool; trả lời xong là xong.")
+# Tail of every text prompt. agy does NOT pass --json-schema to the model, so the prompt itself carries the schema.
+PROMPT_SUFFIX_HEAD = ("\n\nTrả lời bằng đúng MỘT JSON object khớp CHÍNH XÁC JSON Schema dưới đây: chỉ dùng các field có "
+                      "trong schema, không thêm field nào khác, đúng kiểu và giới hạn. Không markdown, không giải thích. "
+                      "Không cần và không được gọi tool.\nSchema: ")
+
+
+def prompt_suffix(schema):
+    return PROMPT_SUFFIX_HEAD + json.dumps(schema, ensure_ascii=False, separators=(',', ':'))
 
 
 class AgyText:
@@ -65,9 +70,9 @@ class AgyText:
         automatically, as a new attempt job; nothing ran in the old one.
         Prompt and schema travel in the agy argv, so they are visible via ps/cmdline.
         """
-        if isinstance(prompt, str) and prompt:
-            prompt += PROMPT_SUFFIX
         try:
+            if isinstance(prompt, str) and prompt and isinstance(schema, dict):
+                prompt += prompt_suffix(schema)
             too_big = (not isinstance(prompt, str) or not isinstance(schema, dict) or
                        text_argv_bytes(prompt, schema) > MAX_TEXT_ARGV_BYTES)
         except (TypeError, ValueError):

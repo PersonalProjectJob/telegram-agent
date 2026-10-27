@@ -149,5 +149,43 @@ class FinalAnswerTests(Env):
         self.assertTrue(request['prompt'].startswith('write json\n\n'))
 
 
+class PromptSchemaTests(Env):
+    def sent_prompt(self, schema, text='write json'):
+        self.beat()
+        with self.assertRaises(AgyTextError):
+            self.ask.ask(text, schema, purpose='run1:write')  # no worker answer is configured to succeed
+        return json.loads(next(Path(self.cfg.queue_dir).glob('*/request.json')).read_bytes())
+
+    def test_suffix_embeds_exactly_the_given_schema(self):
+        self.autorun = False
+        request = self.sent_prompt(SCHEMA)
+        compact = json.dumps(SCHEMA, ensure_ascii=False, separators=(',', ':'))
+        self.assertTrue(request['prompt'].endswith('\nSchema: ' + compact))
+        self.assertIn('khớp CHÍNH XÁC JSON Schema', request['prompt'])
+        self.assertIn('không thêm field nào khác', request['prompt'])
+
+    def test_planner_sized_prompt_with_real_daily_schema_fits_the_limit(self):
+        from nailblog.agy_text import prompt_suffix
+        from nailblog.daily import daily_schema
+        from nailblog.images.subscription import MAX_TEXT_ARGV_BYTES, text_argv_bytes
+        schema = daily_schema(4)
+        prompt = 'x' * 11395 + prompt_suffix(schema)
+        self.assertLess(text_argv_bytes(prompt, schema), MAX_TEXT_ARGV_BYTES)
+
+    def test_job_id_changes_when_the_schema_changes(self):
+        from nailblog.agy_text import prompt_suffix
+        from nailblog.images.subscription import text_job_id
+        other = dict(SCHEMA, required=['candidates'], properties={'candidates': {'type': 'array'}})
+        ids = {text_job_id('p', 'write json' + prompt_suffix(s), s) for s in (SCHEMA, other)}
+        self.assertEqual(len(ids), 2)
+        self.assertNotEqual(prompt_suffix(SCHEMA), prompt_suffix(other))
+
+    def test_oversized_prompt_plus_schema_suffix_is_invalid(self):
+        self.beat()
+        with self.assertRaises(AgyTextError) as raised:
+            self.ask.ask('x' * 99900, SCHEMA, purpose='run1:write')
+        self.assertEqual(raised.exception.code, 'invalid')
+
+
 if __name__ == '__main__':
     unittest.main()
