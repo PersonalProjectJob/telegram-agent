@@ -32,8 +32,7 @@ DAILY_AT = {10: ('propose',), 13: ('decide', 'write'), 20: ('preview',)}
 @dataclass
 class Runtime:
     """Injection points for tests; None means the real network functions."""
-    transport: object = None   # same signature as ai_transport.request_json
-    key_reader: object = None  # same signature as ai_transport.read_key
+    _test_transport: object = None   # TEST ONLY: scripted text model; main() always builds Runtime() so it is None
     opener: object = None      # called like urllib's opener(request, timeout=...)
     today: object = None       # datetime.date
     now: object = None         # epoch seconds, freezes the clock of trends/daily
@@ -119,7 +118,7 @@ async def _daily(config, args, runtime, options):
         service = Service(cfg, clock=lambda: now)
         service.opener = runtime.opener
         service.refresh_trends = not (given and given < real_today)   # a past day never fetches today's real trends
-        text = TextModel(cfg, service.model_call, **options)
+        text = TextModel(cfg, **options)
         for step in DAILY_AT[args.at]:
             outcome = await daily.run_step(service, step, today, text, opener=runtime.opener)
             print(f'== daily {step} {today.isoformat()}')
@@ -183,15 +182,14 @@ async def execute(command, config, args=None, runtime=None):
         return
     from .service import Service
     from .text import TextModel
-    options = {name: value for name, value in (('transport', runtime.transport), ('key_reader', runtime.key_reader))
-               if value is not None}
+    options = {'_test_transport': runtime._test_transport} if runtime._test_transport is not None else {}
     if command == 'daily':
         await _daily(config, args, runtime, options)
         return
     if command == 'plan-week':
         with _maybe_scratch(config, args.dry_run) as cfg:
             service = Service(cfg)
-            text = TextModel(cfg, service.model_call, **options)
+            text = TextModel(cfg, **options)
             outcome = await service.plan_week(text, opener=runtime.opener, dry_run=args.dry_run, today=runtime.today)
         print(outcome.text)
         if outcome.created and not outcome.sent:
@@ -199,7 +197,7 @@ async def execute(command, config, args=None, runtime=None):
                                       else 'CLI không có phiên Telegram; chủ đề đã lưu, xem bằng /nailblog topics') + ')')
         return
     service = Service(config)
-    text = TextModel(config, service.model_call, **options)
+    text = TextModel(config, **options)
     outcome = await service.preview(args.topic, args.out, text)
     print(f'preview: verdict={outcome.verdict} words={outcome.words} issues={len(outcome.issues)}')
     for issue in outcome.issues:

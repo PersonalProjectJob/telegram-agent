@@ -438,7 +438,7 @@ class DryRunCase(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = cli.main(list(argv) + ["--config", str(self.config_path)],
-                            runtime=Runtime(transport=self.model.transport, opener=self.opener, **runtime))
+                            runtime=Runtime(_test_transport=self.model.transport, opener=self.opener, **runtime))
         return code, out.getvalue()
 
     def tree(self):

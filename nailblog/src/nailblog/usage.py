@@ -1,4 +1,4 @@
-"""API cost accounting (TD-6): per-call rows, a daily USD ceiling, and the console summary file.
+"""Usage rows and the console summary file. Agy calls are free of API bill; the retired API ledger is only read.
 
 Only counts and cost are stored, never prompts, content or keys. The summary file
 (`agentfleet-usage.json`, schema 1) follows the listener's camelCase contract, written atomically
@@ -25,11 +25,7 @@ RETENTION_DAYS = 90
 
 
 class BudgetExceeded(RuntimeError):
-    """Today's spend has reached budget.daily_usd; no new paid call may start."""
-
-
-class UnpricedModel(ValueError):
-    """A paid model has no entry in the [budget] price tables (fail-closed)."""
+    """Base class of the retired API-budget errors (kept for import compatibility; nothing raises it)."""
 
 
 def day_bounds(ts):
@@ -37,23 +33,6 @@ def day_bounds(ts):
     day = datetime.fromtimestamp(ts, VN_TZ).date()
     start = datetime(day.year, day.month, day.day, tzinfo=VN_TZ)
     return start.timestamp(), (start + timedelta(days=1)).timestamp()
-
-
-def text_cost(budget, provider, model, tokens_in, tokens_out):
-    if provider in ("ollama", "agy"):   # local model / Agy subscription: no API bill
-        return 0.0
-    if model not in budget.text_prices:
-        raise UnpricedModel("no text price for model")
-    price_in, price_out = budget.text_prices[model]
-    return (max(0, tokens_in) * price_in + max(0, tokens_out) * price_out) / 1e6
-
-
-def image_cost(budget, model, count, provider=None):
-    if "subscription" in (provider, model):   # Agy subscription route: no API bill
-        return 0.0
-    if model not in budget.image_prices:
-        raise UnpricedModel("no image price for model")
-    return max(0, count) * budget.image_prices[model]
 
 
 def _window(rows, since, image_models=frozenset()):
@@ -157,16 +136,6 @@ class UsageRecorder:
         self.state.add_usage(self.clock(), provider, model, units, usd)
         self.publish()
 
-    def record_text(self, provider, model, tokens_in, tokens_out):
-        usd = text_cost(self.budget, provider, model, tokens_in, tokens_out)
-        self.record(provider, model, max(0, tokens_in) + max(0, tokens_out), usd)
-        return usd
-
-    def record_image(self, provider, model, count):
-        usd = image_cost(self.budget, model, count)
-        self.record(provider, model, count, usd)
-        return usd
-
     def publish(self, *, force=False):
         """Write the summary now or at most once per interval; never raises."""
         with self._lock:
@@ -177,8 +146,8 @@ class UsageRecorder:
                 start = day_bounds(now)[0] - (DAILY_DAYS - 1) * 86400
                 rows = self.state.usage_between(start, now + 1)
                 rows = sorted(rows + self._legacy_rows(start, now + 1))   # old API spend booked in the retired ledger
-                write_atomic(self.path, build_summary(rows, now,
-                                                      image_models=frozenset(self.budget.image_prices) | frozenset(self.budget.image_output_prices)))
+                write_atomic(self.path, build_summary(rows, now, image_models=frozenset(
+                    row[2] for row in rows if "image" in row[2])))
             except Exception as error:
                 LOG.warning("Usage summary write failed exception=%s", type(error).__name__)
                 return False

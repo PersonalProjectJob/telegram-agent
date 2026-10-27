@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timedelta
 
-from .approvals import NEVER_OVERRIDABLE
+from .override_policy import NEVER_OVERRIDABLE
 from .publication import (AdminError, approval_fingerprint, binding, digest, document_matches,
                           instant, matches, snapshot)
 from .schedule import VN_TZ

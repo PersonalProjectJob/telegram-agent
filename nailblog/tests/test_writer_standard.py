@@ -192,8 +192,8 @@ class SourcesTests(unittest.IsolatedAsyncioTestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         config = settings(directory.name)
-        model = TextModel(config, Service(config).model_call,
-                          transport=fakes.article_transport(outline_override={"claims": [self.LEGAL]}))
+        model = TextModel(config,
+                          _test_transport=fakes.article_transport(outline_override={"claims": [self.LEGAL]}))
         article = await write_article(model, {"title": "Chủ đề", "category": "nail-job", "product_promo": False},
                                       [fakes.SOURCE], site_origin="https://nailhub.ai", today=TODAY)
         self.assertEqual((article["sources"], article["sources_updated"]),
@@ -242,7 +242,7 @@ class PromptTests(unittest.IsolatedAsyncioTestCase):
 
     async def calls(self, category, sections=5):
         transport = fakes.article_transport(sections=sections)
-        model = TextModel(self.config, self.service.model_call, transport=transport)
+        model = TextModel(self.config, _test_transport=transport)
         await write_article(model, {"title": "Nail mắt mèo nhung mùa đông 2026", "category": category, "product_promo": False},
                             [fakes.SOURCE], site_origin="https://nailhub.ai", today=TODAY)
         return [call["payload"]["messages"] for call in transport.calls]
@@ -311,7 +311,7 @@ class PromptTests(unittest.IsolatedAsyncioTestCase):
             async def ask(self, purpose, system, user, schema, **kwargs):
                 asked.append((purpose, kwargs.get("light", False)))
                 return await super().ask(purpose, system, user, schema, **kwargs)
-        model = Spy(self.config, self.service.model_call, transport=fakes.article_transport())
+        model = Spy(self.config, _test_transport=fakes.article_transport())
         await write_article(model, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE], site_origin="https://nailhub.ai",
                             today=TODAY)
         self.assertEqual(asked, [("outline", False)] + [(f"section {i}", True) for i in range(1, 6)])
@@ -339,7 +339,7 @@ class OverCeilingRepairTests(unittest.IsolatedAsyncioTestCase):
             if number <= 6:
                 return ollama_envelope(fakes.section(number - 2, **big[number - 2]))
             return ollama_envelope(repair_reply)
-        text = TextModel(self.config, self.service.model_call, transport=FakeTransport(transport))
+        text = TextModel(self.config, _test_transport=FakeTransport(transport))
         draft = await self.service.draft(self.topic, text, posts=fakes.RELATED_POSTS, today=TODAY)
         return draft, calls
 
@@ -385,7 +385,7 @@ class OutlineCapAndBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.service = Service(self.config, clock=lambda: 0.0)
 
     async def write(self, transport, category="nail-salon"):
-        text = TextModel(self.config, self.service.model_call, transport=transport)
+        text = TextModel(self.config, _test_transport=transport)
         return await write_article(text, {"title": "T", "category": category}, [fakes.SOURCE],
                                    site_origin="https://nailhub.ai", today=TODAY)
 
@@ -536,7 +536,7 @@ class KeywordReaskTests(unittest.IsolatedAsyncioTestCase):
                 return ollama_envelope(missing)
             return ollama_envelope(fakes.section(index, words=100))
         transport = FakeTransport(respond)
-        text = TextModel(self.config, self.service.model_call, transport=transport)
+        text = TextModel(self.config, _test_transport=transport)
         article = await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
                                       site_origin="https://nailhub.ai", today=TODAY)
         return article, transport
@@ -574,7 +574,7 @@ class KeywordReaskTests(unittest.IsolatedAsyncioTestCase):
             index = number - 2
             return ollama_envelope(fakes.section(index, words=12) if index < 3 else missing)
         transport = FakeTransport(respond)
-        text = TextModel(self.config, self.service.model_call, transport=transport)
+        text = TextModel(self.config, _test_transport=transport)
         article = await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
                                       site_origin="https://nailhub.ai", today=TODAY)
         requests = [c["payload"]["messages"][0]["content"] for c in transport.calls[1:]]
@@ -598,7 +598,7 @@ class OutlineAttemptsTests(unittest.IsolatedAsyncioTestCase):
 
     def model(self, respond):
         transport = FakeTransport(respond)
-        return TextModel(self.config, self.service.model_call, transport=transport), transport
+        return TextModel(self.config, _test_transport=transport), transport
 
     async def test_an_invalid_outline_or_section_fails_closed_without_a_second_call(self):
         from nailblog.text import TextModelError
@@ -691,7 +691,7 @@ class StuffingRepairTests(unittest.IsolatedAsyncioTestCase):
         issue = Issue("kw_density", "fixable", "content", "từ khóa chính chiếm 3.09% số từ, nhồi từ khóa (trên 2.5%)")
         piece = {"paragraphs": [fakes.prose(45, 1), fakes.prose(45, 2)], "claims": []}
         transport = FakeTransport(lambda call, number: ollama_envelope({"body": piece, "body_2": piece, "body_3": piece}))
-        text = TextModel(config, service.model_call, transport=transport)
+        text = TextModel(config, _test_transport=transport)
         result, repaired = await repair_article(text, article, [issue], sources=[fakes.SOURCE])
         request = transport.calls[0]["payload"]["messages"][0]["content"]
         self.assertEqual(len(transport.calls), 1)
@@ -721,7 +721,7 @@ class StuffingRepairTests(unittest.IsolatedAsyncioTestCase):
         piece = {"paragraphs": [fakes.prose(45, 1), fakes.prose(45, 2)], "claims": []}
         transport = FakeTransport(lambda call, number: ollama_envelope(
             {"body": piece, "body_2": piece, "body_3": piece}))
-        text = TextModel(config, service.model_call, transport=transport)
+        text = TextModel(config, _test_transport=transport)
         await repair_article(text, article, issues, sources=[fakes.SOURCE])
         request = transport.calls[0]["payload"]["messages"][0]["content"]
         self.assertEqual(len(transport.calls), 1)
@@ -776,7 +776,7 @@ class MultiSectionRepairCallTests(unittest.IsolatedAsyncioTestCase):
         shorter = {"paragraphs": [fakes.prose(45, 1), fakes.prose(45, 2)], "claims": []}
         reply = {"body": shorter, **{f"body_{n + 1}": shorter for n in range(1, len(targets))}}
         transport = FakeTransport(lambda call, number: ollama_envelope(reply))
-        text = TextModel(config, service.model_call, transport=transport)
+        text = TextModel(config, _test_transport=transport)
         result, repaired = await repair_article(text, article, [issue], sources=[fakes.SOURCE])
         self.assertEqual(len(transport.calls), 1)
         request = transport.calls[0]["payload"]["messages"][0]["content"]

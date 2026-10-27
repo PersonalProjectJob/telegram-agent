@@ -89,8 +89,8 @@ def check_schema(schema, value, path="$"):
 
 
 def _ask_over_transport(transport):
-    """Test seam only: adapt an injected `transport(url, payload, headers, timeout, provider)` whose envelope has the
-    shape `{"message": {"content": <json text>}}` to the Agy `ask` contract. No network, no provider route."""
+    """TEST SEAM, never for production: adapt an injected `transport(url, payload, headers, timeout, provider)` whose
+    envelope has the shape `{"message": {"content": <json text>}}` to the Agy `ask` contract. No network."""
     def ask(prompt, schema, *, purpose, deadline=None):
         payload = {"format": schema, "messages": [{"role": "user", "content": prompt}], "purpose": purpose}
         return json.loads(transport("agy://test-seam", payload, {}, 0, "agy")["message"]["content"])
@@ -100,13 +100,15 @@ def _ask_over_transport(transport):
 class TextModel:
     """Async adapter over `ask(prompt, schema, *, purpose, deadline=None)` (default `AgyText(config).ask`).
 
-    `call` is accepted for the old constructor shape and ignored; so are provider-era options (transport, key_reader)."""
+    `_test_transport` exists only so tests can script the model; production code (`__main__`) never passes it, and an
+    unknown keyword raises TypeError."""
 
-    def __init__(self, config, call=None, *, ask=None, stop=None, before_dispatch=None, **_ignored):
+    def __init__(self, config, *, ask=None, stop=None, before_dispatch=None, _test_transport=None):
+        """`_test_transport`: TEST ONLY, must stay None in production."""
         self.config = config.text_model
         self.stop, self.before_dispatch = stop, before_dispatch
-        if ask is None and _ignored.get("transport") is not None:
-            ask = _ask_over_transport(_ignored["transport"])
+        if ask is None and _test_transport is not None:
+            ask = _ask_over_transport(_test_transport)
         if ask is None:
             from .agy_text import AgyText
             ask = AgyText(config).ask

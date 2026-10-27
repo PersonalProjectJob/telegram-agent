@@ -1,5 +1,4 @@
 """Step B part 0: the seven notes from the independent verification of step A."""
-import inspect
 import logging
 import tempfile
 import unittest
@@ -9,13 +8,12 @@ from pathlib import Path
 
 from nailblog._errors import ConfigError
 from nailblog import schedule as s
-from nailblog.config import BudgetConfig, _is_secret_name
+from nailblog.config import _is_secret_name
 from nailblog.service import Service
 from nailblog.state import EvidenceRequired, InvalidTransition, State, StateError
-from nailblog.usage import BudgetExceeded, UsageRecorder
+from nailblog.usage import UsageRecorder
 from tests.helpers import load, settings
 
-PRICES = BudgetConfig(daily_usd=1.0, text_prices={"deepseek-chat": (0.5, 2.0)}, image_prices={"img": 0.25})
 SLOT = "2026-10-17T06:00+07:00"
 KEY = 'key_file = "/etc/nailblog/private/model-key.json"'
 
@@ -181,79 +179,21 @@ class BackoffCapTests(unittest.TestCase):
         self.assertEqual(s.adaptive_next_attempt(now, 0, slot), now + timedelta(minutes=5))
 
 
-class FakeUsage:
-    """UsageRecorder notification protocol; paid accounting itself uses the real SQLite ledger."""
-
-    def __init__(self, events, fail_check=False):
-        self.events, self.fail_check = events, fail_check
-
-    def check(self):
-        self.events.append("check")
-        if self.fail_check:
-            raise BudgetExceeded("daily USD budget reached")
-
-    def record(self, provider, model, units, usd):
-        self.events.append(("record", provider, model, units, round(usd, 6)))
-
-    def publish(self, *, force=False):
-        self.events.append('publish')
-        return True
-
-
-class ModelCallBillingTests(unittest.IsolatedAsyncioTestCase):
-    def make(self, **kwargs):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        service = Service(replace(settings(directory.name), budget=PRICES), **kwargs)
-        self.events = []
-        service.usage = FakeUsage(self.events)
-        return service
-
-    def test_the_fake_matches_the_real_recorder_signatures(self):
-        for name in ("check", "record", "publish"):
-            self.assertEqual(inspect.signature(getattr(FakeUsage, name)).parameters.keys(),
-                             inspect.signature(getattr(UsageRecorder, name)).parameters.keys())
-
-    async def test_agy_provider_touches_no_usage_record_ledger_or_lock(self):
-        service = self.make()
-
-        def call(value):
-            self.events.append("call")
-            return value
-        self.assertEqual(await service.model_call(call, 7, provider="agy", model="gemini-3.8-flash-medium"), 7)
-        self.assertEqual(self.events, ["call"])                                  # no check, no record, no publish
-        self.assertEqual(service.state.usage_between(0, 2 * 10**10), [])
-
-    async def test_every_paid_or_api_provider_is_refused_before_the_call_and_before_any_check(self):
-        service = self.make()
-        for provider in ("deepseek", "gemini", "ollama", "openai"):
-            with self.subTest(provider):
-                with self.assertRaisesRegex(RuntimeError, "paid_text_removed"):
-                    await service.model_call(lambda usage_sink=None: self.events.append("call"),
-                                             provider=provider, model="deepseek-chat")
-        self.assertEqual(self.events, [])
-
-    async def test_unbilled_call_has_the_old_plain_shape(self):
-        service = self.make()
-        self.assertEqual(await service.model_call(lambda a, b: a + b, 2, 3), 5)
-        self.assertEqual(self.events, [])
-
-
 class SummaryImagesTests(unittest.TestCase):
     def test_image_units_get_their_own_key_and_do_not_inflate_tokens(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = replace(settings(directory), budget=PRICES)
+            config = settings(directory)
             usage = UsageRecorder(State(config.db_path), config)
-            usage.record_text("deepseek", "deepseek-chat", 1000, 500)
-            usage.record_image("gemini", "img", 3)
+            usage.record("agy", "agy-text", 1500, 0.0015)
+            usage.record("agy", "agy-image", 3, 0.0)
             usage.publish(force=True)
             import json
             data = json.loads((Path(directory) / "agentfleet-usage.json").read_text(encoding="utf-8"))
         today = data["windows"]["today"]
         self.assertEqual((today["promptTokens"], today["images"], today["calls"]), (1500, 3, 2))
         rows = {row["model"]: row for row in today["byModel"]}
-        self.assertEqual((rows["img"]["images"], rows["img"]["promptTokens"]), (3, 0))
-        self.assertEqual((rows["deepseek-chat"]["images"], rows["deepseek-chat"]["promptTokens"]), (0, 1500))
+        self.assertEqual((rows["agy-image"]["images"], rows["agy-image"]["promptTokens"]), (3, 0))
+        self.assertEqual((rows["agy-text"]["images"], rows["agy-text"]["promptTokens"]), (0, 1500))
         self.assertEqual(data["windows"]["30d"]["images"], 3)
 
 

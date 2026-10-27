@@ -32,9 +32,8 @@ class ConfigTests(unittest.TestCase):
                          ("nailblog-text-only", 600, 48, 90))
         self.assertEqual((config.schedule.window_start_hours, config.schedule.window_end_hours,
                           config.schedule.approve_deadline_hours), (24, 3, 2))
-        self.assertEqual((config.text_model.provider, config.text_model.model, config.text_model.think),
-                         ("agy", "qwen3.5:9b", False))
-        self.assertEqual((config.image.candidates, config.image.max_rounds, config.budget.daily_usd), (2, 2, 3.0))
+        self.assertEqual((config.text_model.provider, config.text_model.model), ("agy", "qwen3.5:9b"))
+        self.assertEqual((config.image.candidates, config.image.max_rounds), (2, 2))
         self.assertIs(config.image.review_bypass, False)
         self.assertEqual((config.contract.api_origin, config.contract.site_origin, config.contract.verified),
                          ("https://api.nailhub.ai", "https://nailhub.ai", False))
@@ -161,6 +160,21 @@ class ConfigTests(unittest.TestCase):
                     self.invalid(f"^removed_key:{section}[.]{name}$", **{section: f"{name} = 1"})
         self.invalid("^removed_key:cloudflare$", cloudflare='account_id = ""')
         self.invalid("^removed_key:cloudflare$", cloudflare="")
+
+    def test_legacy_config_fields_are_gone_from_the_dataclasses(self):
+        from dataclasses import fields
+        from nailblog import config as module
+        names = lambda cls: {f.name for f in fields(cls)}   # noqa: E731
+        self.assertEqual(names(module.TextModelConfig), {"provider", "model", "timeout_seconds"})
+        self.assertEqual(names(module.ImageConfig), {"provider", "candidates", "max_rounds", "timeout_seconds",
+                                                      "review_bypass"})
+        self.assertEqual(names(module.BudgetConfig), {"ledger_db_path"})
+        self.assertEqual(names(module.AutoflowConfig), {"enabled", "runs_dir"})
+        self.assertNotIn("cloudflare", names(module.NailBlogConfig))
+        self.assertFalse(hasattr(module, "CloudflareConfig"))
+        for gone in ("KEY_SOURCES", "UNIT_PRICE_SIZES"):
+            self.assertFalse(hasattr(module, gone), gone)
+        self.assertEqual(module.TEXT_PROVIDERS, ("agy",))
 
     def test_subscription_text_keys_bounds(self):
         for body in ("text_timeout_seconds = 119", "text_timeout_seconds = 901", 'text_timeout_seconds = "600"',

@@ -455,7 +455,7 @@ async def write_articles(service, text, today, *, opener=None):
         except Exception as error:
             complete = False
             LOG.warning("NailBlog article failed slot=%s exception=%s", hhmm, type(error).__name__)
-            if type(error).__name__ in ("BudgetExceeded", "UnpricedModel"):
+            if type(error).__name__ == "BudgetExceeded":
                 break
     return "", complete
 

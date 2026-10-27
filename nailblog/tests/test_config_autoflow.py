@@ -41,8 +41,6 @@ class ConfigCase(unittest.TestCase):
 class DefaultsTests(ConfigCase):
     def test_defaults_are_unchanged(self):
         config = self.load()
-        self.assertEqual(config.image.key_source, "file")
-        self.assertEqual(config.budget.image_unit_prices, {})
         self.assertEqual(config.admin, AdminConfig())
         self.assertEqual(config.admin.publish_timeout_seconds, 300)
         self.assertEqual(config.admin.category_ids, {})
@@ -51,8 +49,8 @@ class DefaultsTests(ConfigCase):
         self.assertEqual(config.daily.slot_categories,
                          {"06:00": ("hot-trend", "nail-job"), "19:00": ("nail-salon", "did-you-know")})
         self.assertEqual(config.autoflow, AutoflowConfig(enabled=False))
-        self.assertEqual(ImageConfig().key_source, "file")
-        self.assertEqual(BudgetConfig().image_unit_prices, {})
+        self.assertEqual(BudgetConfig(), BudgetConfig(ledger_db_path=""))
+        self.assertEqual(ImageConfig().provider, "subscription")
 
     def test_the_shipped_example_still_loads_with_defaults(self):
         text = (ROOT / "config" / "nailblog.example.toml").read_text(encoding="utf-8").replace("owner_ids = []", "owner_ids = [1603321775]")
@@ -61,7 +59,6 @@ class DefaultsTests(ConfigCase):
             path.write_text(text, encoding="utf-8")
             config = load_config(path)
         self.assertFalse(config.autoflow.enabled)
-        self.assertEqual(config.image.key_source, "file")
         self.assertEqual(config.daily.slot_categories, AGY_SLOT_CATEGORIES)
         self.assertEqual(config.slots, tuple(AGY_SLOT_CATEGORIES))
 
@@ -155,7 +152,7 @@ class DailyTests(ConfigCase):
 class AutoflowTests(ConfigCase):
     def test_a_complete_enabled_configuration_loads(self):
         config = self.load(LIVE, **live_sections())
-        self.assertEqual(config.autoflow, AutoflowConfig(True, 0.0, "/var/lib/agentfleet/nailblog/runs"))
+        self.assertEqual(config.autoflow, AutoflowConfig(True, "/var/lib/agentfleet/nailblog/runs"))
 
     def test_each_requirement_fails_closed(self):
         self.invalid("autoflow.enabled requires service.mode = live", None, **live_sections())

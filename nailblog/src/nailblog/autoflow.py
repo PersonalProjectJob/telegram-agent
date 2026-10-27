@@ -111,7 +111,7 @@ class AutoflowRuns:
         with state.connection() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS autoflow_runs(
                 run_id TEXT PRIMARY KEY, topic_id INTEGER NOT NULL UNIQUE, slot_at TEXT NOT NULL,
-                out_dir TEXT NOT NULL, run_usd REAL NOT NULL, stage TEXT NOT NULL,
+                out_dir TEXT NOT NULL, run_usd REAL NOT NULL DEFAULT 0, stage TEXT NOT NULL,
                 failures INTEGER NOT NULL DEFAULT 0, next_attempt_at REAL NOT NULL DEFAULT 0,
                 terminal_reason TEXT NOT NULL DEFAULT '', ctx TEXT NOT NULL DEFAULT '{}')''')
 
@@ -136,10 +136,11 @@ class AutoflowRuns:
             return [dict(row) for row in db.execute(sql + ' ORDER BY slot_at, run_id',
                                                     TERMINAL if active is not None else ())]
 
-    def create(self, run_id, topic_id, slot_at, out_dir, run_usd):
+    def create(self, run_id, topic_id, slot_at, out_dir):
+        # `run_usd` is a dead legacy column (API-era run budget): kept because existing staging DBs declare it NOT NULL.
         with self.state.connection() as db:
             return db.execute('INSERT OR IGNORE INTO autoflow_runs(run_id,topic_id,slot_at,out_dir,run_usd,stage) '
-                              "VALUES(?,?,?,?,?,'new')", (run_id, topic_id, slot_at, out_dir, run_usd)).rowcount == 1
+                              "VALUES(?,?,?,?,0,'new')", (run_id, topic_id, slot_at, out_dir)).rowcount == 1
 
     def update(self, run_id, **fields):
         ctx = fields.pop('ctx', None)
@@ -583,7 +584,7 @@ def _new_runs(env):
                 unlocked.append((topic, local))     # decided, yet this topic was not chosen: say so, do not skip silently
             continue
         out_dir = str(Path(config.autoflow.runs_dir) / run_id)
-        if env.runs.create(run_id, topic['id'], topic['slot_at'], out_dir, float(config.autoflow.run_usd)):
+        if env.runs.create(run_id, topic['id'], topic['slot_at'], out_dir):
             taken.add(slot.timestamp())
     return unlocked
 

@@ -18,8 +18,6 @@ AGY_SLOT_CATEGORIES = {"06:00": ("hot-trend", "nail-job"), "10:00": ("did-you-kn
                        "15:00": ("nail-salon", "nail-job"), "19:00": ("nail-salon", "did-you-know")}
 # Defaults applied when daily.slot_categories is absent and service.slots equals the keys of one of these maps.
 SLOT_CATEGORY_DEFAULTS = (DEFAULT_SLOT_CATEGORIES, AGY_SLOT_CATEGORIES)
-KEY_SOURCES = ("file", "env")   # legacy constants kept so later streams still import; no longer read from TOML
-UNIT_PRICE_SIZES = ("1K", "2K", "4K")
 MAX_PUBLISH_PER_DAY = 4
 GUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 API_ORIGIN = "https://api.nailhub.ai"
@@ -32,7 +30,7 @@ TEXT_PROVIDERS = ("agy",)
 THINKING_LEVELS = ("", "minimal", "low", "medium", "high")
 IMAGE_PROVIDERS = ("subscription",)
 # A name is refused as a secret when it contains one of these parts, is `key`, or ends with `key`
-# (`deepseek_key`, `api_key`); a name ending `_file` is a path to a key file and is allowed.
+# (`provider_key`, `api_key`); a name ending `_file` is a path to a key file and is allowed.
 SECRET_PARTS = ("token", "secret", "password", "passwd", "authorization", "api_key", "apikey")
 TRENDS_HOST = "trends.google.com"
 TRENDS_RSS_URL = "https://trends.google.com/trending/rss?geo=US"
@@ -93,43 +91,21 @@ class ScheduleConfig:
 class TextModelConfig:
     provider: str = "agy"
     model: str = "qwen3.5:9b"
-    url: str = "http://127.0.0.1:11434"
-    think: bool = False
-    key_file: str = ""
-    num_predict: int = 3000
     timeout_seconds: int = 900
-    section_thinking: str = "low"   # gemini only: thinking level of the section/repair calls ("" = provider default)
 
 
 @dataclass(frozen=True)
 class ImageConfig:
     provider: str = "subscription"
-    model_body: str = ""
-    model_cover: str = ""
-    review_model: str = ""
-    key_file: str = ""
     candidates: int = 2
     max_rounds: int = 2
-    cover_size: str = "2K"
-    body_size: str = "1K"
-    input_ceiling: int = 4096
-    output_ceiling: int = 2048
-    review_input_ceiling: int = 16384
-    review_output_ceiling: int = 1024
     timeout_seconds: int = 180
-    body_output_ceiling: int = 1536
     review_bypass: bool = False   # TEMPORARY Owner decision 2026-10-22: skip model image review; see AGENTS.md
-    key_source: str = "file"      # "env": the key comes from env_secrets (captured at start), no key_file needed
 
 
 @dataclass(frozen=True)
 class BudgetConfig:
-    daily_usd: float = 3.0
-    text_prices: dict = field(default_factory=dict)   # model -> (usd per 1M input tokens, usd per 1M output tokens)
-    image_prices: dict = field(default_factory=dict)  # model -> usd per image
-    image_output_prices: dict = field(default_factory=dict)  # model -> upper USD/1M output including images/thinking
-    image_unit_prices: dict = field(default_factory=dict)  # model -> {"1K": usd, "2K": usd} per generated image
-    ledger_db_path: str = ""   # absolute; when set, EVERY paid ledger (pipeline, compare, one-post, text) uses this DB
+    ledger_db_path: str = ""   # absolute; the retired API spend ledger, read-only (never written)
 
 
 @dataclass(frozen=True)
@@ -152,18 +128,6 @@ class AdminConfig:
     publish_timeout_seconds: int = 300
     category_ids: dict = field(default_factory=dict)  # category slug -> GUID
     create_timeout_seconds: int = 90
-
-
-@dataclass(frozen=True)
-class CloudflareConfig:
-    account_id: str = ""
-    free_proof_file: str = ""
-    quota_db_path: str = ""
-    daily_neurons: float = 10000.0
-    review_input_allowance: int = 32768
-    reference_image_file: str = ""
-    reference_image_sha256: str = ""
-    two_article_free_day: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,7 +157,6 @@ class DailyConfig:
 @dataclass(frozen=True)
 class AutoflowConfig:
     enabled: bool = False
-    run_usd: float = 0.0   # legacy fixed value, no longer read from TOML (S8 removes it)
     runs_dir: str = ""     # absolute; required once enabled
 
 
@@ -244,7 +207,6 @@ class NailBlogConfig:
     daily: DailyConfig = field(default_factory=DailyConfig)
     links: LinksConfig = field(default_factory=LinksConfig)
     admin: AdminConfig = field(default_factory=AdminConfig)
-    cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
     autoflow: AutoflowConfig = field(default_factory=AutoflowConfig)
     subscription: SubscriptionConfig = field(default_factory=SubscriptionConfig)
 
@@ -625,4 +587,4 @@ def load_config(path):
         image, budget, contract,
         str(console.get("revision", "")), _sources(_table(data, "sources")), _trends(_table(data, "trends")),
         _daily(_table(data, "daily"), tuple(sorted(slots))), _links(_table(data, "links"), contract.site_origin), admin,
-        CloudflareConfig(), autoflow, subscription)
+        autoflow, subscription)

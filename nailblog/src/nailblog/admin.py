@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ._runtime import ProcessLock
-from .ai_transport import PinnedHTTPS, resolve
+from .net import PinnedHTTPS, resolve
 from .admin_security import Guard, load_credentials
 from .publication import AdminError, Markup, binding, instant, matches, media_origin, safe_url, same_html, snapshot
 from .schedule import VN_TZ

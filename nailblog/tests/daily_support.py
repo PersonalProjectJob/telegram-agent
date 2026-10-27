@@ -93,7 +93,7 @@ class DailyBase(unittest.IsolatedAsyncioTestCase):
         self.opener = self.service.opener = FakeOpener({FEED_1: RSS, FEED_2: ATOM, BLOGS_URL: BLOGS_JSON,
                                                          TRENDS_URL: TRENDING_RSS})
         self.model = Model()
-        self.service.text = TextModel(self.config, self.service.model_call, transport=self.model.transport)
+        self.service.text = TextModel(self.config, _test_transport=self.model.transport)
         self.sent = self.service.notice_send = AsyncMock()
 
     def rows(self, slot=None):

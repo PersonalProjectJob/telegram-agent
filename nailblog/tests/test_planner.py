@@ -222,7 +222,7 @@ class ProposeAndStoreTests(unittest.IsolatedAsyncioTestCase):
 
     def model(self, topics):
         self.transport = FakeTransport(lambda call, number: ollama_envelope({"topics": topics}))
-        return TextModel(self.config, self.service.model_call, transport=self.transport)
+        return TextModel(self.config, _test_transport=self.transport)
 
     def sixteen(self):
         categories = ["hot-trend", "nail-job", "nail-salon", "did-you-know"] * 4

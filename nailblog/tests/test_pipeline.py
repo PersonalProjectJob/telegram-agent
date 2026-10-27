@@ -55,7 +55,7 @@ class PlanWeekTests(unittest.IsolatedAsyncioTestCase):
         self.service = Service(self.config, clock=lambda: NOW)
 
     def model(self, transport):
-        return TextModel(self.config, self.service.model_call, transport=transport)
+        return TextModel(self.config, _test_transport=transport)
 
     async def test_dry_run_reads_plans_stores_and_never_sends(self):
         net, transport = opener(), topics_transport()
@@ -134,7 +134,7 @@ class PlanWeekTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_feed_configuration_and_short_plans_are_explained(self):
         config = load(self.directory.name)
         service = Service(config, state=self.service.state, clock=lambda: NOW)
-        model = TextModel(config, service.model_call, transport=topics_transport(16, cited=False))
+        model = TextModel(config, _test_transport=topics_transport(16, cited=False))
         outcome = await service.plan_week(model, opener=opener(), dry_run=True)
         self.assertIn("chưa cấu hình nguồn RSS", outcome.text)
         self.assertEqual(len(outcome.topic_ids), 16)
@@ -175,7 +175,7 @@ class CliTests(unittest.TestCase):
     def preview(self, topic, transport, net=None, *extra):
         net = net or FakeOpener({})
         code, output = self.run_cli("preview", "--config", str(self.config_path), "--topic", str(topic), "--out",
-                                    str(self.out), *extra, runtime=Runtime(transport=transport, opener=net))
+                                    str(self.out), *extra, runtime=Runtime(_test_transport=transport, opener=net))
         return code, output, net
 
     def article(self):
@@ -184,7 +184,7 @@ class CliTests(unittest.TestCase):
     def test_plan_week_dry_run_prints_the_dm_and_says_it_was_not_sent(self):
         net, transport = opener(), topics_transport()
         code, output = self.run_cli("plan-week", "--dry-run", "--config", str(self.config_path),
-                                    runtime=Runtime(transport=transport, opener=net, today=TODAY))
+                                    runtime=Runtime(_test_transport=transport, opener=net, today=TODAY))
         self.assertEqual(code, 0)
         self.assertIn("NailBlog: 18 chủ đề tuần 19–25/10", output)
         self.assertIn("(DM chưa gửi: chế độ --dry-run;", output)
@@ -193,13 +193,13 @@ class CliTests(unittest.TestCase):
 
     def test_plan_week_without_dry_run_has_no_telegram_in_the_cli_and_says_so(self):
         code, output = self.run_cli("plan-week", "--config", str(self.config_path),
-                                    runtime=Runtime(transport=topics_transport(), opener=opener(), today=TODAY))
+                                    runtime=Runtime(_test_transport=topics_transport(), opener=opener(), today=TODAY))
         self.assertEqual(code, 0)
         self.assertIn("CLI không có phiên Telegram", output)
 
     def test_plan_week_failures_exit_1_with_a_short_code(self):
         code, output = self.run_cli("plan-week", "--config", str(self.config_path),
-                                    runtime=Runtime(transport=topics_transport(), opener=opener(**{BLOGS_URL: TimeoutError()}),
+                                    runtime=Runtime(_test_transport=topics_transport(), opener=opener(**{BLOGS_URL: TimeoutError()}),
                                                     today=TODAY))
         self.assertEqual((code, output.strip()),
                          (1, "NailBlog operation failed: cannot read published posts and no cache exists: timeout"))
@@ -324,7 +324,7 @@ class CliTests(unittest.TestCase):
 
     def test_preview_service_method_raises_for_a_missing_topic(self):
         service = Service(self.config)
-        text = TextModel(self.config, service.model_call, transport=fakes.article_transport())
+        text = TextModel(self.config, _test_transport=fakes.article_transport())
         import asyncio
         with self.assertRaises(PreviewError):
             asyncio.run(service.preview(5, self.out, text))
