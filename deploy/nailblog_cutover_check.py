@@ -4,6 +4,7 @@ Never writes, restarts, enables or masks anything, and never prints a secret: on
 whitelisted fields for markers/receipts, and the sha256 of the retired ledger dump (taken from a private copy).
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -103,6 +104,24 @@ def connect_ro(path):
     return sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)
 
 
+@contextlib.contextmanager
+def private_copy(path):
+    """Read-only connection on a copy (db + -wal, never -shm) in a 0700 temp dir; the original is only read."""
+    source = Path(path)
+    with tempfile.TemporaryDirectory(prefix='nailblog-cutover-') as tmp:
+        os.chmod(tmp, 0o700)
+        target = Path(tmp) / source.name
+        shutil.copyfile(source, target)
+        wal = Path(str(source) + '-wal')
+        if wal.is_file():
+            shutil.copyfile(wal, str(target) + '-wal')
+        db = connect_ro(target)
+        try:
+            yield db
+        finally:
+            db.close()
+
+
 def tables(db):
     return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
@@ -112,33 +131,34 @@ def inspect_db(path):
     if not out['exists']:
         return out
     try:
-        db = connect_ro(path)
-    except sqlite3.Error as error:
+        with private_copy(path) as db:
+            db.row_factory = sqlite3.Row
+            names = tables(db)
+            if 'control' in names:
+                columns = {row['name'] for row in db.execute('PRAGMA table_info(control)')}
+                out['control'] = []
+                for row in db.execute('SELECT * FROM control'):
+                    row = dict(row)
+                    item = {key: row[key] for key in ('paused', 'image_mode', 'last_result') if key in row}
+                    if 'armed_binding' in columns:
+                        item['armed'] = row['armed_binding'] != ''   # the binding itself is never printed
+                    out['control'].append(item)
+            if 'onepost_runs' in names:
+                if 'onepost_topic_claims' in names:
+                    rows = db.execute(MISSING_CLAIMS_SQL).fetchall()
+                else:
+                    rows = db.execute('SELECT run_id, phase, post_id, document FROM onepost_runs ORDER BY run_id').fetchall()
+                missing = []
+                for row in rows:
+                    try:
+                        topic = json.loads(row['document']).get('topic_id')
+                    except (TypeError, ValueError, AttributeError):
+                        topic = None
+                    missing.append({'run_id': row['run_id'], 'phase': row['phase'], 'post_id': row['post_id'], 'topic_id': topic})
+                out['onepost_missing_claims'] = missing
+                out['onepost_claims_table'] = 'onepost_topic_claims' in names
+    except (sqlite3.Error, OSError) as error:
         out['error'] = str(error)
-        return out
-    try:
-        db.row_factory = sqlite3.Row
-        names = tables(db)
-        if 'control' in names:
-            out['control'] = [dict(row) for row in db.execute('SELECT * FROM control')]
-        if 'onepost_runs' in names:
-            if 'onepost_topic_claims' in names:
-                rows = db.execute(MISSING_CLAIMS_SQL).fetchall()
-            else:
-                rows = db.execute('SELECT run_id, phase, post_id, document FROM onepost_runs ORDER BY run_id').fetchall()
-            missing = []
-            for row in rows:
-                try:
-                    topic = json.loads(row['document']).get('topic_id')
-                except (TypeError, ValueError, AttributeError):
-                    topic = None
-                missing.append({'run_id': row['run_id'], 'phase': row['phase'], 'post_id': row['post_id'], 'topic_id': topic})
-            out['onepost_missing_claims'] = missing
-            out['onepost_claims_table'] = 'onepost_topic_claims' in names
-    except sqlite3.Error as error:
-        out['error'] = str(error)
-    finally:
-        db.close()
     return out
 
 
@@ -147,19 +167,8 @@ def ledger_digest(path):
     out = {'path': str(path), 'exists': Path(path).is_file(), 'paid_intents_rows': None, 'paid_intents_sha256': None}
     if not out['exists']:
         return out
-    source = Path(path)
-    with tempfile.TemporaryDirectory(prefix='nailblog-cutover-') as tmp:
-        target = Path(tmp) / source.name
-        shutil.copyfile(source, target)
-        wal = Path(str(source) + '-wal')
-        if wal.is_file():
-            shutil.copyfile(wal, str(target) + '-wal')
-        try:
-            db = connect_ro(target)
-        except sqlite3.Error as error:
-            out['error'] = str(error)
-            return out
-        try:
+    try:
+        with private_copy(path) as db:
             if 'paid_intents' in tables(db):
                 cursor = db.execute('SELECT * FROM paid_intents ORDER BY 1')
                 columns = [c[0] for c in cursor.description]
@@ -167,10 +176,8 @@ def ledger_digest(path):
                 dump = json.dumps({'columns': columns, 'rows': rows}, sort_keys=True, separators=(',', ':'))
                 out['paid_intents_rows'] = len(rows)
                 out['paid_intents_sha256'] = hashlib.sha256(dump.encode('utf-8')).hexdigest()
-        except sqlite3.Error as error:
-            out['error'] = str(error)
-        finally:
-            db.close()
+    except (sqlite3.Error, OSError) as error:
+        out['error'] = str(error)
     return out
 
 

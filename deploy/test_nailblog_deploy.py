@@ -1,5 +1,6 @@
 """NailBlog deployment identity, reviewed snapshot and first-install safety."""
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -119,7 +120,7 @@ class NailBlogDeploymentTests(unittest.TestCase):
 
 
 class CutoverCheckTests(unittest.TestCase):
-    SECRET='SECRET-VALUE-MUST-NOT-APPEAR'
+    SECRET='SECRET-VALUE-MUST-NOT-APPEAR';BINDING='BINDING-MUST-NOT-APPEAR'
 
     def build(self, root):
         import sqlite3
@@ -130,8 +131,8 @@ class CutoverCheckTests(unittest.TestCase):
         (units/'unrelated.service').write_text('[Service]\nExecStart=/bin/true\n')
         db=root/'main.sqlite3'
         with closing(sqlite3.connect(db)) as c:
-            c.executescript("CREATE TABLE control(id INTEGER PRIMARY KEY,paused INTEGER,image_mode TEXT,last_result TEXT);"
-                            "INSERT INTO control VALUES(1,1,'subscription','paused');"
+            c.executescript("CREATE TABLE control(id INTEGER PRIMARY KEY,paused INTEGER,image_mode TEXT,last_result TEXT,armed_binding TEXT NOT NULL DEFAULT '');"
+                            "INSERT INTO control VALUES(1,1,'subscription','paused','BINDING-MUST-NOT-APPEAR');"
                             "CREATE TABLE onepost_runs(run_id TEXT PRIMARY KEY,binding TEXT,phase TEXT,document TEXT,post_id INTEGER,image_approval TEXT);"
                             "CREATE TABLE onepost_topic_claims(topic_id INTEGER PRIMARY KEY,run_id TEXT UNIQUE);"
                             "INSERT INTO onepost_runs VALUES('r1','b','done','{\"topic_id\": 7}',1,'');"
@@ -172,11 +173,11 @@ class CutoverCheckTests(unittest.TestCase):
             argv=self.build(tmp);before=self.snapshot(tmp)
             text=self.run_check(argv);data=json.loads(text)
             self.assertEqual(self.snapshot(tmp),before)
-            self.assertNotIn(self.SECRET,text)
+            self.assertNotIn(self.SECRET,text);self.assertNotIn(self.BINDING,text)
             self.assertTrue(data['systemd']['report_bridge_present'])
             self.assertEqual([d['name'] for d in data['systemd']['timers']],['nailblog-daily4.timer'])
             self.assertEqual([d['name'] for d in data['systemd']['units']],['tg-nailblog.service'])
-            self.assertEqual(data['database']['control'],[{'id':1,'paused':1,'image_mode':'subscription','last_result':'paused'}])
+            self.assertEqual(data['database']['control'],[{'paused':1,'image_mode':'subscription','last_result':'paused','armed':True}])
             self.assertEqual([r['run_id'] for r in data['database']['onepost_missing_claims']],['r2'])
             self.assertEqual(data['database']['onepost_missing_claims'][0]['topic_id'],8)
             jobs={j['job']:j for j in data['queue']['jobs']}
@@ -231,6 +232,54 @@ class CutoverCheckTests(unittest.TestCase):
         self.assertNotIn('/ledger',text)
         worker=(Path(__file__).resolve().parents[1]/'nailblog/deploy/tg-nailblog-subscription.service').read_text()
         self.assertGreaterEqual(int(re.search(r'(?m)^TimeoutStopSec=(\d+)$',worker).group(1)),630)
+
+
+
+    def test_cleanly_closed_wal_db_gets_no_sidecars_and_keeps_its_sha(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);db=Path(argv[argv.index('--db')+1]);ledger=Path(argv[argv.index('--ledger')+1])
+            for path in (db,ledger):
+                with closing(sqlite3.connect(path)) as c:
+                    c.execute('PRAGMA journal_mode=WAL');c.commit()
+                for suffix in ('-wal','-shm'):
+                    self.assertFalse(Path(str(path)+suffix).exists(),suffix)   # closed cleanly: no sidecars
+            before=self.snapshot(tmp);listing=sorted(os.listdir(tmp))
+            data=json.loads(self.run_check(argv))
+            self.assertEqual(data['database']['control'][0]['paused'],1)
+            self.assertEqual(self.snapshot(tmp),before)
+            for path in (db,ledger):
+                self.assertFalse(Path(str(path)+'-wal').exists());self.assertFalse(Path(str(path)+'-shm').exists())
+            self.assertEqual(sorted(os.listdir(tmp)),listing)
+
+    def test_every_sqlite_open_is_read_only_and_on_a_private_copy(self):
+        import sqlite3
+        from urllib.parse import urlparse, unquote
+        real=sqlite3.connect;seen=[]
+        def spy(target,*args,**kwargs):
+            seen.append(target);return real(target,*args,**kwargs)
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);originals={Path(argv[argv.index(f)+1]).resolve() for f in ('--db','--ledger')}
+            with patch('deploy.nailblog_cutover_check.sqlite3.connect',spy):
+                self.run_check(argv)
+            self.assertGreaterEqual(len(seen),2)
+            for uri in seen:
+                self.assertTrue(str(uri).startswith('file:'),uri)
+                self.assertIn('mode=ro',str(uri))
+                opened=Path(unquote(urlparse(str(uri)).path.lstrip('/') if os.name=='nt' else urlparse(str(uri)).path)).resolve()
+                self.assertNotIn(opened,originals)
+                self.assertIn('nailblog-cutover-',str(opened))
+
+    def test_control_row_is_whitelisted_and_never_prints_the_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);text=self.run_check(argv);control=json.loads(text)['database']['control'][0]
+            self.assertEqual(set(control),{'paused','image_mode','last_result','armed'})
+            self.assertIs(control['armed'],True);self.assertNotIn(self.BINDING,text)
+
+
+    def test_bootstrap_no_longer_creates_cloudflare_quota_dir(self):
+        text=(Path(__file__).resolve().parent/'nailblog_bootstrap.py').read_text()
+        self.assertNotIn('cloudflare-quota',text)
 
 
 if __name__=='__main__':unittest.main()

@@ -3,6 +3,7 @@ nailblog/** text eol=lf
 config/nailblog.example.toml text eol=lf
 systemd/*.service text eol=lf
 nailblog/deploy/* text eol=lf
+deploy/** text eol=lf
 *.bin binary
 *.png binary
 *.webp binary
