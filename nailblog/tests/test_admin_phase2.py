@@ -244,7 +244,7 @@ def find_duplicates_on(site):
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_failure_then_restart_recovers_once_without_recreating(self):
         with tempfile.TemporaryDirectory() as d:
-            c=config(d);service=Service(c);p=payload()
+            c=config(d);service=Service(c);service.state.arm(service.startup_binding);p=payload()
             n=service.state.add_post(SLOT.isoformat(),draft=document())
             uploaded=copy.deepcopy(p)
             for image in [uploaded['coverImage'],*uploaded['images']]:
@@ -283,6 +283,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(matches=count), tempfile.TemporaryDirectory() as d:
                 c=config(d);s=State(c.db_path);p=payload()
                 n=s.add_post(SLOT.isoformat(),draft=document());AdminStore(s,c).claim_create(n,p)
+                s.arm(Service(c,state=s).startup_binding)
                 remote={**p,'id':POST_ID}
                 fake=SimpleNamespace(ready=AsyncMock(),guard=SimpleNamespace(),save_draft=AsyncMock(),
                     upload=AsyncMock(),find_duplicates=AsyncMock(side_effect=find_duplicates_on([remote]*count)),
@@ -314,6 +315,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             context=AsyncMock();context.__aenter__.return_value=fake
             with patch('nailblog.admin.Admin',return_value=context):
                 service=Service(c,state=s,clock=lambda:SLOT.timestamp())
+                s.arm(service.startup_binding)
                 await service.publish_pass();await service.publish_pass()
             fake.publish.assert_not_called();self.assertEqual(fake.published_readback.await_count,2)
             self.assertEqual(s.get_post(n)['state'],'uncertain')

@@ -17,7 +17,7 @@ class ProcessLock:
 
     def __enter__(self):
         if self.module is None:
-            self.module=importlib.import_module('msvcrt' if os.name=='nt' else 'fcntl')
+            self.module = importlib.import_module('msvcrt') if os.name == 'nt' else importlib.import_module('fcntl')
         self.stream=(self.directory/'nailblog.lock').open('a+b')
         try:
             os.chmod(self.stream.name,0o600)

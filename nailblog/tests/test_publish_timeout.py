@@ -83,6 +83,7 @@ class PublishTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.state = State(self.c.db_path)
         self.now = SLOT.timestamp()
         self.service = Service(self.c, state=self.state, clock=lambda: self.now)
+        self.state.arm(self.service.startup_binding)
         self.events = []
 
     def admin(self, **hooks):
@@ -137,6 +138,7 @@ class PublishTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_event_interrupts_the_block(self):
         c = build(self.tmp.name, timeout=60)
         service = Service(c, state=self.state, clock=lambda: self.now)
+        self.state.arm(service.startup_binding)
         n = add_post(self.state, c)
         stop, claimed = asyncio.Event(), asyncio.Event()
 

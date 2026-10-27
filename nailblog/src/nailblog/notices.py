@@ -135,6 +135,12 @@ class Outbox:
         with self.state.connection() as db:
             db.execute('UPDATE owner_outbox SET attempts=attempts+1 WHERE key=? AND status=?', (key, 'pending'))
 
+    def record_album(self, key, ids):
+        """Commit immediately after send_file returns, before the sender awaits its caption."""
+        with self.state.connection() as db:
+            db.execute("UPDATE owner_outbox SET album_ids=? WHERE key=? AND status='pending'",
+                       (json.dumps(message_ids(ids)), key))
+
     def failed(self, key, now, error, *, album_ids=None, cap=BACKOFF_MAX):
         row = self.get(key)
         with self.state.connection() as db:
@@ -214,9 +220,12 @@ def outbox_media_sender(state, send, *, clock=time.time):
             raise OutboxBackoff('owner outbox message is backing off')
         album = json.loads(row['album_ids'])
         box.begin_attempt(key)
+        extra = {}
+        if 'album_sent' in inspect.signature(send).parameters:
+            extra['album_sent'] = lambda ids: box.record_album(key, ids)
         try:
             ids = await asyncio.wait_for(send(owner_id, box.files(key) if not album else [], row['text'],
-                                              random_id=row['random_id'], skip_files=bool(album)),
+                                              random_id=row['random_id'], skip_files=bool(album), **extra),
                                          SEND_TIMEOUT_SECONDS)
         except Exception as error:
             box.failed(key, now, error, album_ids=list(getattr(error, 'sent_ids', None) or []) or None,

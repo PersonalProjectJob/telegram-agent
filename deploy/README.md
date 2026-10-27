@@ -393,11 +393,39 @@ python3 deploy/nailblog_cutover_check.py > inventory.json
 ~~~
 
 Every path is a flag with the host default (`--unit-dir`, `--db`, `--ledger`, `--queue`, `--private-dir`, `--config`,
-`--env-file`, `--lock`, `--proc-root`; `--no-systemctl` skips enabled/active/failed). Step list, backups, rollback and the
+`--env-file`, `--lock`, `--proc-root`, `--transient-unit-dir`, `--lib-unit-dir`; `--no-systemctl` skips runtime queries and fails the runtime gate).
+Inventory combines disk units with `list-units --all '*nailblog*'` and `list-timers --all`; `systemd.legacy_gate` checks actual
+active/enabled states and rejects remaining standalone timers or unavailable runtime evidence. It reports unfinished posts,
+approved unpublished admin operations, duplicate legacy topic claims, queue request kind/expiry, and only hashes of admin binding/ExecStart.
+`--admin-listing-sample <private-response.json>` inspects key names in a saved GET listing response without network access or article values.
+`--admin-probe-report <fresh-probe.json>` verifies all four configured category IDs against authenticated, read-only editor options from the same
+environment/origins (file age <=24h). Seed-shaped UUIDs are informational `pattern_suspect`, never a rejection by themselves; missing/stale/mismatched
+probe evidence fails closed. The report must be the trusted probe output, not an edited fixture.
+The existing `probe --out` provides categories/editor evidence, not raw listing pagination; capture the latter from browser Network as described in the runbook.
+Step list, backups, rollback and the
 Owner stop points: `Docs/02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md`.
+
+Before the new wheel, prepare a new intermediate config using the reviewed loader from source:
+
+~~~sh
+PYTHONPATH=nailblog/src python3 deploy/nailblog_config_migrate.py --in <FREEZE7_CONFIG_BACKUP> --out <NEW_INTERMEDIATE_FILE>
+~~~
+
+Uncommitted reviewed fixes can use the existing `build_wheel.py --service nailblog --repo <WORKTREE>
+--reviewed-snapshot-sha256 <REVIEWED_SHA256> --stage <STAGE>` path. Owner reviews the exact `snapshot_digest` first;
+the manifest retains `commit=null` and `source_revision=snapshot:<sha256>`. `--commit HEAD` packages committed bytes only.
+
+Input and existing output are never overwritten. Removed schema keys are dropped; owner/contract/admin paths/subscription and legacy
+ledger path remain, with four slots, Agy providers, preview mode and autoflow disabled until Owner reviews the live config.
+No database migration is performed. During this cutover deploy with `--rollback-no-start`: automatic failure recovery must leave old code
+stopped, because the deploy backup contains the intermediate TOML. Restore the original Freeze7 config from the separate cutover backup
+before starting old code. Manual rollback supports `--rollback <BACKUP> --no-start` so unit/config/env can be restored and reviewed first.
+Without these opt-in flags, restart behavior remains unchanged. Restored env excludes `NAILBLOG_GEMINI_IMAGE_KEY` by default; bringing it
+back requires a separate Owner decision against the D-033 Agy-only default. Hold old pending posts before Owner resume.
 
 Target units: `systemd/tg-nailblog.service` (`TimeoutStopSec=660`, no `ollama.service`, no Cloudflare quota path, the ledger is under
 `/var/lib/agentfleet/nailblog`, a path that already has write access, but the code only reads it; no extra `ReadWritePaths` entry) and `nailblog/deploy/tg-nailblog-subscription.service` (`TimeoutStopSec=630`).
 Install `nailblog/deploy/nailblog-text-only.md` next to `nailblog-image-only.md` in the Snap agents directory
 (`~startechai/snap/antigravity-cli/common/.gemini/config/agents/`, owner startechai, mode 0640).
-`.gitattributes` forces LF for `nailblog/**`, the example config and `systemd/*.service`, so the pinned policy hashes match on Windows checkouts.
+`.gitattributes` forces LF for `nailblog/**`, the parity reference `nailhub/src/nailhub/model_lock.py`, the example config and `systemd/*.service`,
+so pinned hashes and byte parity match on fresh Windows checkouts. Existing clean checkouts may require a path-specific LF refresh before `test_parity`.

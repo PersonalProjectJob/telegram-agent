@@ -24,6 +24,9 @@ from .publication import AdminError, Markup, binding, instant, matches, media_or
 from .schedule import VN_TZ
 from .usage import write_atomic
 
+# Authenticated Admin listing observed 2026-10-27: page 1 had 10 of 18 rows across 2 pages.
+# A metadata-free page can only use this conservative observed threshold.
+ADMIN_OBSERVED_PAGE_SIZE = 10
 BLOGS = '/api/v1/admin/blogs'
 CATEGORIES = '/api/v1/admin/blog-categories'
 SIGNIN = '/api/v1/authentication/signin'
@@ -396,51 +399,99 @@ class Admin:
         `exclude_id` set to your own Draft's id once it is known, so the Draft is not reported as its own duplicate.
         An incomplete scan never returns a partial list: it raises `duplicate_scan_incomplete`.
         """
-        wanted_title, found, seen = norm_title(title), [], set()
+        wanted_title, found, listed = norm_title(title), [], set()
         data = await self.list_first()
-        page_size = data.get('pageSize') if type(data.get('pageSize')) is int else len(data['items'])
+        totals = {}
         scanned = 0
         for number in range(1, 201):
+            if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+                raise AdminError('list_schema_changed')
             rows = data['items']
+            for field in ('pageNumber', 'pageSize', 'totalPages', 'totalCount'):
+                if field not in data:
+                    continue
+                value = data[field]
+                minimum = 1 if field in ('pageNumber', 'pageSize') else 0
+                if type(value) is not int or value < minimum:
+                    raise AdminError('duplicate_scan_incomplete')
+                if field == 'pageNumber':
+                    if value != number:
+                        raise AdminError('duplicate_scan_incomplete')
+                elif field in totals and totals[field] != value:
+                    raise AdminError('duplicate_scan_incomplete')
+                else:
+                    totals[field] = value
+            for flag in ('hasNextPage', 'hasPreviousPage'):
+                if flag in data and type(data[flag]) is not bool:
+                    raise AdminError('duplicate_scan_incomplete')
+            if 'hasPreviousPage' in data and data['hasPreviousPage'] != (number > 1):
+                raise AdminError('duplicate_scan_incomplete')
+            if ('pageSize' in totals and len(rows) > totals['pageSize']) or (totals.get('totalPages') == 0 and rows):
+                raise AdminError('duplicate_scan_incomplete')
             for row in rows:
                 if not isinstance(row, dict) or not isinstance(row.get('id'), str) or not row['id']:
                     raise AdminError('duplicate_scan_bad_row')
-                if row['id'] == exclude_id:
-                    continue
+                if row['id'] in listed:
+                    raise AdminError('duplicate_scan_incomplete')
+                listed.add(row['id'])
                 titles, slugs = [row.get('title')], [row.get('slug')]
-                for item in row.get('translations') or []:
-                    if isinstance(item, dict) and str(item.get('languageCode', '')).upper() == 'VI':
+                translations = row.get('translations', [])
+                if not isinstance(translations, list) or any(not isinstance(item, dict) for item in translations):
+                    raise AdminError('duplicate_scan_bad_row')
+                if any(not isinstance(item.get('languageCode'), str) or not item['languageCode'].strip()
+                       for item in translations):
+                    raise AdminError('duplicate_scan_bad_row')
+                if wanted_title and translations and not any(
+                        item['languageCode'].upper() == 'VI' and isinstance(item.get('title'), str)
+                        and item['title'].strip() for item in translations):
+                    raise AdminError('duplicate_scan_bad_row')
+                for item in translations:
+                    if item['languageCode'].upper() == 'VI':
                         titles.append(item.get('title'))
                         slugs.append(item.get('slug'))
+                if any(value is not None and not isinstance(value, str) for value in titles + slugs):
+                    raise AdminError('duplicate_scan_bad_row')
+                # To exclude an OR match, the listing must expose BOTH searched identities.
+                if ((wanted_title and not any(isinstance(t, str) and t.strip() for t in titles))
+                        or (slug and not any(isinstance(t, str) and t.strip() for t in slugs))):
+                    raise AdminError('duplicate_scan_bad_row')
+                if row['id'] == exclude_id:
+                    continue
                 hit = ((bool(slug) and slug in slugs) or
                        (bool(wanted_title) and any(norm_title(t) == wanted_title for t in titles)))
-                if hit and row['id'] not in seen:
-                    seen.add(row['id'])
+                if hit:
                     first = lambda xs: next((x for x in xs if isinstance(x, str) and x), '')
                     found.append({'id': row['id'], 'title': first(titles), 'slug': first(slugs),
                                   'status': row.get('status')})
             scanned += len(rows)
             next_page = self.page.get_by_role('button', name='Trang sau', exact=True)
             has_next = bool(await next_page.count() and await next_page.is_enabled())
-            # Does the API itself say more is coming? Total/paging fields win over button state.
-            if isinstance(data.get('hasNextPage'), bool):
-                more = data['hasNextPage']
-            elif type(data.get('totalPages')) is int:
-                more = number < data['totalPages']
-            elif type(data.get('totalCount')) is int:
-                more = scanned < data['totalCount']
-            else:
-                # No totals: finish only on a short page AND a disabled/absent next button.
-                more = len(rows) >= page_size or has_next
-            if not more:
-                return found
-            if not has_next:
+            signals = [has_next]
+            if 'hasNextPage' in data:
+                signals.append(data['hasNextPage'])
+            if 'totalPages' in totals:
+                if number > max(1, totals['totalPages']):
+                    raise AdminError('duplicate_scan_incomplete')
+                signals.append(number < totals['totalPages'])
+            if 'totalCount' in totals:
+                if scanned > totals['totalCount']:
+                    raise AdminError('duplicate_scan_incomplete')
+                signals.append(scanned < totals['totalCount'])
+            if len(signals) == 1:
+                if 'pageSize' in totals:
+                    signals.append(len(rows) >= totals['pageSize'])
+                else:
+                    # No paging contract: only a short first page and absent/disabled next UI can finish.
+                    if number == 1 and not has_next and len(rows) < ADMIN_OBSERVED_PAGE_SIZE:
+                        return found
+                    raise AdminError('duplicate_scan_incomplete')
+            if any(signal != has_next for signal in signals) or (has_next and not rows):
                 raise AdminError('duplicate_scan_incomplete')
+            if not has_next:
+                return found
             async with self.page.expect_response(lambda r: self.response(r, BLOGS)) as response:
                 await next_page.click()
             data = await self.json_response(await response.value)
-            if not isinstance(data.get('items'), list):
-                raise AdminError('list_schema_changed')
         raise AdminError('duplicate_scan_page_limit')
 
     async def paste_html(self, content):

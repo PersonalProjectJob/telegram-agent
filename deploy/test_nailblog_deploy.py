@@ -46,6 +46,33 @@ class NailBlogDeploymentTests(unittest.TestCase):
                 build_snapshot_stage('nailblog',Path(tmp)/'stage',repo=root,reviewed_sha256=expected)
             self.assertFalse((Path(tmp)/'stage').exists())
 
+    def test_reviewed_snapshot_preserves_deployed_policies_and_excludes_private_files(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root=self.fixture(Path(tmp)/'repo');deploy=root/'nailblog/deploy';deploy.mkdir()
+            policies=('nailblog-image-only.md','nailblog-text-only.md')
+            source=Path(__file__).resolve().parents[1]/'nailblog/deploy'
+            for name in policies:shutil.copyfile(source/name,deploy/name)
+            (deploy/'private').mkdir();(deploy/'private/admin.json').write_text('PRIVATE-FIXTURE')
+            (deploy/'worker.env').write_text('PRIVATE-FIXTURE')
+            expected=snapshot_digest(root,'nailblog');stage=Path(tmp)/'stage'
+            manifest=build_snapshot_stage('nailblog',stage,repo=root,reviewed_sha256=expected)
+            self.assertEqual(manifest['source_revision'],'snapshot:'+expected)
+            self.assertIsNone(manifest['commit'])
+            for name in policies:
+                relative='nailblog/deploy/'+name
+                self.assertIn(relative,manifest['source_files'])
+                self.assertEqual((stage/'source'/relative).read_bytes(),(source/name).read_bytes())
+            self.assertFalse((stage/'source/nailblog/deploy/private').exists())
+            self.assertFalse((stage/'source/nailblog/deploy/worker.env').exists())
+            self.assertEqual(verify_stage(stage,'nailblog'),manifest)
+            (deploy/policies[0]).write_text('changed-after-review')
+            with self.assertRaisesRegex(ValueError,'Reviewed source snapshot changed'):
+                build_snapshot_stage('nailblog',Path(tmp)/'other-stage',repo=root,reviewed_sha256=expected)
+            (stage/'source/nailblog/deploy'/policies[1]).write_text('tampered')
+            with self.assertRaisesRegex(ValueError,'Staged source differs'):
+                verify_stage(stage,'nailblog')
+
     def test_nailblog_own_defaults_service_schema_and_ready_label(self):
         self.assertEqual(DEFAULTS['nailblog']['unit'],'tg-nailblog')
         case=legacy.DeployTests();case.setUp()
@@ -187,9 +214,9 @@ class CutoverCheckTests(unittest.TestCase):
             self.assertEqual(data['ledger']['paid_intents_rows'],2)
             self.assertRegex(data['ledger']['paid_intents_sha256'],'^[0-9a-f]{64}$')
             self.assertEqual([p['pid'] for p in data['processes']['agy']],[123])
-            self.assertEqual(data['config']['category_ids']['placeholder'],['hot-trend'])
+            self.assertEqual(data['config']['category_ids']['pattern_suspect'],['hot-trend'])
             self.assertEqual(data['config']['category_ids']['slugs_missing'],['nail-salon','did-you-know'])
-            self.assertFalse(data['config']['category_ids']['all_placeholder'])
+            self.assertFalse(data['config']['category_verification']['pass'])
             self.assertIs(data['env']['gemini_image_key_present'],True)
 
     def test_ledger_digest_is_stable_and_follows_content(self):
@@ -207,11 +234,14 @@ class CutoverCheckTests(unittest.TestCase):
             calls=[]
             def stub(args):
                 calls.append(args)
-                return 'nailblog-staging-a.service loaded failed failed x' if args[0]=='list-units' else 'enabled'
+                if args[0]=='list-units':return 'nailblog-staging-a.service loaded failed failed x'
+                if args[0]=='list-timers':return ''
+                if args[0]=='is-active':return 'failed' if args[1]=='nailblog-staging-a.service' else 'inactive'
+                return 'enabled'
             data=json.loads(self.run_check([a for a in argv if a!='--no-systemctl'],stub))
             self.assertEqual(data['systemd']['failed'],['nailblog-staging-a.service'])
             self.assertEqual(data['systemd']['units'][0]['enabled'],'enabled')
-            self.assertTrue(all(c[0] in ('is-enabled','is-active','list-units') for c in calls))
+            self.assertTrue(all(c[0] in ('is-enabled','is-active','list-units','list-timers') for c in calls))
             self.assertEqual(self.snapshot(tmp),before)
             empty=json.loads(self.run_check(['--unit-dir',tmp+'/none','--db',tmp+'/none.db','--ledger',tmp+'/none.db','--queue',tmp+'/none',
                                              '--config',tmp+'/none.toml','--env-file',tmp+'/none.env','--proc-root',tmp+'/none','--no-systemctl']))
@@ -280,6 +310,263 @@ class CutoverCheckTests(unittest.TestCase):
     def test_bootstrap_no_longer_creates_cloudflare_quota_dir(self):
         text=(Path(__file__).resolve().parent/'nailblog_bootstrap.py').read_text()
         self.assertNotIn('cloudflare-quota',text)
+
+    def test_runtime_and_all_unit_roots_fail_closed_for_legacy_lanes(self):
+        from deploy import nailblog_cutover_check as check
+        with tempfile.TemporaryDirectory() as tmp:
+            etc,transient,lib=(Path(tmp)/p for p in ('etc','transient','lib'))
+            for root in (etc,transient,lib):root.mkdir()
+            (etc/'nailblog-daily4.service').write_text('[Service]\nExecStart=/old/daily4\n')
+            (transient/'nailblog-makeup-old.service').write_text('[Service]\nExecStart=/old/makeup\n')
+            (lib/'nailblog-staging-old.timer').write_text('[Timer]\nOnCalendar=daily\n')
+            calls=[]
+            def stub(args):
+                calls.append(args)
+                if args[0]=='list-units':return 'nailblog-makeup-old.service loaded active running x\nnailblog-staging-runtime.service loaded active running x'
+                if args[0]=='list-timers':return 'Tue 2026-10-27 x nailblog-staging-old.timer nailblog-staging-runtime.service'
+                if args[0]=='is-active':return 'active' if 'makeup' in args[1] or 'runtime' in args[1] else 'inactive'
+                return 'masked' if 'daily4' in args[1] else 'transient'
+            data=check.inventory_units(etc,stub,(transient,lib))
+            self.assertFalse(data['legacy_gate']['pass'])
+            units={u['name']:u for u in data['units']+data['timers']}
+            self.assertEqual(units['nailblog-makeup-old.service']['path'],str(transient/'nailblog-makeup-old.service'))
+            self.assertEqual(units['nailblog-staging-old.timer']['path'],str(lib/'nailblog-staging-old.timer'))
+            self.assertIsNone(units['nailblog-staging-runtime.service']['path'])
+            self.assertTrue(units['nailblog-daily4.service']['masked'])
+            self.assertIn('runtime_timer_present:nailblog-staging-old.timer',data['legacy_gate']['reasons'])
+            self.assertIn(['list-units','--all','--plain','--no-legend','*nailblog*'],calls)
+            self.assertIn(['list-timers','--all','--plain','--no-legend'],calls)
+            self.assertFalse(check.inventory_units(etc,None)['legacy_gate']['pass'])
+            (transient/'nailblog-makeup-old.service').unlink()   # transient must disappear before PASS
+            def safe(args):return '' if args[0].startswith('list-') else 'inactive' if args[0]=='is-active' else 'masked'
+            self.assertTrue(check.inventory_units(etc,safe,(transient,lib))['legacy_gate']['pass'])
+            def unknown(args):return None if args[0]=='list-timers' else safe(args)
+            self.assertFalse(check.inventory_units(etc,unknown)['legacy_gate']['pass'])
+
+    def test_legacy_requires_persistent_mask_or_verified_removal(self):
+        from deploy import nailblog_cutover_check as check
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'nailblog-daily4.service';path.write_text('[Service]\nExecStart=/old/daily4\n')
+            for enabled in ('disabled','static','masked-runtime','masked'):
+                with self.subTest(enabled=enabled):
+                    def stub(args):
+                        if args[0].startswith('list-'):return ''
+                        return 'inactive' if args[0]=='is-active' else enabled
+                    data=check.inventory_units(tmp,stub)
+                    self.assertEqual(data['legacy_gate']['pass'],enabled=='masked')
+                    self.assertEqual(data['units'][0]['persistent_masked'],enabled=='masked')
+                    if enabled!='masked':
+                        self.assertIn('legacy_not_persistently_masked:'+path.name,data['legacy_gate']['reasons'])
+            path.unlink()
+            self.assertTrue(check.inventory_units(tmp,stub)['legacy_gate']['pass'])
+
+    def test_every_unit_query_fails_closed_and_preserves_errors(self):
+        import subprocess
+        from deploy import nailblog_cutover_check as check
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp)/'tg-nailblog-subscription.service').write_text('[Service]\nExecStart=/worker\n')
+            for result,error in ((None,'unavailable'),('unexpected','invalid_result'),
+                                 ({'error':'TimeoutExpired'},'TimeoutExpired'),
+                                 ({'error':'command_failed','returncode':1},'command_failed')):
+                for query in ('is-active','is-enabled'):
+                    with self.subTest(result=result,query=query):
+                        def stub(args):
+                            if args[0].startswith('list-'):return ''
+                            if args[0]==query:return result
+                            return 'active' if args[0]=='is-active' else 'enabled'
+                        data=check.inventory_units(tmp,stub)
+                        self.assertFalse(data['legacy_gate']['pass'])
+                        self.assertEqual(data['query_errors'][0]['query'],query)
+                        self.assertEqual(data['query_errors'][0]['unit'],'tg-nailblog-subscription.service')
+                        self.assertEqual(data['query_errors'][0]['error'],error)
+            with patch('deploy.nailblog_cutover_check.subprocess.run',side_effect=subprocess.TimeoutExpired('systemctl',20)):
+                self.assertEqual(check.run_systemctl(['is-active','tg-nailblog-subscription.service']),{'error':'TimeoutExpired'})
+            with patch('deploy.nailblog_cutover_check.subprocess.run',return_value=subprocess.CompletedProcess([],1,'','private stderr')):
+                self.assertEqual(check.run_systemctl(['is-enabled','tg-nailblog-subscription.service']),{'error':'command_failed','returncode':1})
+
+    def test_unfinished_approved_posts_conflicts_binding_and_queue_are_private(self):
+        import hashlib,sqlite3
+        from deploy import nailblog_cutover_check as check
+        with tempfile.TemporaryDirectory() as tmp:
+            argv=self.build(tmp);db=Path(argv[argv.index('--db')+1])
+            (Path(tmp)/'units/tg-nailblog.service').write_text('ExecStart=/old/bridge --private='+self.SECRET+'\n')
+            with closing(sqlite3.connect(db)) as c:
+                c.executescript("CREATE TABLE posts(id INTEGER,topic_id INTEGER,state TEXT,slot_at TEXT,draft_json TEXT);"
+                                "CREATE TABLE autoflow_runs(topic_id INTEGER);"
+                                "CREATE TABLE admin_operations(post_id INTEGER,approval TEXT,publish_day TEXT);"
+                                "CREATE TABLE admin_binding(id INTEGER,value TEXT);")
+                for i,state in enumerate(('scheduled','before_publish','uncertain','approved','review','writing','published','held'),1):
+                    c.execute('INSERT INTO posts VALUES(?,?,?,?,?)',(i,i,state,'2026-10-28T06:00:00+07:00',self.SECRET))
+                c.execute('INSERT INTO autoflow_runs VALUES(1)')
+                c.execute('INSERT INTO admin_operations VALUES(?,?,?)',(1,self.SECRET,''))
+                c.execute('INSERT INTO admin_operations VALUES(?,?,?)',(7,self.SECRET,'2026-10-27'))
+                c.execute('INSERT INTO admin_binding VALUES(1,?)',(self.BINDING,))
+                c.execute('INSERT INTO onepost_runs VALUES(?,?,?,?,?,?)',('r3','b','done','{"topic_id": 8}',3,''))
+                c.commit()
+            job=Path(argv[argv.index('--queue')+1])/'job-1'
+            (job/'request.json').write_text(json.dumps({'kind':'text','expires_at':123,'prompt':self.SECRET}))
+            sample=Path(tmp)/'sample.json'
+            sample.write_text(json.dumps({'items':[{'content':self.SECRET}],'pagination':{'page':1,'totalPages':2}}))
+            before=self.snapshot(tmp)
+            text=self.run_check(argv+['--admin-listing-sample',str(sample)]);data=json.loads(text)
+            self.assertEqual(self.snapshot(tmp),before)
+            self.assertNotIn(self.SECRET,text);self.assertNotIn(self.BINDING,text)
+            posts=data['database']['unfinished_posts']
+            self.assertEqual([p['state'] for p in posts],['scheduled','before_publish','uncertain','approved','review','writing'])
+            self.assertTrue(posts[0]['autoflow_member']);self.assertFalse(posts[1]['autoflow_member'])
+            self.assertEqual(data['database']['approved_unpublished_admin_operations'],
+                             [{'post_id':1,'state':'scheduled','slot_at':'2026-10-28T06:00:00+07:00'}])
+            self.assertEqual(data['database']['legacy_topic_claim_conflict'],[{'topic_id':8,'run_ids':['r2','r3']}])
+            self.assertEqual(data['database']['admin_binding'],[{'id':1,'sha256':hashlib.sha256(self.BINDING.encode()).hexdigest()}])
+            self.assertEqual(data['queue']['jobs'][0]['request'],{'kind':'text','expires_at':123})
+            self.assertEqual(data['queue']['jobs'][0]['kind'],'text')
+            self.assertEqual(data['queue']['jobs'][0]['expires_at'],123)
+            self.assertEqual(data['admin_listing_sample']['object_keys'][1],{'path':'$.pagination','keys':['page','totalPages']})
+            sample.write_text('[]');self.assertEqual(check.inspect_listing_sample(sample)['error'],'listing_not_object')
+            sample.write_text('invalid');self.assertEqual(check.inspect_listing_sample(sample)['error'],'unreadable_json')
+
+    def test_seeded_category_ids_require_fresh_authenticated_actual_options(self):
+        import time
+        from deploy import nailblog_cutover_check as check
+        ids=dict(zip(check.CATEGORIES,('f1b2c3d4-e5f6-7890-abcd-ef1234567806','c1b2c3d4-e5f6-7890-abcd-ef1234567803',
+                                      'b1b2c3d4-e5f6-7890-abcd-ef1234567802','a1b2c3d4-e5f6-7890-abcd-ef1234567801')))
+        contract={'environment':'staging','site_origin':'https://staging.nailhub.ai','api_origin':'https://api-staging.nailhub.ai'}
+        report={**contract,'authenticated':True,'writes_performed':False,'editor_roundtrip':True,
+                'categories':[{'label':s.replace('-',' ').title(),'id':i} for s,i in ids.items()]}
+        with tempfile.TemporaryDirectory() as tmp:
+            probe=Path(tmp)/'probe.json';config=Path(tmp)/'config.toml'
+            from deploy.nailblog_config_migrate import toml_text
+            config.write_text(toml_text({'contract':contract,'admin':{'category_ids':ids}}))
+            probe.write_text(json.dumps(report));before=self.snapshot(tmp)
+            result=check.inspect_config(config,probe)
+            self.assertEqual(result['category_ids']['pattern_suspect'],['did-you-know'])
+            self.assertTrue(result['category_verification']['pass'])
+            self.assertEqual(self.snapshot(tmp),before)
+            self.assertFalse(check.inspect_config(config)['category_verification']['pass'])
+            changed={**report,'categories':report['categories'][:-1]}
+            probe.write_text(json.dumps(changed));self.assertFalse(check.inspect_config(config,probe)['category_verification']['pass'])
+            for changed in ({**report,'authenticated':False},{**report,'writes_performed':True},
+                            {**report,'api_origin':'https://api.nailhub.ai'},
+                            {**report,'categories':report['categories']+[report['categories'][0]]}):
+                probe.write_text(json.dumps(changed));self.assertFalse(check.inspect_config(config,probe)['category_verification']['pass'])
+            probe.write_text(json.dumps(report));old=time.time()-86401;os.utime(probe,(old,old))
+            self.assertEqual(check.inspect_config(config,probe)['category_verification']['error'],'stale_admin_probe')
+
+
+class ConfigMigrationTests(unittest.TestCase):
+    def old_config(self):
+        return '''[service]
+mode="live"
+db_path="/var/lib/agentfleet/nailblog/nailblog.sqlite3"
+owner_ids=[123]
+owner_username="SotaThao"
+slots=["06:00","19:00"]
+[contract]
+environment="staging"
+site_origin="https://staging.nailhub.ai"
+api_origin="https://api-staging.nailhub.ai"
+verified=true
+verification_ref="/etc/nailblog/probe.json"
+[admin]
+profile_path="/var/lib/agentfleet/nailblog/browser"
+credential_file="/etc/nailblog/private/admin.json"
+daily_publish_limit=2
+[admin.category_ids]
+hot-trend="a1b2c3d4-e5f6-7890-abcd-ef1234567801"
+[budget]
+daily_usd=2.0
+ledger_db_path="/legacy/unchanged.sqlite3"
+[cloudflare]
+account_id="retired"
+[text_model]
+provider="ollama"
+url="http://localhost:11434"
+num_predict=1000
+[image]
+provider="gemini"
+key_file="/old/key"
+key_source="env"
+review_bypass=false
+[subscription]
+queue_dir="/var/lib/nailblog-subscription/queue"
+private_dir="/private/worker"
+max_daily_jobs=17
+[autoflow]
+enabled=true
+run_usd=1.0
+runs_dir="/var/lib/agentfleet/nailblog/runs"
+[daily.slot_categories]
+"06:00"=["hot-trend"]
+"19:00"=["nail-salon"]
+'''
+
+    def test_migration_loads_real_schema_preserves_identity_and_never_overwrites(self):
+        import tomllib
+        from nailblog.config import load_config,REMOVED_KEYS,REMOVED_TABLES
+        from deploy.nailblog_config_migrate import migrate
+        with tempfile.TemporaryDirectory() as tmp:
+            old,new=Path(tmp)/'old.toml',Path(tmp)/'new.toml';old.write_text(self.old_config())
+            original=old.read_bytes();migrate(old,new);config=load_config(new)
+            self.assertEqual(old.read_bytes(),original)
+            self.assertEqual(config.slots,('06:00','10:00','15:00','19:00'))
+            self.assertEqual(config.mode,'preview');self.assertFalse(config.autoflow.enabled)
+            self.assertEqual(config.owner_ids,(123,));self.assertEqual(config.budget.ledger_db_path,'/legacy/unchanged.sqlite3')
+            self.assertEqual(config.text_model.provider,'agy');self.assertEqual(config.image.provider,'subscription')
+            self.assertFalse(config.image.review_bypass);self.assertEqual(config.admin.category_ids,{})
+            self.assertEqual(config.subscription.max_daily_jobs,17)
+            before=tomllib.loads(original.decode());after=tomllib.loads(new.read_text())
+            self.assertEqual(before['contract'],after['contract']);self.assertEqual(before['subscription'],after['subscription'])
+            self.assertEqual(before['admin']['credential_file'],after['admin']['credential_file'])
+            for name in REMOVED_TABLES:self.assertNotIn(name,after)
+            for section,keys in REMOVED_KEYS.items():
+                for key in keys:self.assertNotIn(key,after.get(section,{}))
+            output=new.read_bytes()
+            with self.assertRaises(FileExistsError):migrate(old,new)
+            with self.assertRaises(FileExistsError):migrate(old,old)
+            self.assertEqual(new.read_bytes(),output);self.assertEqual(old.read_bytes(),original)
+
+    def test_invalid_or_unknown_config_does_not_publish_output(self):
+        from deploy.nailblog_config_migrate import migrate
+        with tempfile.TemporaryDirectory() as tmp:
+            old,new=Path(tmp)/'old.toml',Path(tmp)/'new.toml'
+            for text in (self.old_config().replace('owner_ids=[123]','owner_ids=[]'),
+                         self.old_config()+'\n[unknown]\nvalue="must fail"\n'):
+                old.write_text(text)
+                with self.assertRaises(ValueError):migrate(old,new)
+                self.assertFalse(new.exists())
+
+    def test_manual_rollback_no_start_preserves_default_and_database(self):
+        for no_start in (False,True):
+            with self.subTest(no_start=no_start):
+                case=legacy.DeployTests();case.setUp()
+                try:
+                    settings=case.setup_service();runner=legacy.FakeCommands(settings)
+                    deploy=Deployment(settings,runner=runner);deploy.system('stop');backup=deploy.backup()
+                    database=settings.database().read_bytes();original=settings.config.read_bytes()
+                    settings.config.write_text('changed');runner.actions.clear()
+                    deploy.rollback(backup,{'ActiveState':'active'},no_start=no_start)
+                    self.assertEqual(settings.config.read_bytes(),original)
+                    self.assertEqual(settings.database().read_bytes(),database)
+                    self.assertEqual(runner.actions,[('stop',settings.unit)] if no_start else [('stop',settings.unit),('start',settings.unit)])
+                finally:case.doCleanups()
+
+    def test_no_start_requires_manual_rollback(self):
+        from deploy.agentfleet_deploy import main
+        with self.assertRaises(SystemExit) as caught:
+            main(['--service','nailblog','--stage','unused','--no-start'])
+        self.assertEqual(caught.exception.code,2)
+
+    def test_failed_deployment_can_leave_automatic_rollback_stopped(self):
+        case=legacy.DeployTests();case.setUp()
+        try:
+            settings=replace(case.setup_service(),rollback_no_start=True)
+            runner=legacy.FakeCommands(settings);runner.fail_install=True
+            with self.assertRaises(DeploymentError):Deployment(settings,runner=runner).deploy()
+            self.assertNotIn(('start',settings.unit),runner.actions)
+            self.assertEqual(runner.states[settings.unit]['ActiveState'],'inactive')
+            result=json.loads((settings.stage/'deployment.json').read_text())
+            self.assertTrue(result['rollback']['restored']);self.assertFalse(result['start_issued'])
+        finally:case.doCleanups()
 
 
 if __name__=='__main__':unittest.main()

@@ -55,7 +55,7 @@ verification_ref = ""                 # Required with verified=true before live.
 [admin]
 # Environment-bound login/probe work without enabling live or image generation.
 # credential_file = "/etc/nailblog/private/staging-admin.json"  # {email,password}, service-owned 0600.
-# profile_path = "/var/lib/agentfleet/nailblog-staging/browser" # Separate from all production/service profiles.
+# profile_path = "/var/lib/agentfleet/nailblog/browser" # Inside tg-nailblog.service ReadWritePaths; use a separate service/state root for production.
 timeout_seconds = 30
 headless = true
 # daily_publish_limit = 1             # 1..number of service.slots, at most 4.

@@ -21,6 +21,10 @@ TEST_ROOT_FILES = {
                 'nailhub/src/nailhub/ai_transport.py', 'nailhub/src/nailhub/model_lock.py'),
 }
 OPTIONAL_TEST_ROOT_FILES = ('systemd/agentfleet-tmpfiles.conf',)
+SNAPSHOT_DEPLOY_ASSETS = {
+    'nailblog': ('nailblog-image-only.md', 'nailblog-text-only.md', 'nailblog-subscription-tmpfiles.conf',
+                'subscription-bot.conf', 'subscription-permissions.md', 'tg-nailblog-subscription.service'),
+}
 
 
 
@@ -184,12 +188,23 @@ def stage_archive(service, stage, archive, commit):
 
 
 def snapshot_files(repo, service):
-    """Only package source/tests and named fixture files; no config/state/private trees."""
+    """Package source/tests and explicit deployment/fixture assets; no state or private trees."""
     repo = Path(repo)
     result = {service+'/pyproject.toml': (repo/service/'pyproject.toml').read_bytes()}
     for directory in ('src', 'tests'):
         result.update({service+'/'+directory+'/'+name: value
                        for name, value in inventory(repo/service/directory).items()})
+    deploy_dir = repo/service/'deploy'
+    if deploy_dir.is_symlink():
+        raise ValueError('Snapshot deployment directory symlink refused')
+    for name in SNAPSHOT_DEPLOY_ASSETS.get(service, ()):
+        path = deploy_dir/name
+        if path.is_symlink():
+            raise ValueError('Snapshot deployment asset symlink refused')
+        if path.exists():
+            if not path.is_file():
+                raise ValueError('Snapshot deployment asset must be a regular file')
+            result[service+'/deploy/'+name] = path.read_bytes()
     for name in (*TEST_ROOT_FILES[service], *OPTIONAL_TEST_ROOT_FILES):
         path = repo/name
         if path.is_file():

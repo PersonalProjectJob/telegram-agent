@@ -1,5 +1,6 @@
 start-console.sh text eol=lf
 nailblog/** text eol=lf
+nailhub/src/nailhub/model_lock.py text eol=lf
 config/nailblog.example.toml text eol=lf
 systemd/*.service text eol=lf
 nailblog/deploy/* text eol=lf

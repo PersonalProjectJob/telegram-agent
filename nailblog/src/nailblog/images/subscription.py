@@ -25,6 +25,7 @@ from ..publication import digest
 from ..schedule import VN_TZ
 from . import ImageError
 from .agy_native import (native_image, native_call, final_text, collapse_json, native_text, salvage_text,
+                         text_transcript, MAX_TEXT_TRANSCRIPT_BYTES,
                          assistant_text, user_prompt, HELD)
 from .subscription_sqlite import snapshot_rows
 from .post import decode
@@ -479,6 +480,12 @@ class Worker:
             # max_daily_jobs is shared by image and text jobs.
             if sum(r.get('day') == day for r in dispatched) >= self.cfg.max_daily_jobs:
                 raise ImageError('cli_daily_job_cap')
+            # Four daily articles retain two text jobs each. Legacy dispatches without kind are images;
+            # only an explicit text kind/protocol can exclude a record from this conservative image cap.
+            image_jobs = sum(r.get('day') == day and r.get('kind') != 'text' and r.get('protocol') != TEXT_PROTOCOL
+                             for r in dispatched)
+            if not text and image_jobs >= max(0, self.cfg.max_daily_jobs - 8):
+                raise ImageError('cli_daily_job_cap')
             if not text and sum(r.get('run_id') == run_id for r in dispatched) >= self.cfg.max_images_per_run:
                 raise ImageError('cli_run_image_cap')
             # Immutable private dispatch journal BEFORE any generation; never
@@ -703,6 +710,10 @@ class Worker:
         cfg = self.cfg
         agent = check_agent(cfg.text_agent)
         output = enc(article)
+        transcript = enc(native['transcript'])
+        if len(transcript) > MAX_TEXT_TRANSCRIPT_BYTES:
+            raise ImageError(HELD + 'native_transcript')
+        directory.atomic('native-transcript.json', transcript, raw=True)
         directory.atomic('output.json', output, raw=True)
         directory.atomic('native-final.bin', native['final_raw'], raw=True)
         directory.atomic('native-user.bin', native['user_raw'], raw=True)
@@ -711,13 +722,14 @@ class Worker:
                   'policy_sha': text_policy_sha(agent), 'prompt_sha': sha(request['prompt'].encode()),
                   'output_sha': sha(output), 'native_final_sha': sha(native['final_raw']),
                   'native_user_sha': sha(native['user_raw']), 'native_steps': native['steps'],
+                  'native_transcript_sha': sha(transcript),
                   'tool_calls_observed': 0, 'native_images': 0, 'stdout_copies': stdout_copies,
                   'native_final_copies': native_copies, 'billing': dict(BILLING)}
         if status == 'complete_salvaged': result['salvaged_from'] = salvaged_from
         return result
 
 
-def verify_text_receipt(cfg, receipt, request, output, final_raw, user_raw):
+def verify_text_receipt(cfg, receipt, request, output, final_raw, user_raw, transcript=None):
     """Producer-side provenance check: new text-only conversation, agent model, prompt and output SHA."""
     agent = check_agent(cfg.text_agent)
     steps = receipt.get('native_steps')
@@ -734,6 +746,12 @@ def verify_text_receipt(cfg, receipt, request, output, final_raw, user_raw):
             not isinstance(steps, list) or not 2 <= len(steps) <= 16 or steps[0] != 14 or
             any(step not in (14, 15) for step in steps) or steps[-1] != 15 or
             receipt.get('native_final_sha') != sha(final_raw) or receipt.get('native_user_sha') != sha(user_raw)):
+        raise ImageError('cli_receipt_invalid')
+    # Every successful text receipt needs complete proof: metadata stripping must never hide intermediate rows.
+    if not isinstance(transcript, bytes) or receipt.get('native_transcript_sha') != sha(transcript):
+        raise ImageError('cli_receipt_invalid')
+    native = native_text(text_transcript(transcript), request['prompt'])
+    if native['steps'] != steps or native['user_raw'] != user_raw or native['final_raw'] != final_raw:
         raise ImageError('cli_receipt_invalid')
     try:
         user_prompt(user_raw, request['prompt'])

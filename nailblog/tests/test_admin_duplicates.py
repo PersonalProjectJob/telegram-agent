@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from PIL import Image
 
@@ -150,7 +150,7 @@ class DuplicateScanSafetyTests(DuplicateScanTests):
     ROWS2 = [{'id': ID_C, 'status': 'Published', 'title': 'Mẫu thu', 'slug': 'mau-thu'}]
 
     async def test_missing_next_button_before_everything_is_scanned_raises(self):
-        for meta in ({'hasNextPage': True}, {'totalPages': 2}, {'totalCount': 3}, {'pageSize': 2}, {}):
+        for meta in ({'hasNextPage': True}, {'totalPages': 2}, {'totalCount': 3}, {'pageSize': 2}):
             with self.subTest(meta=meta), self.assertRaisesRegex(AdminError, '^duplicate_scan_incomplete$'):
                 await self.scan(self.ROWS1, self.ROWS2, 'Mẫu thu', 'mau-thu', meta1=meta, button=False)
 
@@ -177,6 +177,50 @@ class DuplicateScanSafetyTests(DuplicateScanTests):
         for bad in ({'status': 'Draft', 'title': 'Mẫu thu', 'slug': 'mau-thu'}, {'id': '', 'title': 'x'}, 'text'):
             with self.subTest(bad=bad), self.assertRaisesRegex(AdminError, '^duplicate_scan_bad_row$'):
                 await self.scan([bad], [], 'Mẫu thu', 'mau-thu', meta1={'hasNextPage': False}, button=False)
+
+
+class PaginationContractRegressionTests(DuplicateScanTests):
+    async def test_conflicting_pagination_signals_never_prove_a_complete_scan(self):
+        rows = [{'id':str(i),'title':'Other','slug':'other-'+str(i)} for i in range(10)]
+        for meta, button in (({'hasNextPage':False,'totalPages':2,'totalCount':18},False),
+                             ({'hasNextPage':False,'totalPages':2,'totalCount':18},True),
+                             ({'hasNextPage':False},True),
+                             ({'totalPages':2,'totalCount':10},True),
+                             ({'pageNumber':2,'hasNextPage':False},False)):
+            with self.subTest(meta=meta,button=button), self.assertRaisesRegex(AdminError,'^duplicate_scan_incomplete$'):
+                await self.scan(rows, [], 'Wanted title', 'wanted-slug', meta1=meta, button=button)
+
+    async def test_repeated_rows_or_changed_totals_fail_closed(self):
+        first = [{'id':'a','title':'Other','slug':'other'}]
+        for second, meta2 in ((first,{'hasNextPage':False}),
+                              ([{'id':'b','title':'Other2','slug':'other2'}],{'hasNextPage':False,'totalCount':99})):
+            with self.subTest(second=second), self.assertRaisesRegex(AdminError,'^duplicate_scan_incomplete$'):
+                await self.scan(first, second, 'Wanted title','wanted-slug',
+                                meta1={'hasNextPage':True,'totalCount':2}, meta2=meta2)
+
+    async def test_actual_two_page_contract_uses_slug_and_vietnamese_translation_title(self):
+        rows = [{'id':str(i),'slug':'other-'+str(i),'translations':[{'languageCode':'VI','title':'Other '+str(i)}]}
+                for i in range(18)]
+        _, found = await self.scan(rows[:10], rows[10:], 'Wanted title','wanted-slug',
+                                  meta1={'pageNumber':1,'totalPages':2,'totalCount':18,'hasNextPage':True,'hasPreviousPage':False},
+                                  meta2={'pageNumber':2,'totalPages':2,'totalCount':18,'hasNextPage':False,'hasPreviousPage':True})
+        self.assertEqual(found, [])
+
+    async def test_both_wanted_identities_and_well_formed_translations_are_required(self):
+        for row in ({'id':'a','slug':'different'}, {'id':'a','title':'Different'},
+                    {'id':'a','title':'Different','slug':'different','translations':'broken'},
+                    {'id':'a','title':'Different','slug':'different','translations':[None]},
+                    {'id':'a','title':'Different','slug':'different','translations':[{'languageCode':'VI','title':None}]},
+                    {'id':'a','title':'Different','slug':'different','translations':[{'title':'Unknown language'}]}):
+            with self.subTest(row=row), self.assertRaisesRegex(AdminError,'^duplicate_scan_bad_row$'):
+                await self.scan([row], [], 'Wanted title','wanted-slug', meta1={'hasNextPage':False},button=False)
+
+    async def test_metadata_free_short_page_with_present_disabled_next_is_complete(self):
+        admin = Admin(self.c)
+        admin.page = SimpleNamespace(get_by_role=lambda *a,**k:SimpleNamespace(
+            count=AsyncMock(return_value=1),is_enabled=AsyncMock(return_value=False)))
+        admin.list_first = AsyncMock(return_value={'items':[{'id':'a','title':'Different','slug':'different'}]})
+        self.assertEqual(await admin.find_duplicates('Wanted title','wanted-slug'), [])
 
 
 class CreateTimeoutTests(unittest.IsolatedAsyncioTestCase):

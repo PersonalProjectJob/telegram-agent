@@ -93,6 +93,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.now=[1792458000]
         self.service=Service(self.config,clock=lambda:self.now[0])
         self.service.state.set_paused(False)
+        self.service.state.arm(self.service.startup_binding)
         self.service.save_cache([],[])
         self.topic=self.service.state.add_topic('2026-W43','Màu nail merlot','nail-salon','2026-10-25T19:00+07:00',state='approved')
         self.workflow=OnePost(self.service)

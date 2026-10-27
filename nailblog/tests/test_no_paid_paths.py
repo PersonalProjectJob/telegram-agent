@@ -21,7 +21,7 @@ REMOVED_MODULES = ('ai_transport', 'gemini_text')
 
 def source_files():
     return sorted(p for p in SRC.rglob('*') if p.is_file() and '__pycache__' not in p.parts
-                  and p.suffix in ('.py', '.md', '.toml', '.json', '.html', '.txt', ''))
+                  and b'\x00' not in p.read_bytes())
 
 
 def python_files():
@@ -31,6 +31,28 @@ def python_files():
 def hits(text):
     folded = text.casefold()
     return [word for word in BANNED if word in folded]
+
+
+def dynamic_imports(source):
+    tree = ast.parse(source)
+    functions, modules = {'__import__'}, {'importlib'}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(a.asname or a.name for a in node.names if a.name == 'importlib')
+        elif isinstance(node, ast.ImportFrom) and node.module == 'importlib':
+            functions.update(a.asname or a.name for a in node.names if a.name == 'import_module')
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        dynamic = (isinstance(func, ast.Name) and func.id in functions) or (
+            isinstance(func, ast.Attribute) and func.attr in ('import_module', '__import__')
+            and isinstance(func.value, ast.Name) and func.value.id in modules)
+        if dynamic and (not node.args or not isinstance(node.args[0], ast.Constant)
+                        or not isinstance(node.args[0].value, str)):
+            bad.append(node.lineno)
+    return bad
 
 
 class NoPaidPathTests(unittest.TestCase):
@@ -84,6 +106,27 @@ class NoPaidPathTests(unittest.TestCase):
                     names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or '']
                     missing += [(path.name, n) for n in names if n.split('.')[0] in REMOVED_MODULES]
         self.assertEqual(missing, [])
+
+    def test_dynamic_import_targets_are_literal(self):
+        self.assertEqual([(str(p.relative_to(SRC)), line) for p in python_files()
+                          for line in dynamic_imports(p.read_text(encoding='utf-8'))], [])
+
+    def test_dynamic_import_scanner_catches_nonliteral_and_aliased_calls(self):
+        for source in ("__import__(name)", "importlib.import_module(prefix + suffix)",
+                       "from importlib import import_module as load; load(name)",
+                       "import importlib as il; il.import_module(name)", "__import__('x' + name)"):
+            self.assertTrue(dynamic_imports(source), source)
+        self.assertEqual(dynamic_imports("importlib.import_module('fcntl')"), [])
+
+    def test_scan_includes_unfamiliar_extensions_and_excludes_binary(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'endpoint.unfamiliar').write_text('https://api.deepseek.com/v1')
+            (root / 'binary.dat').write_bytes(b'\x00binary')
+            with patch(__name__ + '.SRC', root):
+                self.assertEqual([p.name for p in source_files()], ['endpoint.unfamiliar'])
+                self.assertEqual(hits(source_files()[0].read_text()), ['api.deepseek'])
 
     def test_the_scanner_would_catch_a_planted_endpoint(self):
         self.assertEqual(hits('url = "https://api.deepseek.com/v1"'), ['api.deepseek'])
