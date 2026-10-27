@@ -190,7 +190,7 @@ class WriteArticleTests(unittest.IsolatedAsyncioTestCase):
         self.service = Service(self.config)
 
     def model(self, transport):
-        return TextModel(self.config, self.service.model_call, transport=transport)
+        return TextModel(self.config, _test_transport=transport)
 
     async def write(self, transport, topic=TOPIC, **kwargs):
         return await write_article(self.model(transport), topic, [fakes.SOURCE], site_origin="https://nailhub.ai",

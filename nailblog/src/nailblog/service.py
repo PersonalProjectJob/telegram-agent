@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from . import daily, facts
 from ._runtime import AlreadyRunning, ProcessLock
 from .commands import execute
-from .model_lock import MODEL_LOCK
 from .notices import notice_key, send_once, uncertain_notice
 from .planner import (format_topics_dm, next_week_start, propose, slots_of_config, store_topics, topic_meta,
                       week_label)
@@ -149,39 +148,6 @@ class Service:
         self.usage.publish()
         return [row["id"] for row in due]
 
-    async def model_call(self, function, *args, stop=None, provider=None, model=None, before_dispatch=None):
-        """Run a blocking `function` in a thread.
-
-        provider None: yields to triage through the shared lock as a background job (non-text callers).
-        provider "agy": the Agy worker takes the shared lock itself, so the bot never holds MODEL_LOCK here, touches
-        no ledger and records no cost. Any other provider is refused: no paid text route exists any more."""
-        from .images.pipeline import DispatchPaused
-        if provider not in (None, "agy"):
-            raise RuntimeError("paid_text_removed")
-
-        def check_dispatch():
-            if before_dispatch is not None:
-                try:
-                    before_dispatch()
-                except Exception:
-                    raise DispatchPaused('workflow_paused_before_dispatch') from None
-        check_dispatch()
-
-        def run():
-            if provider == "agy":
-                check_dispatch()
-                return function(*args)
-            with MODEL_LOCK.enter(background=True, stop=stop):
-                check_dispatch()
-                return function(*args)
-        # Cancelling to_thread does not stop the call; finish it before releasing resources.
-        task = asyncio.create_task(asyncio.to_thread(run))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
-
     async def notify(self):
         if self.notice_send is None:
             return
@@ -265,7 +231,13 @@ class Service:
         candidates = await admin.find_duplicates(title, slug)
         if len(candidates) == 1 and candidates[0].get('status') == 'Draft':
             actual = await admin.read(candidates[0]['id'])
-            store.record_draft(post_id, actual)
+            try:
+                store.record_draft(post_id, actual)
+            except AdminError as error:
+                if str(error) != 'draft_readback_mismatch':
+                    raise
+                # The only Draft on the site is not what we claimed: retrying cannot fix it, a human must look.
+                raise AdminError('create_requires_manual_reconciliation') from None
             return actual
         if candidates or self._create_age(post_id) > RECONCILE_WINDOW_SECONDS:
             raise AdminError('create_requires_manual_reconciliation')

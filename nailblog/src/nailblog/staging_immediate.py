@@ -103,7 +103,6 @@ def _configuration(config, state, grant, now):
     _need(policy.get('site_origin') == config.contract.site_origin and
           policy.get('api_origin') == config.contract.api_origin and
           policy.get('media_origin') == config.contract.media_origin)
-    _need(policy.get('account_id') == config.cloudflare.account_id)
     _need(policy.get('dispatch_window_seconds') == 900 and
           policy.get('new_images_only') is True and policy.get('no_auto_approval') is True)
     _need('Đăng ngay sau khi tôi duyệt đủ' in policy.get('owner_quote', ''))

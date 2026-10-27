@@ -81,7 +81,7 @@ class DraftRepairTests(unittest.IsolatedAsyncioTestCase):
             if number <= 6:
                 return ollama_envelope(fakes.section(number - 2, **((section_override or {}).get(number - 2, {}))))
             return respond(call, number - 6)
-        text = TextModel(self.config, self.service.model_call, transport=FakeTransport(transport))
+        text = TextModel(self.config, _test_transport=FakeTransport(transport))
         draft = await self.service.draft(self.topic, text, posts=list(posts), today=TODAY)
         return draft, calls
 

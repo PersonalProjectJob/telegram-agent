@@ -146,7 +146,7 @@ class Fx:
         # The real config object (frozen dataclasses), so deadlines come from config.schedule like everywhere else.
         self.config = settings(
             self.root, mode='live', slots=tuple(slots),
-            autoflow=AutoflowConfig(enabled=True, run_usd=0.5, runs_dir=str(self.root / 'runs')),
+            autoflow=AutoflowConfig(enabled=True, runs_dir=str(self.root / 'runs')),
             admin=AdminConfig(category_ids=dict(GUIDS if category_ids is None else category_ids)),
             image=ImageConfig(review_bypass=True), schedule=ScheduleConfig(**(schedule or {})))
         self.media, self.dms, self.dm_attempts = [], [], 0
@@ -312,7 +312,7 @@ class GateTests(Base):
         row = await fx.tick()
         self.assertEqual(row['run_id'], f'auto-20261103-0600-t{fx.topic}')
         self.assertEqual(fx.onepost.args('prepare')[0], (row['run_id'], fx.topic, str(Path(fx.config.autoflow.runs_dir) / row['run_id'])))
-        self.assertEqual((row['run_usd'], row['failures'], row['next_attempt_at'], row['terminal_reason']), (0.5, 0, 0, ''))
+        self.assertEqual((row['failures'], row['next_attempt_at'], row['terminal_reason']), (0, 0, ''))
 
     async def test_stop_event_blocks_dispatch(self):
         fx = self.fixture()

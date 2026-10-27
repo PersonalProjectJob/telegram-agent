@@ -8,11 +8,9 @@ import unittest
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 from nailblog import __main__ as cli
-from nailblog import service as service_module
-from nailblog.model_lock import MODEL_LOCK
 from nailblog.notices import notice_key, send_once, uncertain_notice
 from nailblog.receipt import ready
 from nailblog.schedule import VN_TZ
@@ -77,29 +75,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue((Path(self.directory.name) / "agentfleet-usage.json").exists())
 
 
-class ModelCallTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_calls_enter_the_shared_lock_as_background(self):
-        with tempfile.TemporaryDirectory() as directory:
-            service = Service(settings(directory))
-            spy = Mock(wraps=MODEL_LOCK)
-            original = service_module.MODEL_LOCK
-            service_module.MODEL_LOCK = spy
-            try:
-                self.assertEqual(await service.model_call(lambda a, b: a + b, 2, 3), 5)
-            finally:
-                service_module.MODEL_LOCK = original
-            spy.enter.assert_called_once_with(background=True, stop=None)
-
-    async def test_model_call_errors_propagate_after_releasing_the_lock(self):
-        with tempfile.TemporaryDirectory() as directory:
-            service = Service(settings(directory))
-
-            def boom():
-                raise OSError("x")
-            with self.assertRaises(OSError):
-                await service.model_call(boom)
-            self.assertEqual(await service.model_call(lambda: "again"), "again")
-
+class SchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_stops_when_asked(self):
         with tempfile.TemporaryDirectory() as directory:
             service = Service(settings(directory))

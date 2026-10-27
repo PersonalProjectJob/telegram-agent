@@ -17,6 +17,7 @@ import unicodedata
 from urllib.parse import quote, urlparse
 
 from .config import LinksConfig
+from .override_policy import NEVER_OVERRIDABLE
 from .text import TextModelError, array_schema, check_schema, object_schema, string_schema
 
 OUTLINE_TOKENS = 4096
@@ -1532,9 +1533,6 @@ def render_html(article, images=(), *, site_origin="https://nailhub.ai"):
 # ---------------------------------------------------------------------------------------------------------------------
 AGY_MAX_ASKS = 2
 AGY_WRITE_PURPOSE, AGY_REPAIR_PURPOSE = "nailblog-write", "nailblog-repair"
-# Gate codes an Owner can never override: unsupported facts, unexpected Han, a medical claim. Every other `hold`
-# is structural; only `fixable` issues (and none of these) can be overridden by the Owner.
-NEVER_OVERRIDE = ("facts", "unexpected_han", "medical_claim")
 MEDICAL_TERMS = ("chữa bệnh", "chữa khỏi", "chữa lành", "chữa trị", "điều trị", "viêm", "nấm móng", "không gây hại")
 _MEDICAL = re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, MEDICAL_TERMS)) + r")(?!\w)")
 
@@ -1755,7 +1753,7 @@ def write_agy(ask, topic, context, config, *, hints=None):
             images, content, ungrounded, result = _agy_assess(article, topic, context, config)
     article = annotate_repair_outcome(article, result)
     article["jsonld"] = build_jsonld(article, site, topic.get("slot_at"))
-    issues = [{**issue.as_dict(), "overridable": issue.kind == "fixable" and issue.code not in NEVER_OVERRIDE}
+    issues = [{**issue.as_dict(), "overridable": issue.kind == "fixable" and issue.code not in NEVER_OVERRIDABLE}
               for issue in result.issues]
     return AgyDraft(article, content, images, ungrounded, result, word_count(article), repaired, counter[0],
                     bool(issues), issues, all(item["overridable"] for item in issues))

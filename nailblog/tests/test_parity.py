@@ -1,4 +1,4 @@
-"""The two shared transport/lock modules must stay byte-identical with the nailhub copies."""
+"""model_lock.py must stay byte-identical with the nailhub copy (ai_transport.py was removed with S8)."""
 import unittest
 from pathlib import Path
 
@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ParityTests(unittest.TestCase):
     def test_copies_are_byte_identical_to_nailhub(self):
-        for name in ("ai_transport.py", "model_lock.py"):
+        for name in ("model_lock.py",):
             with self.subTest(module=name):
                 own = ROOT / "nailblog" / "src" / "nailblog" / name
                 reference = ROOT / "nailhub" / "src" / "nailhub" / name

@@ -30,7 +30,7 @@ class CliBase(unittest.TestCase):
         try:
             with contextlib.redirect_stdout(out):
                 code = cli.main(list(argv) + ["--config", str(self.config_path)],
-                                runtime=Runtime(transport=self.model.transport, opener=self.opener, **runtime))
+                                runtime=Runtime(_test_transport=self.model.transport, opener=self.opener, **runtime))
             return code, out.getvalue()
         finally:
             os.umask(old)

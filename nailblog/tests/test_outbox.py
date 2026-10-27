@@ -217,7 +217,7 @@ class ReportTests(Base):
                        (json.dumps({'evidence': evidence}), post))
         held_id, held_slot = self.topic('10:00', 'Bài bị giữ')
         runs = AutoflowRuns(self.state)
-        runs.create('r2', held_id, held_slot, '/tmp/x', 0)
+        runs.create('r2', held_id, held_slot, '/tmp/x')
         runs.update('r2', stage='held', terminal_reason='text_quality_held')
         self.topic('15:00', 'Chưa có bài')                    # chosen topic, no post, no run
         service = self.service(agy_jobs_today=lambda: 7)

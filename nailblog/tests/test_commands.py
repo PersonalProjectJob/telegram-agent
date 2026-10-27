@@ -330,8 +330,8 @@ class OverrideCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_flow_lists_each_run_by_slot_with_override_flag_and_deadline(self):
         from nailblog.autoflow import AutoflowRuns
         runs = AutoflowRuns(self.state)
-        runs.create("rB", 2, "2026-10-17T19:00+07:00", "/o", 0)
-        runs.create("rA", 1, "2026-10-17T06:00+07:00", "/o", 0)
+        runs.create("rB", 2, "2026-10-17T19:00+07:00", "/o")
+        runs.create("rA", 1, "2026-10-17T06:00+07:00", "/o")
         ok_card = self.store.request("images", "rA", "s", NOW + 7200, NOW)
         runs.update("rA", stage="images_wait", ctx={"images": {"id": ok_card, "snapshot": "s"}})
         runs.update("rB", stage="draft_wait", ctx={"draft": {"id": self.held, "snapshot": "snap"}})

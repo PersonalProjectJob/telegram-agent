@@ -12,12 +12,13 @@ import io
 import json
 from datetime import datetime, timedelta, timezone
 
+from .override_policy import NEVER_OVERRIDABLE
+
 KINDS = ('images', 'draft')
 VN_TZ = timezone(timedelta(hours=7))
 DASH = '—'
 MAX_REASON = 500
 MAX_ISSUES = 20
-NEVER_OVERRIDABLE = frozenset({'facts', 'unexpected_han', 'medical_claim'})
 CARD_LIMIT = 4096  # Telegram text message limit
 
 

@@ -5,14 +5,10 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from nailblog.config import BudgetConfig
 from nailblog.schedule import VN_TZ
 from nailblog.state import State
-from nailblog.usage import (SUMMARY_NAME, UnpricedModel, UsageRecorder, day_bounds, image_cost,
-                            text_cost)
+from nailblog.usage import SUMMARY_NAME, UsageRecorder, day_bounds
 from tests.helpers import settings
-
-PRICES = BudgetConfig(daily_usd=1.0, text_prices={"deepseek-chat": (0.5, 2.0)}, image_prices={"img": 0.25})
 
 
 def vn(day, hhmm="12:00"):
@@ -32,7 +28,7 @@ class UsageTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.config = replace(settings(self.directory.name), budget=PRICES)
+        self.config = settings(self.directory.name)
         self.state = State(self.config.db_path)
         self.clock = Clock(vn(date(2026, 10, 17)))
         self.usage = UsageRecorder(self.state, self.config, clock=self.clock)
@@ -46,18 +42,6 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(day_bounds(vn(date(2026, 10, 17), "00:00"))[0], start)
         self.assertEqual(day_bounds(vn(date(2026, 10, 16), "23:59"))[1], start)
         self.assertEqual(end - start, 86400)
-
-    def test_cost_tables(self):
-        self.assertAlmostEqual(text_cost(PRICES, "deepseek", "deepseek-chat", 1_000_000, 500_000), 1.5)
-        self.assertEqual(text_cost(PRICES, "ollama", "qwen3.5:9b", 10 ** 6, 10 ** 6), 0.0)
-        self.assertEqual(text_cost(PRICES, "agy", "gemini-3.1-pro", 10 ** 6, 10 ** 6), 0.0)   # Agy: unpriced, free of API bill
-        self.assertAlmostEqual(image_cost(PRICES, "img", 4), 1.0)
-        self.assertEqual(image_cost(PRICES, "subscription", 4), 0.0)
-        self.assertEqual(image_cost(PRICES, "unpriced-model", 4, provider="subscription"), 0.0)
-        with self.assertRaises(UnpricedModel):
-            text_cost(PRICES, "deepseek", "mystery", 1, 1)
-        with self.assertRaises(UnpricedModel):
-            image_cost(PRICES, "mystery", 1)
 
     def test_totals_accumulate_per_vietnam_day(self):
         base = vn(date(2026, 10, 17), "00:00")
@@ -78,21 +62,12 @@ class UsageTests(unittest.TestCase):
 
     def test_check_is_a_no_op_because_no_api_budget_is_enforced_any_more(self):
         self.usage.check()
-        self.usage.record("gemini", "img", 3, 5.0)   # far above budget.daily_usd; the old ledger is retired
+        self.usage.record("gemini", "img", 3, 5.0)   # the old ledger is retired
         self.usage.check()
         self.assertAlmostEqual(self.usage.total_today(), 5.0)
 
-    def test_record_helpers_use_the_price_tables(self):
-        self.assertAlmostEqual(self.usage.record_text("deepseek", "deepseek-chat", 1000, 500), 0.0015)
-        self.assertAlmostEqual(self.usage.record_image("gemini", "img", 2), 0.5)
-        self.assertAlmostEqual(self.usage.total_today(), 0.5015)
-        self.assertEqual(self.usage.record_text("ollama", "qwen3.5:9b", 5000, 5000), 0.0)
-        with self.assertRaises(UnpricedModel):
-            self.usage.record_image("gemini", "other", 1)
-        self.assertEqual(len(self.state.usage_between(0, 2 * 10 ** 10)), 3)
-
     def test_summary_file_matches_listener_schema(self):
-        self.usage.record_text("deepseek", "deepseek-chat", 1000, 500)
+        self.usage.record("agy", "agy-text", 1500, 0.0015)
         data = self.summary()
         self.assertEqual((data["schema"], data["currency"]), (1, "USD"))
         self.assertEqual(data["generatedAt"], self.clock.now)
@@ -102,7 +77,7 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(data["daily"][-1], {"date": "2026-10-17", "calls": 1, "errors": 0, "fallbacks": 0, "cost": 0.0015})
         today = data["windows"]["today"]
         self.assertEqual((today["calls"], today["ok"], today["promptTokens"], today["cost"]), (1, 1, 1500, 0.0015))
-        self.assertEqual(today["byModel"][0]["model"], "deepseek-chat")
+        self.assertEqual(today["byModel"][0]["model"], "agy-text")
         self.assertEqual(set(today), {"calls", "ok", "errors", "fallbacks", "promptTokens", "completionTokens",
                                       "cacheHitTokens", "images", "cost", "byModel"})
 

@@ -31,7 +31,7 @@ def gemini_envelope(data, prompt=1000, candidates=500, thoughts=0, parts=None):
 
 
 class FakeTransport:
-    """Same signature as nailblog.ai_transport.request_json; `respond(call, number)` returns the envelope."""
+    """Scripted text transport (test seam `TextModel(_test_transport=...)`): `transport(url, payload, headers, timeout, provider)`; `respond(call, number)` returns the envelope."""
 
     def __init__(self, respond):
         self.respond = respond
@@ -83,7 +83,7 @@ class FakeOpener:
 
 
 def read_key(path, scope, environ=None, group_name=None):
-    """Same signature as nailblog.ai_transport.read_key."""
+    """Legacy key reader stub (no production code reads keys any more)."""
     return "test-key"
 
 

@@ -6,6 +6,7 @@ Telegram deduplicates it, and the server message ids are stored once known. A fa
 queued. The Owner binding is checked by the sender itself (`telegram.make_owner_*_sender`).
 """
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -18,6 +19,7 @@ MAX_TEXT = 3500
 BACKOFF_BASE = 300
 BACKOFF_MAX = 3600
 MAX_CAPTION = 4096
+SEND_TIMEOUT_SECONDS = 30   # a hung Telegram send counts as a failed send (backoff), it must never stall the scheduler
 
 
 class OutboxBackoff(RuntimeError):
@@ -170,9 +172,9 @@ async def send_once(state, send, key, text, now=None):
     box.begin_attempt(key)
     try:
         if _wants_random_id(send):
-            result = await send(row['text'], random_id=row['random_id'])
+            result = await asyncio.wait_for(send(row['text'], random_id=row['random_id']), SEND_TIMEOUT_SECONDS)
         else:
-            result = await send(row['text'])
+            result = await asyncio.wait_for(send(row['text']), SEND_TIMEOUT_SECONDS)
     except Exception as error:
         box.failed(key, now, error)
         state.notice_failed(key, now)
@@ -213,8 +215,9 @@ def outbox_media_sender(state, send, *, clock=time.time):
         album = json.loads(row['album_ids'])
         box.begin_attempt(key)
         try:
-            ids = await send(owner_id, box.files(key) if not album else [], row['text'],
-                             random_id=row['random_id'], skip_files=bool(album))
+            ids = await asyncio.wait_for(send(owner_id, box.files(key) if not album else [], row['text'],
+                                              random_id=row['random_id'], skip_files=bool(album)),
+                                         SEND_TIMEOUT_SECONDS)
         except Exception as error:
             box.failed(key, now, error, album_ids=list(getattr(error, 'sent_ids', None) or []) or None,
                        cap=CARD_BACKOFF_MAX)

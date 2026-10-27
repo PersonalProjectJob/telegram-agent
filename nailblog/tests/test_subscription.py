@@ -105,7 +105,7 @@ class ConfigTests(unittest.TestCase):
                 **{'budget__image_unit_prices__m-cover':None,'budget__image_unit_prices__m-body':None})
             c = load(directory, LIVE, **sections)
             self.assertEqual(c.image.provider, 'subscription')
-            self.assertEqual(c.image.key_file, '')
+            self.assertFalse(hasattr(c.image, 'key_file'))
             for text in ('provider="subscription"\nreview_bypass=true',
                          'provider="subscription"\ncandidates=1\nmax_rounds=1',
                          'provider="subscription"\ncandidates=1\nmax_rounds=1\nreview_bypass=true\nkey_source="env"'):

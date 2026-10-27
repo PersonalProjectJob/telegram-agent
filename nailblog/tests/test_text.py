@@ -3,7 +3,6 @@ import tempfile
 import threading
 import unittest
 
-from nailblog.service import Service
 from nailblog.text import TextModel, TextModelError, array_schema, check_schema, object_schema, string_schema
 from tests.helpers import settings
 
@@ -78,12 +77,6 @@ class AgyAdapterTests(unittest.IsolatedAsyncioTestCase):
                           before_dispatch=lambda: order.append("hook"))
         await model.ask("t", "s", "u", SCHEMA, max_tokens=900)
         self.assertEqual(order, ["hook", "ask"])
-
-    async def test_legacy_constructor_options_are_accepted_and_ignored(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        service = Service(settings(directory.name))
-        TextModel(service.config, service.model_call, transport=object(), key_reader=object(), ask=lambda *a, **k: GOOD)
 
     async def test_logs_never_contain_prompt_source_or_output_text(self):
         model = self.make({**GOOD, "title": "ĐẦU RA BÍ MẬT"})
