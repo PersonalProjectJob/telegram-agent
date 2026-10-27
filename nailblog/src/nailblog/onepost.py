@@ -475,7 +475,8 @@ class OnePost:
         self.store(run_id, 'draft_verified', saved)
         return self.artifact(run_id)
 
-    def approve(self, run_id, snapshot):
+    def approve(self, run_id, snapshot, *, approvals=None, images_snapshot=None):
+        """`approvals` + `images_snapshot` (autoflow) let a Draft the gate held pass when the Owner overrode both cards."""
         self.active()
         run = self.read(run_id)
         if not run or run['phase'] != 'draft_verified' or self.artifact(run_id)['snapshot'] != snapshot:
@@ -484,7 +485,9 @@ class OnePost:
             raise AdminError('unexpected_han_requires_review')
         saved=json.loads(run['document'])
         verify_test_operation(saved,self.config,run_id=run_id,slot_at=saved.get('slot_at'),state=self.state,post_id=run['post_id'])
-        AdminStore(self.state, self.config).approve(run['post_id'], self.service.clock())
+        override = {'approvals': approvals, 'run_id': run_id, 'images_snapshot': images_snapshot,
+                    'draft_snapshot': snapshot} if approvals is not None else None
+        AdminStore(self.state, self.config).approve(run['post_id'], self.service.clock(), override=override)
         self.store(run_id, 'scheduled', json.loads(run['document']))
         return self.artifact(run_id)
 

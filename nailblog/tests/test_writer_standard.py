@@ -248,19 +248,19 @@ class PromptTests(unittest.IsolatedAsyncioTestCase):
         return [call["payload"]["messages"] for call in transport.calls]
 
     async def test_the_outline_request_carries_the_category_skeleton_and_the_budget(self):
-        hot = (await self.calls("hot-trend"))[0][1]["content"]
+        hot = (await self.calls("hot-trend"))[0][0]["content"]
         self.assertIn("Trend là gì và vì sao đang hot", hot)
         self.assertIn("cả bài tối đa 900 từ (trần 1000)", hot)
         self.assertIn("mở bài khoảng 70 từ", hot)
         self.assertIn("mỗi mục H2 khoảng 113 từ", hot)
         self.assertIn("FAQ đúng 3 câu", hot)
-        job = (await self.calls("nail-job"))[0][1]["content"]
+        job = (await self.calls("nail-job"))[0][0]["content"]
         self.assertIn("Giấy tờ và điều kiện (có nguồn)".lower(), job.lower())
         self.assertIn("cả bài tối đa 1080 từ (trần 1200)", job)
         self.assertIn("FAQ đúng 4 câu", job)
-        dyk = (await self.calls("did-you-know"))[0][1]["content"]
+        dyk = (await self.calls("did-you-know"))[0][0]["content"]
         self.assertIn("Con số hoặc tin chính", dyk)
-        salon = (await self.calls("nail-salon"))[0][1]["content"]
+        salon = (await self.calls("nail-salon"))[0][0]["content"]
         self.assertIn("Vấn đề chủ tiệm gặp", salon)
 
     async def test_every_section_request_carries_its_own_budget_kind_keyword_and_points(self):
@@ -268,7 +268,7 @@ class PromptTests(unittest.IsolatedAsyncioTestCase):
         outline = fakes.outline(5)
         written = sum(len(p.split()) for p in outline["intro"]) + sum(len(t.split()) for t in outline["key_takeaways"])
         for number, request in enumerate(messages[1:], 1):
-            content = request[1]["content"]
+            content = request[0]["content"]
             budget = rolling_section_budget(word_budget("hot-trend", 5), written, 5 - (number - 1))
             self.assertIn(f"Ngân sách: viết khoảng {budget} từ cho cả mục (không dưới {int(budget * 0.8)}, "
                           f"không quá {budget}", content)
@@ -279,7 +279,7 @@ class PromptTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("kind: paragraphs", content)
             self.assertIn("Ý chính: Ý chính của mục", content)
             self.assertIn("Từ khóa chính: màu nail merlot (phụ: merlot nails, nail đỏ rượu, gel merlot)", content)
-        four = (await self.calls("hot-trend", sections=4))[1][1]["content"]
+        four = (await self.calls("hot-trend", sections=4))[1][0]["content"]
         self.assertIn("viết khoảng 143 từ cho cả mục (không dưới 114, không quá 143", four)
         self.assertIn("Mỗi đoạn khoảng 64 từ.", four)
 
@@ -349,7 +349,7 @@ class OverCeilingRepairTests(unittest.IsolatedAsyncioTestCase):
         reply = {"body": piece, "body_2": piece, "body_3": piece}
         draft, calls = await self.draft(reply)
         self.assertEqual(len(calls), 7)                                   # exactly one repair call
-        request = calls[-1]["payload"]["messages"][1]["content"]
+        request = calls[-1]["payload"]["messages"][0]["content"]
         before = int(re.search(r"Độ dài bài: (\d+) từ, cần 600-1000\.", request).group(1))
         self.assertGreater(before, 1000)
         self.assertIn("Viết lại mục 1 cho ngắn hơn, tối đa 90 từ cho cả mục", request)
@@ -436,7 +436,7 @@ class OutlineCapAndBudgetTests(unittest.IsolatedAsyncioTestCase):
         written = sum(len(p.split()) for p in outline["intro"]) + sum(len(t.split()) for t in outline["key_takeaways"])
         budget = word_budget("nail-salon", 5)
         for index in range(5):
-            request = transport.calls[1 + index]["payload"]["messages"][1]["content"]
+            request = transport.calls[1 + index]["payload"]["messages"][0]["content"]
             expected = rolling_section_budget(budget, written, 5 - index)
             self.assertIn(f"viết khoảng {expected} từ cho cả mục", request)
             self.assertIn(f"không quá {expected};", request)
@@ -527,7 +527,7 @@ class KeywordReaskTests(unittest.IsolatedAsyncioTestCase):
         missing = {"paragraphs": [fakes.prose(100, 1), fakes.prose(100, 2)], "claims": []}
 
         def respond(call, number):
-            content = call["payload"]["messages"][1]["content"]
+            content = call["payload"]["messages"][0]["content"]
             if number == 1:
                 return ollama_envelope(fakes.outline(5))
             index = int(re.search(r"Viết mục (\d+):", content).group(1)) - 1
@@ -546,10 +546,10 @@ class KeywordReaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(transport.calls), 1 + 5 + 1)
         self.assertIn("keyword_reask:2", article["writer_audit"])
         self.assertIn(fakes.KEYWORD, article["sections"][2]["paragraphs"][0].casefold())
-        last = [c for c in transport.calls if "Lần trước thiếu từ khóa chính" in c["payload"]["messages"][1]["content"]]
+        last = [c for c in transport.calls if "Lần trước thiếu từ khóa chính" in c["payload"]["messages"][0]["content"]]
         self.assertEqual(len(last), 1)
         from nailblog.writer import KEYWORD_ASK, KEYWORD_AVOID
-        asked = last[0]["payload"]["messages"][1]["content"]
+        asked = last[0]["payload"]["messages"][0]["content"]
         self.assertIn(KEYWORD_ASK, asked)
         self.assertNotIn(KEYWORD_AVOID, asked)
 
@@ -577,7 +577,7 @@ class KeywordReaskTests(unittest.IsolatedAsyncioTestCase):
         text = TextModel(self.config, self.service.model_call, transport=transport)
         article = await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
                                       site_origin="https://nailhub.ai", today=TODAY)
-        requests = [c["payload"]["messages"][1]["content"] for c in transport.calls[1:]]
+        requests = [c["payload"]["messages"][0]["content"] for c in transport.calls[1:]]
         self.assertEqual(len(transport.calls), 6)                  # dense enough: no re-ask for the later sections
         self.assertFalse([a for a in article["writer_audit"] if a.startswith("keyword_reask")])
         self.assertIn(KEYWORD_ASK, requests[0])
@@ -600,30 +600,19 @@ class OutlineAttemptsTests(unittest.IsolatedAsyncioTestCase):
         transport = FakeTransport(respond)
         return TextModel(self.config, self.service.model_call, transport=transport), transport
 
-    async def test_the_outline_is_tried_up_to_three_times_with_concrete_errors(self):
-        text, transport = self.model(lambda call, number: ollama_envelope({}) if number <= 2 else ollama_envelope(
-            fakes.outline(5) if number == 3 else fakes.section(number - 4)))
-        article = await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
-                                      site_origin="https://nailhub.ai", today=TODAY)
-        self.assertEqual(len(transport.calls), 3 + 5)
-        retry = transport.calls[2]["payload"]["messages"][-1]["content"]
-        self.assertIn("$.primary_keyword: missing", retry)
-        self.assertIn("$.title: missing", retry)
-        self.assertEqual(len(article["sections"]), 5)
-
-    async def test_three_invalid_outlines_fail_closed_and_sections_keep_one_retry(self):
+    async def test_an_invalid_outline_or_section_fails_closed_without_a_second_call(self):
         from nailblog.text import TextModelError
         text, transport = self.model(lambda call, number: ollama_envelope({}))
         with self.assertRaises(TextModelError):
             await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
                                 site_origin="https://nailhub.ai", today=TODAY)
-        self.assertEqual(len(transport.calls), 3)
+        self.assertEqual(len(transport.calls), 1)                      # the Agy route has no JSON repair round
         text, transport = self.model(lambda call, number: ollama_envelope(
             fakes.outline(5) if number == 1 else {}))
         with self.assertRaises(TextModelError):
             await write_article(text, {"title": "T", "category": "nail-salon"}, [fakes.SOURCE],
                                 site_origin="https://nailhub.ai", today=TODAY)
-        self.assertEqual(len(transport.calls), 1 + 2)                  # a section still gets exactly two tries
+        self.assertEqual(len(transport.calls), 1 + 1)                  # the outline, then the bad section: stop
 
 
 class TrimListItemsTests(unittest.TestCase):
@@ -704,7 +693,7 @@ class StuffingRepairTests(unittest.IsolatedAsyncioTestCase):
         transport = FakeTransport(lambda call, number: ollama_envelope({"body": piece, "body_2": piece, "body_3": piece}))
         text = TextModel(config, service.model_call, transport=transport)
         result, repaired = await repair_article(text, article, [issue], sources=[fakes.SOURCE])
-        request = transport.calls[0]["payload"]["messages"][1]["content"]
+        request = transport.calls[0]["payload"]["messages"][0]["content"]
         self.assertEqual(len(transport.calls), 1)
         self.assertIn("thay một số lần nhắc NGUYÊN VĂN từ khóa chính bằng từ khóa phụ hoặc đại từ", request)
         self.assertNotIn('giữ NGUYÊN VĂN từ khóa chính "', request)
@@ -734,7 +723,7 @@ class StuffingRepairTests(unittest.IsolatedAsyncioTestCase):
             {"body": piece, "body_2": piece, "body_3": piece}))
         text = TextModel(config, service.model_call, transport=transport)
         await repair_article(text, article, issues, sources=[fakes.SOURCE])
-        request = transport.calls[0]["payload"]["messages"][1]["content"]
+        request = transport.calls[0]["payload"]["messages"][0]["content"]
         self.assertEqual(len(transport.calls), 1)
         self.assertIn("rút ngắn theo ngân sách từ VÀ thay một số lần nhắc NGUYÊN VĂN từ khóa chính", request)
         self.assertNotIn("giữ nguyên độ dài", request)
@@ -790,7 +779,7 @@ class MultiSectionRepairCallTests(unittest.IsolatedAsyncioTestCase):
         text = TextModel(config, service.model_call, transport=transport)
         result, repaired = await repair_article(text, article, [issue], sources=[fakes.SOURCE])
         self.assertEqual(len(transport.calls), 1)
-        request = transport.calls[0]["payload"]["messages"][1]["content"]
+        request = transport.calls[0]["payload"]["messages"][0]["content"]
         for number, (index, _direction, budget) in enumerate(targets):
             self.assertIn(f"Viết lại mục {index + 1} cho ngắn hơn, tối đa {budget} từ", request)
             self.assertEqual(result["sections"][index]["paragraphs"], shorter["paragraphs"])

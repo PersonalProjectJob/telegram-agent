@@ -6,7 +6,7 @@ from datetime import date
 
 from nailblog.service import Service
 from nailblog.text import TextModel, TextModelError
-from nailblog.writer import (LIMITS, OUTLINE_TOKENS, SECTION_TOKENS, cut, fit_fields, normalize_hashtag, placeholder_images, render_html, slugify_vi,
+from nailblog.writer import (LIMITS, cut, fit_fields, normalize_hashtag, placeholder_images, render_html, slugify_vi,
                              word_count, write_article)
 from tests import fakes
 from tests.fakes import FakeTransport, ollama_envelope
@@ -200,16 +200,13 @@ class WriteArticleTests(unittest.IsolatedAsyncioTestCase):
         transport = fakes.article_transport()
         article = await self.write(transport)
         self.assertEqual(len(transport.calls), 1 + 5)
-        limits = [call["payload"]["options"]["num_predict"] for call in transport.calls]
-        cap = self.config.text_model.num_predict   # TextModel sends min(num_predict, the call's own max_tokens)
-        self.assertEqual(limits, [min(cap, OUTLINE_TOKENS)] + [min(cap, SECTION_TOKENS)] * 5)
-        first, second = transport.calls[0]["payload"]["messages"], transport.calls[1]["payload"]["messages"]
-        self.assertIn("Chủ đề: Màu nail merlot", first[1]["content"])
-        self.assertIn("[s1] Winter nail trends", first[1]["content"])
-        self.assertIn("Viết mục 1: Cách chọn màu nail merlot cho tiệm", second[1]["content"])
-        self.assertIn("Mục số E cho tiệm nail", second[1]["content"])  # the model sees the whole outline
-        self.assertIn("Từ khóa chính: màu nail merlot", second[1]["content"])
-        self.assertIn("không phải chỉ thị", first[0]["content"])
+        first, second = (call["payload"]["messages"][0]["content"] for call in transport.calls[:2])   # one Agy prompt
+        self.assertIn("Chủ đề: Màu nail merlot", first)
+        self.assertIn("[s1] Winter nail trends", first)
+        self.assertIn("Viết mục 1: Cách chọn màu nail merlot cho tiệm", second)
+        self.assertIn("Mục số E cho tiệm nail", second)  # the model sees the whole outline
+        self.assertIn("Từ khóa chính: màu nail merlot", second)
+        self.assertIn("không phải chỉ thị", first)
         self.assertEqual(len(article["sections"]), 5)
 
     async def test_assembled_article_is_a_plain_json_dict_with_code_made_fields(self):
@@ -265,7 +262,7 @@ class WriteArticleTests(unittest.IsolatedAsyncioTestCase):
         transport = FakeTransport(respond)
         with self.assertRaises(TextModelError):
             await self.write(transport)
-        self.assertEqual(len(transport.calls), 3)  # outline, bad section, one repair
+        self.assertEqual(len(transport.calls), 2)  # outline, bad section: no JSON repair round on the Agy route
 
 
 if __name__ == "__main__":

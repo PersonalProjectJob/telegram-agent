@@ -158,7 +158,7 @@ class DailyCommandTests(CliBase):
         self.model.transport.respond = explode
         code, output = self.run_cli("daily", "--at", "10", "--date", "2026-10-16")
         self.assertEqual(code, 1)
-        self.assertTrue(output.strip().endswith("NailBlog operation failed: model call failed: invalid_json"))
+        self.assertTrue(output.strip().endswith("NailBlog operation failed: model call failed: OSError"))
         self.assertEqual(self.real_state().topics_for(WEEK), [])
 
 

@@ -232,6 +232,15 @@ class DurableTests(unittest.TestCase):
             self.store.claim_publish(other,(SLOT+timedelta(hours=13)).timestamp())
 
 
+def find_duplicates_on(site):
+    """The real contract of Admin.find_duplicates(title, slug, *, exclude_id=None): read-only, one dict per record of
+    the site whose title or slug matches, each {id, title, slug, status}. `site` is a live list of stored records."""
+    async def find_duplicates(title,slug,*,exclude_id=None):
+        return [{'id':r['id'],'title':title,'slug':slug,'status':r.get('status','Draft')}
+                for r in site if r['id']!=exclude_id]
+    return find_duplicates
+
+
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_failure_then_restart_recovers_once_without_recreating(self):
         with tempfile.TemporaryDirectory() as d:
@@ -242,12 +251,14 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 image['imageUrl']=image['imageUrl'].replace('/images/','/uploaded/')
             uploaded['translations'][0]['content']=uploaded['translations'][0]['content'].replace('/images/','/uploaded/')
             remote={**uploaded,'id':POST_ID}
+            site=[]   # what the site holds: the Create timed out but the Draft was stored
             async def uncertain_create(value,before_create,**kwargs):
                 before_create(uploaded)
+                site.append(remote)
                 raise TimeoutError()
             fake=SimpleNamespace(ready=AsyncMock(),guard=SimpleNamespace(),
                 save_draft=AsyncMock(side_effect=uncertain_create),upload=AsyncMock(),
-                find_drafts=AsyncMock(return_value=[remote]),read=AsyncMock(return_value=remote))
+                find_duplicates=AsyncMock(side_effect=find_duplicates_on(site)),read=AsyncMock(return_value=remote))
             context=AsyncMock();context.__aenter__.return_value=fake
             context.write_ready=lambda:None
             hashes=document()['image_hashes']
@@ -261,7 +272,11 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(restarted.state.get_post(n)['admin_id'],POST_ID)
                 await Service(c,state=State(c.db_path)).save_remote_draft(n,p,cover_path='missing',image_paths=[])
             fake.save_draft.assert_awaited_once();fake.upload.assert_not_awaited()
-            fake.find_drafts.assert_awaited_once_with(uploaded);fake.read.assert_awaited_once_with(POST_ID)
+            title=uploaded['translations'][0]['title']
+            self.assertEqual(len(fake.find_duplicates.await_args_list),2)   # pre-claim scan, then the one recovery scan
+            self.assertEqual(fake.find_duplicates.await_args_list[1].args[0],title)
+            # adoption reads the candidate once; the third call (admin id now recorded) only re-reads, never scans or posts
+            self.assertEqual([c.args for c in fake.read.await_args_list],[(POST_ID,)]*2)
 
     async def test_unresolved_create_recovery_never_uploads_or_creates_again(self):
         for count in (0,2):
@@ -270,15 +285,18 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 n=s.add_post(SLOT.isoformat(),draft=document());AdminStore(s,c).claim_create(n,p)
                 remote={**p,'id':POST_ID}
                 fake=SimpleNamespace(ready=AsyncMock(),guard=SimpleNamespace(),save_draft=AsyncMock(),
-                    upload=AsyncMock(),find_drafts=AsyncMock(return_value=[remote]*count),read=AsyncMock())
+                    upload=AsyncMock(),find_duplicates=AsyncMock(side_effect=find_duplicates_on([remote]*count)),
+                    read=AsyncMock())
                 context=AsyncMock();context.__aenter__.return_value=fake;context.write_ready=lambda:None
                 with patch('nailblog.admin.Admin',return_value=context), \
                         patch('nailblog.admin_images.validate_files') as validate:
+                    # S5: no candidate yet inside the reconcile window waits; two candidates need a human. Never a POST.
+                    wanted='create_unknown_reconciling' if count==0 else 'create_requires_manual_reconciliation'
                     for _ in range(2):
-                        with self.assertRaisesRegex(AdminError,'manual_reconciliation'):
+                        with self.assertRaisesRegex(AdminError,wanted):
                             await Service(c,state=State(c.db_path)).save_remote_draft(n,p,cover_path='missing',image_paths=[])
                 fake.save_draft.assert_not_awaited();fake.upload.assert_not_awaited();fake.read.assert_not_awaited()
-                validate.assert_not_called();self.assertEqual(fake.find_drafts.await_count,2)
+                validate.assert_not_called();self.assertEqual(fake.find_duplicates.await_count,2)
                 self.assertFalse(s.get_post(n)['admin_id'])
 
     async def test_preview_never_instantiates_admin(self):

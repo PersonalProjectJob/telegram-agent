@@ -304,6 +304,13 @@ def _override(art):
     return {'requires_override': True, 'issues': art.get('issues') or []}
 
 
+def _override_args(env, ctx, art):
+    """Only a run the gate held (fixable issues) hands the store what it needs to honour the Owner's override."""
+    if not art.get('requires_override'):
+        return {}
+    return {'approvals': env.approvals, 'images_snapshot': (ctx.get('images') or {}).get('snapshot')}
+
+
 async def _route(env, row, art):
     stage = ROUTE.get(art.get('phase'))
     if stage is None:
@@ -487,7 +494,7 @@ async def _draft_wait(env, row):
         if art['phase'] == 'draft_verified' and not (post and post['state'] == 'scheduled'):
             if env.now >= env.approve_ts(row):
                 return await env.finish(row, 'held', 'approval_deadline_passed')
-            env.onepost.approve(row['run_id'], snapshot)
+            env.onepost.approve(row['run_id'], snapshot, **_override_args(env, ctx, art))
         env.move(row, 'scheduled')
 
 

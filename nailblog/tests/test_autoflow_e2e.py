@@ -438,6 +438,38 @@ class OverrideTests(Base):
         self.assertTrue(all(issue['overridable'] and issue['kind'] == 'fixable' for issue in first['issues']))
         self.assertEqual(h.counts(), (0, 0))
 
+    async def test_a_held_article_needs_override_on_both_cards_then_publishes_with_one_create_and_one_patch(self):
+        h = self.harness(slots=('06:00',))
+        h.ask.plan[1] = 'cliche'
+        await h.until_stage('images_wait')
+        (image_id, _text), = h.cards('images')
+        self.assertTrue(h.approval(image_id)['requires_override'])
+        replies = await h.owner(f'/nailblog ok {image_id}')                      # a plain ok is refused by the real store
+        self.assertIn('override', ' '.join(replies))
+        self.assertEqual(h.approval(image_id)['status'], 'pending')
+        for _ in range(3):
+            await h.tick(60)
+        self.assertEqual((h.counts(), h.stages()), ((0, 0), ['images_wait']))
+        await h.owner(f'/nailblog ok {image_id} override ảnh ổn, chỉ lỗi văn phong')
+        self.assertEqual((h.approval(image_id)['status'], h.approval(image_id)['override']), ('approved', True))
+        await h.until_stage('draft_wait')
+        self.assertEqual(h.counts(), (1, 0))
+        (draft_id, _text), = h.cards('draft')
+        await h.owner(f'/nailblog ok {draft_id}')
+        self.assertEqual(h.approval(draft_id)['status'], 'pending')
+        await h.owner(f'/nailblog ok {draft_id} override Owner chấp nhận câu sáo rỗng')
+        await h.until_stage('scheduled')
+        post, = h.posts()
+        self.assertEqual(post['state'], 'scheduled')
+        evidence = json.loads(post['details'])['override']
+        self.assertEqual((evidence['by'], evidence['reason'], evidence['issues']),
+                         (OWNER, 'Owner chấp nhận câu sáo rỗng', ['cliche']))
+        h.now = slot_ts('06:00') + 60
+        await h.tick(0)
+        await h.tick(60)
+        self.assertEqual((h.stages(), h.counts()), (['published'], (1, 1)))
+        self.assertEqual([r['status'] for r in h.remote.records.values()], ['Published'])
+
     async def test_a_passing_article_asks_for_a_plain_ok(self):
         h = self.harness(slots=('06:00',))
         await h.until_stage('images_wait')

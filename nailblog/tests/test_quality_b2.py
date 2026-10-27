@@ -133,7 +133,7 @@ class DraftRepairTests(unittest.IsolatedAsyncioTestCase):
         long_seo = LONG_SEO
         too_long = self.reply(title_seo=long_seo)              # still over the 60 characters the schema allows
         draft, calls = await self.draft(too_long, outline_override={"title_seo": long_seo})
-        self.assertEqual(len(calls), 8)                        # the model layer's own single re-ask, then give up
+        self.assertEqual(len(calls), 7)                        # 6 writes + the one repair ask, which fails the schema: no re-ask
         self.assertEqual((draft.repaired, draft.result.verdict), ([], "fixable"))
         self.assertEqual(draft.article["title_seo"], long_seo)
 

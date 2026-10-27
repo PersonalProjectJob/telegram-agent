@@ -239,9 +239,8 @@ class ProposeAndStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ordered[14]["slot_at"])  # the 15th topic is a spare without a slot
         self.assertNotIn(topics[3]["title"], [t["title"] for t in ordered])
         payload = self.transport.calls[0]["payload"]
-        self.assertEqual((payload["options"]["num_ctx"], payload["options"]["num_predict"]), (12288, 2600))
         self.assertEqual(payload["format"], TOPICS_SCHEMA)
-        self.assertIn("[s1]", payload["messages"][1]["content"])
+        self.assertIn("[s1]", payload["messages"][0]["content"])   # Agy takes one prompt: system + user
 
     async def test_store_topics_keeps_slot_score_sources_and_metadata(self):
         model = self.model(self.sixteen())

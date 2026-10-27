@@ -2,6 +2,7 @@
 import json
 from datetime import datetime, timedelta
 
+from .approvals import NEVER_OVERRIDABLE
 from .publication import (AdminError, approval_fingerprint, binding, digest, document_matches,
                           instant, matches, snapshot)
 from .schedule import VN_TZ
@@ -104,7 +105,52 @@ class AdminStore:
             if row['state'] == 'writing':
                 self.state.transition(post_id, 'review', 'draft_verified', _db=db)
 
-    def approve(self, post_id, now):
+    @staticmethod
+    def _override_details(db, document, override):
+        """Evidence for a Draft that failed the gate but carries the Owner's override, else AdminError.
+
+        Needs, for BOTH kinds (images, draft): an `approved` row of exactly this run and snapshot with override=1,
+        a non-empty reason, every stored issue overridable and outside NEVER_OVERRIDABLE, and the current quality
+        issues all covered by those stored issues (nothing new). Any miss keeps the old refusal."""
+        refuse = AdminError('quality_pass_required')
+        if not isinstance(override, dict):
+            raise refuse
+        approvals, run_id = override.get('approvals'), override.get('run_id')
+        snapshots = {'images': override.get('images_snapshot'), 'draft': override.get('draft_snapshot')}
+        quality = document.get('quality') or {}
+        current = quality.get('issues')
+        if (approvals is None or not isinstance(run_id, str) or not run_id or quality.get('verdict') != 'fixable'
+                or not isinstance(current, list) or not current):
+            raise refuse
+        for issue in current:   # a hold, or a never-overridable code, can never ride an override
+            if not isinstance(issue, dict) or issue.get('kind') == 'hold' or issue.get('code') in NEVER_OVERRIDABLE:
+                raise refuse
+        by, reasons = None, {}
+        for kind, snapshot in snapshots.items():
+            if not approvals.is_approved(run_id, kind, snapshot):
+                raise refuse
+            row = db.execute("SELECT * FROM approval_requests WHERE run_id=? AND kind=? AND snapshot=? "
+                             "AND status='approved'", (run_id, kind, snapshot)).fetchone()
+            reason = ' '.join(str(row['reason'] or '').split()) if row else ''
+            if not row or row['override'] != 1 or not reason:
+                raise refuse
+            try:
+                stored = json.loads(row['issues'] or '[]')
+            except ValueError:
+                raise refuse from None
+            if (not isinstance(stored, list) or not stored or
+                    any(not isinstance(i, dict) or i.get('overridable') is not True or i.get('kind') == 'hold' or
+                        i.get('code') in NEVER_OVERRIDABLE for i in stored)):
+                raise refuse
+            if {i.get('code') for i in current} - {i.get('code') for i in stored}:
+                raise refuse
+            by, reasons[kind] = row['decided_by'], reason
+        return {'override': {'reason': reasons['draft'], 'by': by, 'run_id': run_id, 'reasons': reasons,
+                             'issues': sorted({i['code'] for i in current}), 'snapshots': snapshots}}
+
+    def approve(self, post_id, now, *, override=None):
+        """`override` (autoflow only): {'approvals': ApprovalStore, 'run_id', 'images_snapshot', 'draft_snapshot'}.
+        Without it a verdict other than `pass` is refused exactly as before."""
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             row = db.execute('SELECT * FROM posts WHERE id=?', (post_id,)).fetchone()
@@ -117,8 +163,9 @@ class AdminStore:
             verify_reviews(document, document.get('image_hashes', []),config=self.config)
             if not 4 <= len(document.get('image_hashes', [])) <= 6:
                 raise AdminError('image_review_required')
+            details = None
             if document.get('quality', {}).get('verdict') != 'pass':
-                raise AdminError('quality_pass_required')
+                details = self._override_details(db, document, override)   # verdict is never rewritten to pass
             immediate = immediate_approval(self.config, self.state, row, op, now, db)
             if immediate is None and datetime.fromtimestamp(now, VN_TZ) > instant(row['slot_at']) - timedelta(hours=self.config.schedule.approve_deadline_hours):
                 raise AdminError('approval_deadline_passed')
@@ -128,7 +175,7 @@ class AdminStore:
                 raise AdminError('approval_already_recorded')
             db.execute('UPDATE admin_operations SET approval=? WHERE post_id=?',
                        (immediate or approval_fingerprint(row, op, self.config), post_id))
-            self.state.transition(post_id, 'scheduled', 'owner_approved', _db=db)
+            self.state.transition(post_id, 'scheduled', 'owner_approved', details, _db=db)
 
     def claim_publish(self, post_id, now):
         with self.state.connection() as db:
