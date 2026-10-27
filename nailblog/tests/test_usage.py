@@ -8,7 +8,7 @@ from pathlib import Path
 from nailblog.config import BudgetConfig
 from nailblog.schedule import VN_TZ
 from nailblog.state import State
-from nailblog.usage import (BudgetExceeded, SUMMARY_NAME, UnpricedModel, UsageRecorder, day_bounds, image_cost,
+from nailblog.usage import (SUMMARY_NAME, UnpricedModel, UsageRecorder, day_bounds, image_cost,
                             text_cost)
 from tests.helpers import settings
 
@@ -50,7 +50,10 @@ class UsageTests(unittest.TestCase):
     def test_cost_tables(self):
         self.assertAlmostEqual(text_cost(PRICES, "deepseek", "deepseek-chat", 1_000_000, 500_000), 1.5)
         self.assertEqual(text_cost(PRICES, "ollama", "qwen3.5:9b", 10 ** 6, 10 ** 6), 0.0)
+        self.assertEqual(text_cost(PRICES, "agy", "gemini-3.1-pro", 10 ** 6, 10 ** 6), 0.0)   # Agy: unpriced, free of API bill
         self.assertAlmostEqual(image_cost(PRICES, "img", 4), 1.0)
+        self.assertEqual(image_cost(PRICES, "subscription", 4), 0.0)
+        self.assertEqual(image_cost(PRICES, "unpriced-model", 4, provider="subscription"), 0.0)
         with self.assertRaises(UnpricedModel):
             text_cost(PRICES, "deepseek", "mystery", 1, 1)
         with self.assertRaises(UnpricedModel):
@@ -73,23 +76,11 @@ class UsageTests(unittest.TestCase):
         self.clock.now = vn(date(2026, 10, 17), "21:00")
         self.assertAlmostEqual(self.usage.total_today(), 0.8)
 
-    def test_budget_exceeded_at_and_above_the_ceiling(self):
+    def test_check_is_a_no_op_because_no_api_budget_is_enforced_any_more(self):
         self.usage.check()
-        self.usage.record("gemini", "img", 3, 0.75)
+        self.usage.record("gemini", "img", 3, 5.0)   # far above budget.daily_usd; the old ledger is retired
         self.usage.check()
-        self.usage.record("gemini", "img", 1, 0.25)  # total exactly equals daily_usd
-        with self.assertRaises(BudgetExceeded):
-            self.usage.check()
-        self.usage.record("gemini", "img", 1, 5)
-        with self.assertRaises(BudgetExceeded):
-            self.usage.check()
-
-    def test_new_day_resets_the_ceiling(self):
-        self.usage.record("gemini", "img", 1, 2.0)
-        with self.assertRaises(BudgetExceeded):
-            self.usage.check()
-        self.clock.now = vn(date(2026, 10, 18), "00:00")
-        self.usage.check()
+        self.assertAlmostEqual(self.usage.total_today(), 5.0)
 
     def test_record_helpers_use_the_price_tables(self):
         self.assertAlmostEqual(self.usage.record_text("deepseek", "deepseek-chat", 1000, 500), 0.0015)

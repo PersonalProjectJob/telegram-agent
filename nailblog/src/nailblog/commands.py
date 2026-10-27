@@ -13,8 +13,7 @@ from datetime import date, datetime, timedelta
 
 from .config import CATEGORIES, DEFAULT_SLOTS, DailyConfig
 from .schedule import MODES, VN_TZ, iso_slot, parse_hhmm, slot_datetime
-from .paid import local_ledger_problem
-from .state import InvalidTransition, SlotTaken, State, _file_digest, startup_binding
+from .state import InvalidTransition, SlotTaken, _file_digest, startup_binding
 from .trends import format_views, parse_views
 from .usage import day_bounds
 
@@ -271,27 +270,6 @@ def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids,
     return [reply]
 
 
-async def _check_gemini(config):
-    """Key captured + ListModels for the configured models. Returns failed check codes."""
-    from .images import ImageError
-    from .images import provider as gemini
-    if config.image.provider != "gemini":
-        return []
-    try:
-        client = gemini.GeminiImages(config)
-        client.headers()
-    except Exception:
-        return ["gemini_key_missing"]
-    try:
-        await asyncio.to_thread(client.verify_models)
-    except ImageError as error:
-        code = str(error) if re.fullmatch(r"[a-z_]{3,40}", str(error)) else "image_error"
-        return ["gemini_models_unavailable:" + code]
-    except Exception as error:
-        return ["gemini_models_unavailable:" + type(error).__name__]
-    return []
-
-
 async def _check_admin(service):
     """Contract report verified + the admin session can open (read-only). Returns failed check codes."""
     from .admin import Admin
@@ -312,40 +290,22 @@ async def _check_admin(service):
     return failed
 
 
-def _check_budget(service):
-    from .paid import PaidLedger
-    from .usage import BudgetExceeded
-    try:
-        PaidLedger(service.state, service.config, service.clock).check()
-    except BudgetExceeded:
-        return ["budget_exhausted"]
-    except Exception:
-        return ["budget_unknown"]
-    return []
-
-
 async def preflight(service, *, config_path=None):
     """Failed check codes before arming; empty means safe to arm. Live mode checks the contract, the admin session
-    and the remaining budget; `autoflow.enabled` adds the Gemini key, ListModels and the category GUIDs."""
+    session; `autoflow.enabled` adds the Agy image queue and the category GUIDs."""
     config = service.config
     path = config_path if config_path is not None else os.environ.get("NAILBLOG_CONFIG", "")
     failed = []
     if not path or _file_digest(path) == "missing":
         failed.append("config_digest_missing")
-    if local_ledger_problem(service.state, config, service.clock):
-        failed.append("local_ledger_not_empty")   # same-day spend in the root's own DB would be forgotten
     if config.mode == "live":
         failed += await _check_admin(service)
-        failed += _check_budget(service)
     if config.autoflow.enabled:
-        if config.image.provider == 'subscription':
-            try:
-                from .images.subscription import SubscriptionImages
-                SubscriptionImages(config).verify_models()
-            except Exception:
-                failed.append('subscription_queue_unavailable')
-        else:
-            failed += await _check_gemini(config)
+        try:
+            from .images.subscription import SubscriptionImages
+            SubscriptionImages(config).verify_models()
+        except Exception:
+            failed.append('subscription_queue_unavailable')
         if not set(CATEGORIES) <= set(config.admin.category_ids):
             failed.append("category_ids_incomplete")
     return failed
@@ -456,12 +416,11 @@ def execute(state, name, args, *, now, config=None):
         return [_bounded([head] + rows)] if rows else [head + " chưa có run nào."]
     if name == "status":
         info = state.status()
-        shared = getattr(getattr(config, "budget", None), "ledger_db_path", "")
-        spent = (State(shared) if shared else state).usd_between(*day_bounds(now))   # the cap's ledger, not just this root
-        limit = getattr(getattr(config, "budget", None), "daily_usd", 3.0)
+        from .paid import report as legacy_report
+        legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))   # read-only snapshot
         posts = ", ".join(f"{k}={v}" for k, v in sorted(info["posts"].items())) or "không có bài"
         return [f"NailBlog: mode={getattr(config, 'mode', 'preview')}, paused={bool(info['paused'])}, "
-                f"ảnh={info['image_mode']}, bài: {posts}, chi phí hôm nay ${spent:.2f}/${limit:.2f}, "
+                f"ảnh={info['image_mode']}, bài: {posts}, Sổ API cũ: uncertain {legacy['uncertain_usd']:.6f} USD, "
                 f"kết quả cuối: {info['last_result']}"]
     return [USAGE]
 

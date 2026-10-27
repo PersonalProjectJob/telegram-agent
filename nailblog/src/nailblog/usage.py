@@ -40,7 +40,7 @@ def day_bounds(ts):
 
 
 def text_cost(budget, provider, model, tokens_in, tokens_out):
-    if provider == "ollama":
+    if provider in ("ollama", "agy"):   # local model / Agy subscription: no API bill
         return 0.0
     if model not in budget.text_prices:
         raise UnpricedModel("no text price for model")
@@ -48,7 +48,9 @@ def text_cost(budget, provider, model, tokens_in, tokens_out):
     return (max(0, tokens_in) * price_in + max(0, tokens_out) * price_out) / 1e6
 
 
-def image_cost(budget, model, count):
+def image_cost(budget, model, count, provider=None):
+    if "subscription" in (provider, model):   # Agy subscription route: no API bill
+        return 0.0
     if model not in budget.image_prices:
         raise UnpricedModel("no image price for model")
     return max(0, count) * budget.image_prices[model]
@@ -132,18 +134,19 @@ class UsageRecorder:
         self._lock = threading.Lock()
         self._last_write = None
 
-    def _shared(self):
-        """The shared paid-ledger State when `budget.ledger_db_path` is set (and is not this DB), else None."""
+    def _legacy_path(self):
+        """The retired API ledger when `budget.ledger_db_path` is set (and is not this DB), else ''."""
         shared = getattr(self.budget, "ledger_db_path", "")
-        if not shared or str(shared) == str(self.state.path):
-            return None
-        from .paid import _shared_state
-        return _shared_state(shared)
+        return "" if not shared or str(shared) == str(self.state.path) else str(shared)
+
+    def _legacy_rows(self, start, end):
+        """Usage rows of the retired ledger, read through a private snapshot (the ledger is never opened for write)."""
+        from .paid import usage_rows
+        return usage_rows(self._legacy_path(), start, end)
 
     def total_today(self):
-        shared = self._shared()
-        total = self.state.usd_between(*day_bounds(self.clock()))
-        return total + (shared.usd_between(*day_bounds(self.clock())) if shared is not None else 0.0)
+        start, end = day_bounds(self.clock())
+        return self.state.usd_between(start, end) + sum(row[4] for row in self._legacy_rows(start, end))
 
     def check(self):
         """Call before every paid request: refuse once today's total reaches the ceiling."""
@@ -173,9 +176,7 @@ class UsageRecorder:
             try:
                 start = day_bounds(now)[0] - (DAILY_DAYS - 1) * 86400
                 rows = self.state.usage_between(start, now + 1)
-                shared = self._shared()
-                if shared is not None:   # paid images/text are booked in the shared ledger, not in this root
-                    rows = sorted(rows + shared.usage_between(start, now + 1))
+                rows = sorted(rows + self._legacy_rows(start, now + 1))   # old API spend booked in the retired ledger
                 write_atomic(self.path, build_summary(rows, now,
                                                       image_models=frozenset(self.budget.image_prices) | frozenset(self.budget.image_output_prices)))
             except Exception as error:
