@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nailblog import env_secrets, gemini_text
 from nailblog._errors import ConfigError
-from nailblog.config import (CATEGORIES, DEFAULT_SLOT_CATEGORIES, AdminConfig, AutoflowConfig, BudgetConfig,
+from nailblog.config import (AGY_SLOT_CATEGORIES, CATEGORIES, DEFAULT_SLOT_CATEGORIES, AdminConfig, AutoflowConfig, BudgetConfig,
                              DailyConfig, ImageConfig, _is_secret_name, load_config)
 from tests.helpers import load
 
@@ -15,18 +15,17 @@ ROOT = Path(__file__).resolve().parents[2]
 GUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
 LIVE = {"mode": "live"}
 CONTRACT = 'verified = true\nverification_ref = "report-1"'
-IMAGE_ENV = 'provider = "gemini"\nmodel_body = "m-body"\nmodel_cover = "m-cover"\nreview_model = "m-review"\nkey_source = "env"'
-IMAGE_FILE = 'provider = "gemini"\nmodel_body = "m-body"\nmodel_cover = "m-cover"\nreview_model = "m-review"\nkey_file = "/etc/nailblog/k.json"'
+IMAGE_AGY = 'provider = "subscription"\ncandidates = 1\nmax_rounds = 1\nreview_bypass = true'
+SUBSCRIPTION = 'queue_dir = "/var/lib/nailblog-subscription/queue"\nprivate_dir = "/home/w/private"'
 IDS = "\n".join(f'{slug} = "{GUID}"' for slug in CATEGORIES)
 
 
 def live_sections(**extra):
-    """A complete live-gemini-env configuration; keyword args replace or add raw TOML tables."""
-    sections = {"contract": CONTRACT + '\nenvironment = "staging"', "image": IMAGE_ENV,   # S10a: staging + shared ledger
-                "budget": 'daily_usd = 3.0\nledger_db_path = "/var/lib/agentfleet/nailblog-ledger/ledger.sqlite3"',
-                "budget__image_unit_prices__m-cover": '"2K" = 0.134', "budget__image_unit_prices__m-body": '"1K" = 0.039',
+    """A complete live Agy autoflow configuration; keyword args replace or add raw TOML tables (None removes)."""
+    sections = {"contract": CONTRACT + '\nenvironment = "staging"', "image": IMAGE_AGY, "subscription": SUBSCRIPTION,
+                "budget": 'ledger_db_path = "/var/lib/agentfleet/nailblog-ledger/ledger.sqlite3"',
                 "admin": "daily_publish_limit = 2", "admin__category_ids": IDS,
-                "autoflow": 'enabled = true\nrun_usd = 1.0\nruns_dir = "/var/lib/agentfleet/nailblog/runs"'}
+                "autoflow": 'enabled = true\nruns_dir = "/var/lib/agentfleet/nailblog/runs"'}
     sections.update(extra)
     return {name: body for name, body in sections.items() if body is not None}
 
@@ -66,57 +65,27 @@ class DefaultsTests(ConfigCase):
             config = load_config(path)
         self.assertFalse(config.autoflow.enabled)
         self.assertEqual(config.image.key_source, "file")
-        self.assertEqual(config.daily.slot_categories, DEFAULT_SLOT_CATEGORIES)
+        self.assertEqual(config.daily.slot_categories, AGY_SLOT_CATEGORIES)
+        self.assertEqual(config.slots, tuple(AGY_SLOT_CATEGORIES))
 
-    def test_file_key_live_mode_still_needs_a_key_file(self):
-        self.invalid("live mode requires image models and image.key_file", LIVE, contract=CONTRACT,
-                     image='provider = "openai"\nmodel_body = "a"\nmodel_cover = "b"\nreview_model = "c"')
-
-    def test_env_key_live_mode_needs_no_key_file(self):
+    def test_live_agy_without_autoflow_loads(self):
         config = self.load(LIVE, **live_sections(autoflow=None, admin__category_ids=None))
-        self.assertEqual(config.image.key_source, "env")
-        self.assertEqual(config.image.key_file, "")
+        self.assertEqual((config.image.provider, config.text_model.provider), ("subscription", "agy"))
         self.assertFalse(config.autoflow.enabled)
 
-    def test_bad_key_source_is_rejected(self):
-        self.invalid("image.key_source must be file or env", image='key_source = "vault"')
+    def test_old_image_keys_are_removed_not_ignored(self):
+        self.invalid("^removed_key:image.key_source$", image='key_source = "env"')
+        self.invalid("^removed_key:image.key_file$", image='key_file = "/etc/nailblog/k.json"')
+        self.invalid("^removed_key:image.model_cover$", image='model_cover = "m"')
+        self.invalid("^removed_key:image.cover_size$", image='cover_size = "1K"')
 
-
-class ImageUnitPriceTests(ConfigCase):
-    def test_live_gemini_without_prices_loads_as_before(self):
-        config = self.load(LIVE, **live_sections(autoflow=None, admin__category_ids=None,
-                                                 budget="daily_usd = 3.0", **{"budget__image_unit_prices__m-cover": None,
-                                                                              "budget__image_unit_prices__m-body": None}))
-        self.assertEqual(config.budget.image_unit_prices, {})
-
-    def test_live_gemini_with_prices_loads_and_keeps_them(self):
-        config = self.load(LIVE, **live_sections(autoflow=None, admin__category_ids=None))
-        self.assertEqual(config.budget.image_unit_prices, {"m-cover": {"2K": 0.134}, "m-body": {"1K": 0.039}})
-
-    def test_autoflow_without_a_cover_price_fails_closed(self):
-        self.invalid("autoflow.enabled requires a 2K price for m-cover", LIVE,
-                     **live_sections(**{"budget__image_unit_prices__m-cover": None}))
-
-    def test_autoflow_without_the_body_size_price_fails_closed(self):
-        self.invalid("autoflow.enabled requires a 1K price for m-body", LIVE,
-                     **live_sections(**{"budget__image_unit_prices__m-body": '"2K" = 0.07'}))
-
-    def test_autoflow_price_must_match_the_configured_size(self):
-        self.invalid("autoflow.enabled requires a 1K price for m-cover", LIVE,
-                     **live_sections(image=IMAGE_ENV + '\ncover_size = "1K"'))
-
-    def test_a_4k_price_is_accepted(self):
-        config = self.load(budget__image_unit_prices__m='"4K" = 0.24')
-        self.assertEqual(config.budget.image_unit_prices, {"m": {"4K": 0.24}})
-
-    def test_preview_mode_does_not_need_prices(self):
-        self.assertEqual(self.load(image=IMAGE_ENV).budget.image_unit_prices, {})
-
-    def test_malformed_prices_are_rejected(self):
-        self.invalid("image_unit_prices.m must be a table", budget__image_unit_prices="m = 0.1")
-        self.invalid("image_unit_prices.m must be a table", budget__image_unit_prices__m='"8K" = 0.1')
-        self.invalid("image_unit_prices.m.1K must be a finite number", budget__image_unit_prices__m='"1K" = 0')
-        self.invalid("image_unit_prices.m.1K must be a finite number", budget__image_unit_prices__m='"1K" = "x"')
+    def test_old_budget_keys_and_cloudflare_are_removed_not_ignored(self):
+        self.invalid("^removed_key:budget.daily_usd$", budget="daily_usd = 3.0")
+        self.invalid("^removed_key:budget.image_unit_prices$", budget__image_unit_prices='m = 0.1')
+        self.invalid("^removed_key:budget.text_prices$", **{'budget__text_prices__m': "input_per_m = 1\noutput_per_m = 1"})
+        self.invalid("^removed_key:cloudflare$", cloudflare='account_id = ""')
+        self.assertEqual(self.load(budget='ledger_db_path = "/var/lib/agentfleet/l.sqlite3"').budget.ledger_db_path,
+                         "/var/lib/agentfleet/l.sqlite3")
 
 
 class AdminTests(ConfigCase):
@@ -141,14 +110,21 @@ class AdminTests(ConfigCase):
         self.invalid("admin.daily_publish_limit must be an integer in 1..2", admin="daily_publish_limit = 3")
         self.invalid("admin.daily_publish_limit must be an integer in 1..2", admin="daily_publish_limit = 0")
 
-    def test_three_slots_allow_three_but_never_four(self):
+    def test_three_slots_allow_three(self):
         slots = {"slots": ["06:00", "12:00", "19:00"]}
         groups = '"06:00" = ["hot-trend"]\n"12:00" = ["nail-job"]\n"19:00" = ["nail-salon", "did-you-know"]'
         self.assertEqual(self.load(slots, admin="daily_publish_limit = 3", daily__slot_categories=groups)
                          .admin.daily_publish_limit, 3)
-        slots = {"slots": ["06:00", "10:00", "12:00", "19:00"]}
-        groups = '"06:00" = ["hot-trend"]\n"10:00" = ["nail-job"]\n"12:00" = ["nail-salon"]\n"19:00" = ["did-you-know"]'
-        self.invalid("1..3", slots, admin="daily_publish_limit = 4", daily__slot_categories=groups)
+
+    def test_four_slots_allow_four_but_never_five(self):
+        four = {"slots": list(AGY_SLOT_CATEGORIES)}
+        self.assertEqual(self.load(four, admin="daily_publish_limit = 4").admin.daily_publish_limit, 4)
+        self.invalid("1..4", four, admin="daily_publish_limit = 5")
+        five = {"slots": ["06:00", "10:00", "12:00", "15:00", "19:00"]}
+        groups = "\n".join(f'"{slot}" = ["hot-trend"]' for slot in five["slots"])
+        self.invalid("1..4", five, admin="daily_publish_limit = 5", daily__slot_categories=groups)
+        self.assertEqual(self.load(five, admin="daily_publish_limit = 4", daily__slot_categories=groups)
+                         .admin.daily_publish_limit, 4)
 
 
 class DailyTests(ConfigCase):
@@ -166,6 +142,15 @@ class DailyTests(ConfigCase):
         for bad in ("[]", '["blog"]', '["hot-trend", "hot-trend"]', '"hot-trend"'):
             self.invalid("daily.slot_categories.06:00 must be", daily__slot_categories=base.format(bad))
 
+    def test_four_slots_without_the_table_get_the_new_groups(self):
+        config = self.load({"slots": ["19:00", "15:00", "10:00", "06:00"]})
+        self.assertEqual(config.daily.slot_categories, {
+            "06:00": ("hot-trend", "nail-job"), "10:00": ("did-you-know", "hot-trend"),
+            "15:00": ("nail-salon", "nail-job"), "19:00": ("nail-salon", "did-you-know")})
+
+    def test_two_old_slots_without_the_table_keep_the_old_groups(self):
+        self.assertEqual(self.load({"slots": ["06:00", "19:00"]}).daily.slot_categories, DEFAULT_SLOT_CATEGORIES)
+
     def test_custom_slots_without_the_table_keep_loading(self):
         self.assertEqual(self.load({"slots": ["07:00"]}).daily.slot_categories, {})
 
@@ -173,25 +158,30 @@ class DailyTests(ConfigCase):
 class AutoflowTests(ConfigCase):
     def test_a_complete_enabled_configuration_loads(self):
         config = self.load(LIVE, **live_sections())
-        self.assertEqual(config.autoflow, AutoflowConfig(True, 1.0, "/var/lib/agentfleet/nailblog/runs"))
+        self.assertEqual(config.autoflow, AutoflowConfig(True, 0.0, "/var/lib/agentfleet/nailblog/runs"))
 
     def test_each_requirement_fails_closed(self):
         self.invalid("autoflow.enabled requires service.mode = live", None, **live_sections())
-        self.invalid("requires image.provider = \"gemini\" and image.key_source = \"env\"", LIVE,
-                     **live_sections(image=IMAGE_FILE))
-        self.invalid("requires image.provider = \"gemini\" and image.key_source = \"env\"", LIVE,
-                     **live_sections(image=IMAGE_ENV.replace("gemini", "openai"), budget__image_unit_prices__m_cover=None))
         self.invalid("autoflow.enabled requires admin.category_ids for all of", LIVE,
                      **live_sections(admin__category_ids=IDS.splitlines()[0]))
         self.invalid("autoflow.enabled requires admin.category_ids for all of", LIVE, **live_sections(admin__category_ids=None))
-        self.invalid("autoflow.enabled requires autoflow.runs_dir", LIVE, **live_sections(autoflow="enabled = true\nrun_usd = 1.0"))
+        self.invalid("autoflow.enabled requires autoflow.runs_dir", LIVE, **live_sections(autoflow="enabled = true"))
+        self.invalid("autoflow.enabled requires budget.ledger_db_path", LIVE, **live_sections(budget=None))
+        self.invalid("budget.ledger_db_path must be an absolute path", LIVE,
+                     **live_sections(budget='ledger_db_path = "ledger.sqlite3"'))
+        self.invalid("subscription requires staging", LIVE, **live_sections(contract=CONTRACT))
+        self.invalid("autoflow.enabled requires admin.daily_publish_limit >= the number of service.slots", LIVE,
+                     **live_sections(admin="daily_publish_limit = 1"))
 
-    def test_run_usd_bounds(self):
-        for body in ("enabled = true\nrun_usd = 0\n", "enabled = true\nrun_usd = 3.5\n", "enabled = true\nrun_usd = -1\n"):
-            self.invalid("autoflow.run_usd", LIVE, **live_sections(autoflow=body + 'runs_dir = "/r"'))
-        self.invalid("autoflow.run_usd must be > 0", LIVE, **live_sections(autoflow='enabled = true\nruns_dir = "/r"'))
-        self.invalid("autoflow.run_usd must be > 0 and <= budget.daily_usd", autoflow="run_usd = 4.0")
-        self.assertEqual(self.load(LIVE, **live_sections(autoflow='enabled = true\nrun_usd = 3.0\nruns_dir = "/r"')).autoflow.run_usd, 3.0)
+    def test_run_usd_is_a_removed_key(self):
+        self.invalid("^removed_key:autoflow.run_usd$", LIVE, **live_sections(autoflow='enabled = true\nrun_usd = 1.0'))
+        self.invalid("^removed_key:autoflow.run_usd$", autoflow="run_usd = 4.0")
+
+    def test_four_slot_autoflow_needs_a_limit_of_four(self):
+        four = dict(LIVE, slots=list(AGY_SLOT_CATEGORIES))
+        self.invalid("admin.daily_publish_limit >= the number of service.slots", four, **live_sections())
+        config = self.load(four, **live_sections(admin="daily_publish_limit = 4"))
+        self.assertTrue(config.autoflow.enabled)
 
     def test_runs_dir_must_be_absolute(self):
         self.invalid("autoflow.runs_dir must be an absolute path", autoflow='runs_dir = "runs"')
@@ -214,15 +204,15 @@ class SchemaStrictnessTests(ConfigCase):
             self.invalid("secrets must live in a key file", **{section: line})
 
     def test_the_new_names_are_not_secret_names(self):
-        for name in ("key_source", "image_unit_prices", "category_ids", "publish_timeout_seconds", "slot_categories",
-                     "enabled", "run_usd", "runs_dir"):
+        for name in ("text_agent", "text_timeout_seconds", "create_timeout_seconds", "category_ids",
+                     "publish_timeout_seconds", "slot_categories", "enabled", "runs_dir"):
             self.assertFalse(_is_secret_name(name), name)
 
     def test_errors_never_carry_a_key_value(self):
         marker = "AIzaSy-test-marker-value"
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ConfigError) as caught:
-                load(directory, LIVE, **live_sections(image=IMAGE_ENV + f'\nkey_value = "{marker}"'))
+                load(directory, LIVE, **live_sections(image=IMAGE_AGY + f'\nkey_value = "{marker}"'))
         self.assertNotIn(marker, str(caught.exception))
 
 

@@ -10,7 +10,7 @@ db_path = "/var/lib/agentfleet/nailblog/nailblog.sqlite3"
 owner_username = "SotaThao"
 owner_ids = []                        # REQUIRED: exactly one numeric ID; loading fails until you fill it in.
 timezone = "Asia/Ho_Chi_Minh"
-slots = ["06:00", "19:00"]
+slots = ["06:00", "10:00", "15:00", "19:00"]   # Agy-only schedule: 4 slots/day
 late_window_minutes = 15
 
 [schedule]
@@ -21,36 +21,16 @@ window_end_hours = 3
 approve_deadline_hours = 2
 
 [text_model]
-provider = "ollama"                   # ollama | deepseek | gemini
-model = "qwen3.5:9b"
-url = "http://127.0.0.1:11434"        # Ollama must be on localhost.
-think = false                         # Must stay false.
-num_predict = 3000                    # Upper bound of output tokens per call (writer/planner pass smaller limits).
-timeout_seconds = 900                 # Per call; a CPU-only local model is slow, the writer calls it once per section.
-# key_file = "/etc/nailblog/private/model-key.json"   # Required for deepseek and gemini (scoped JSON, scope "gemini|https://generativelanguage.googleapis.com").
-# provider = "gemini" also needs model (for example a Flash model) and a price entry in [budget.text_prices] (0.0 on the free tier).
-section_thinking = "low"              # gemini only: thinking level of the section and repair calls; "" = provider default.
+provider = "agy"                      # only "agy" (subscription worker); removed keys (url, key_file, ...) are refused.
+model = "qwen3.5:9b"                  # label only; the Agy worker picks the real model.
+timeout_seconds = 900
 
 [image]
-provider = "gemini"                   # gemini | openai (reserved) | cloudflare (explicit Free-only CLI)
-model_body = ""                       # Pick from ListModels; required in live mode.
-model_cover = ""
-review_model = ""
-# key_file = "/etc/nailblog/private/image-key.json"   # Required in live mode when key_source = "file".
-key_source = "file"                   # file | env. env: the Gemini key is read once from the NAILBLOG_GEMINI_IMAGE_KEY service variable (never put here); live then needs no key_file.
-candidates = 2
+provider = "subscription"             # only "subscription" (Agy worker, no API key).
+candidates = 2                        # live mode needs candidates = 1 and max_rounds = 1.
 max_rounds = 2
-cover_size = "2K"
-body_size = "1K"
-input_ceiling = 4096
-output_ceiling = 2048                 # Entire cover candidate, INCLUDING image and thinking tokens.
-body_output_ceiling = 1536            # Entire body candidate. Truncation holds the reservation.
-review_input_ceiling = 16384
-review_output_ceiling = 1024
 timeout_seconds = 180
 review_bypass = false                 # TEMPORARY Owner decision: true skips the model image review (deterministic gates + both Owner approvals stay). See nailblog/AGENTS.md.
-# Local generation is ONLY explicit: images --article FILE --out DIR --run-id STABLE --run-usd APPROVED --paid-enabled.
-# This command does not upload/publish or enable preview/daily image calls. Reuse the SAME run-id on resume.
 
 [sources]
 # RSS/Atom feeds read by plan-week: https only, at most 30, at most 2 MB each. Add only feeds you have checked.
@@ -59,43 +39,8 @@ feeds = []
 timeout_seconds = 15
 
 [budget]
-daily_usd = 3.0
-# ledger_db_path = "/var/lib/agentfleet/nailblog/ledger/nailblog-ledger.sqlite3"  # absolute; ONE paid-spend ledger for every state root.
-# Required when [autoflow] is enabled. Every config that points at it must use the SAME daily_usd (the cap is read from the
-# config of the process that reserves). Unset = the ledger lives in service.db_path as before.
-# Prices are USD per 1M tokens (text) or USD per image. Ollama is free; every other model needs a price.
-# [budget.text_prices."deepseek-chat"]
-# input_per_m = 0.0
-# output_per_m = 0.0
-# [budget.image_prices]
-# "your-image-model" = 0.0
-# Real images require positive [budget.text_prices."configured-image-model"] input/output token rates,
-# positive reviewer text prices, and the conservative maximum USD/1M generation output rate below.
-# Every image/text/thinking output token is reserved at that maximum rate, not a rounded per-image estimate.
-# [budget.image_output_prices]
-# "configured-image-model" = 60.0      # Example ONLY: verify current provider pricing before enabling paid calls.
-# [autoflow] needs a per-image USD price for model_cover@cover_size and model_body@body_size (sizes 1K / 2K / 4K):
-# [budget.image_unit_prices."configured-image-model"]
-# "1K" = 0.0    # Example ONLY: replace with the verified provider price.
-# "2K" = 0.0
-
-[cloudflare]
-# Cloudflare image.model_cover/model_body must be "@cf/black-forest-labs/flux-2-klein-4b";
-# image.review_model must be "@cf/qwen/qwen3.8-27b"; same account-bound scoped key_file for both.
-# key JSON scope: cloudflare|https://api.cloudflare.com|ACCOUNT, key value outside Git only.
-account_id = ""
-# free_proof_file = "/etc/nailblog/private/cloudflare-free-proof.json"
-# quota_db_path = "/var/lib/agentfleet/nailblog-cloudflare-quota/neurons.sqlite3" # ONE shared path per account.
-daily_neurons = 10000.0
-review_input_allowance = 32768         # Estimated allocation, NOT a verified vision token count.
-# Optional local geometry aid (not an accepted final image): path and expected source SHA256 are required together.
-# reference_image_file = "/var/lib/agentfleet/nailblog/reference/single-ended-nail-stick.png"
-# reference_image_sha256 = "<64 lowercase hex characters>"
-# Adapter downsizes to <=510px, binds source/processed hashes, and adds 5.37 neurons per input-image tile.
-# images --article FILE --out DIR --run-id STABLE --free-enabled --run-neurons 9000
-# Fresh proof <=1h: account_id, plan="Workers Free", observed_at/expires_at epoch, utc_day,
-# baseline_neurons, exclusive_use=true, quota_db_path (exact shared path). No automatic plan upgrade.
-# UTC days; failed/uncertain reservations survive midnight. Workers Free server hard stop prevents paid overage.
+# The old API spend ledger is read-only history. Only its path is configured.
+# ledger_db_path = "/var/lib/agentfleet/nailblog/ledger/nailblog-ledger.sqlite3"  # absolute; required when [autoflow] is enabled.
 
 [contract]
 environment = "production"           # Phase 2 build/test: set staging AND use the staging origins below.
@@ -113,7 +58,8 @@ verification_ref = ""                 # Required with verified=true before live.
 # profile_path = "/var/lib/agentfleet/nailblog-staging/browser" # Separate from all production/service profiles.
 timeout_seconds = 30
 headless = true
-# daily_publish_limit = 1             # 1..number of service.slots, at most 3.
+# daily_publish_limit = 1             # 1..number of service.slots, at most 4.
+# create_timeout_seconds = 90         # 15..300, one admin create call.
 # publish_timeout_seconds = 300       # 60..900, per article.
 # [admin.category_ids]                # category slug -> GUID observed from the selected admin environment; all 4 are needed for [autoflow].
 # hot-trend = "00000000-0000-0000-0000-000000000000"
@@ -145,9 +91,11 @@ api_enabled = false                   # Official Google Trends API (alpha): not 
 propose_at = "10:00"                  # trend table + 4 candidates for tomorrow (2 per slot).
 pick_deadline = "13:00"               # /nailblog pick <06|19> <n> until here; then backlog or best candidate.
 preview_at = "20:00"                  # DM with tomorrow's articles to approve.
-# slot_categories: keys must equal service.slots. These are the defaults for slots 06:00 and 19:00.
+# slot_categories: keys must equal service.slots. These are the defaults for the four slots.
 # [daily.slot_categories]
 # "06:00" = ["hot-trend", "nail-job"]
+# "10:00" = ["did-you-know", "hot-trend"]
+# "15:00" = ["nail-salon", "nail-job"]
 # "19:00" = ["nail-salon", "did-you-know"]
 
 [links]
@@ -157,15 +105,15 @@ salon_sale = "https://nailhub.ai/"    # cta.target = salon_sale: see salons for 
 app = "https://nailhub.ai/"           # cta.target = app: get the app
 
 [autoflow]
-# Unattended daily flow. enabled = true needs service.mode = live, image.provider = "gemini", image.key_source = "env"
-# all four [admin.category_ids], contract.environment = "staging", budget.ledger_db_path, and
-# admin.daily_publish_limit >= the number of service.slots.
+# Unattended daily flow. enabled = true needs service.mode = live, image.provider = "subscription",
+# text_model.provider = "agy", all four [admin.category_ids], contract.environment = "staging",
+# an absolute budget.ledger_db_path, and admin.daily_publish_limit >= the number of service.slots.
 enabled = false
-# run_usd = 1.0                       # > 0 and <= budget.daily_usd; required when enabled.
 # runs_dir = "/var/lib/agentfleet/nailblog/runs"   # absolute; required when enabled.
+
 [subscription]
-# Used only when image.provider = "subscription" (staging + review_bypass + candidates/max_rounds = 1).
-# No API fallback or API key. Native CLI cover1376x768/body1200x675; no upscaling.
+# Agy CLI subscription worker for text AND images. No API fallback or API key.
+# Live mode needs staging + review_bypass + candidates/max_rounds = 1. Native CLI cover1376x768/body1200x675; no upscaling.
 executable = "/snap/bin/agy"
 version = "1.2.11"
 agent_model = "gemini-3.8-flash-medium"
@@ -175,5 +123,7 @@ private_dir = "/home/startechai/snap/antigravity-cli/common/nailblog-worker"
 worker_user = "startechai"
 producer_user = "tgnailblog"
 timeout_seconds = 240
-max_daily_jobs = 24
+text_agent = "nailblog-text-only"     # agent policy name used for text jobs
+text_timeout_seconds = 600            # 120..900, per text job
+max_daily_jobs = 48                   # 1..48
 max_images_per_run = 12               # <=6 positions + ONE explicit Owner rejection retry; never automatic retry

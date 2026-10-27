@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from nailblog._errors import ConfigError
-from nailblog.config import DEFAULT_ANCHORS, DEFAULT_CONTEXT, DEFAULT_KEYWORDS, DailyConfig, TrendsConfig, load_config
+from nailblog.config import AGY_SLOT_CATEGORIES, DEFAULT_ANCHORS, DEFAULT_CONTEXT, DEFAULT_KEYWORDS, DailyConfig, TrendsConfig, load_config
 from tests.helpers import OWNER, load
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,7 +104,10 @@ class DailyConfigTests(unittest.TestCase):
                             .replace("owner_ids = []", f"owner_ids = [{OWNER}]"), encoding="utf-8")
             config = load_config(path)
         self.assertEqual(config.trends, TrendsConfig())
-        self.assertEqual(config.daily, DailyConfig())
+        default = DailyConfig()
+        self.assertEqual((config.daily.propose_at, config.daily.pick_deadline, config.daily.preview_at),
+                         (default.propose_at, default.pick_deadline, default.preview_at))
+        self.assertEqual(config.daily.slot_categories, AGY_SLOT_CATEGORIES)   # the example ships the four Agy slots
 
 
 if __name__ == "__main__":

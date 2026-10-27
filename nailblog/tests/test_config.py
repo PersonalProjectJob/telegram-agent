@@ -3,12 +3,14 @@ import unittest
 from pathlib import Path
 
 from nailblog._errors import ConfigError
-from nailblog.config import NailBlogConfig, load_config
+from nailblog.config import AGY_SLOT_CATEGORIES, NailBlogConfig, load_config
 from tests.helpers import OWNER, load, write_config
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE_CONTRACT = 'verified = true\nverification_ref = "probe-2026-10-20"'
-LIVE_IMAGE = 'model_body = "b"\nmodel_cover = "c"\nreview_model = "r"\nkey_file = "/etc/nailblog/private/image-key.json"'
+LIVE_IMAGE = 'candidates = 1\nmax_rounds = 1\nreview_bypass = true'
+LIVE_SUBSCRIPTION = 'queue_dir = "/var/lib/nailblog-subscription/queue"\nprivate_dir = "/home/w/private"'
+LIVE_CONTRACT_STAGING = LIVE_CONTRACT + '\nenvironment = "staging"'
 
 
 class ConfigTests(unittest.TestCase):
@@ -24,39 +26,52 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((config.mode, config.owner_username, config.owner_ids), ("preview", "SotaThao", (OWNER,)))
         self.assertEqual((config.timezone, config.slots, config.late_window_minutes),
                          ("Asia/Ho_Chi_Minh", ("06:00", "19:00"), 15))
+        self.assertEqual((config.image.provider, config.text_model.provider), ("subscription", "agy"))
+        self.assertEqual((config.subscription.text_agent, config.subscription.text_timeout_seconds,
+                          config.subscription.max_daily_jobs, config.admin.create_timeout_seconds),
+                         ("nailblog-text-only", 600, 48, 90))
         self.assertEqual((config.schedule.window_start_hours, config.schedule.window_end_hours,
                           config.schedule.approve_deadline_hours), (24, 3, 2))
         self.assertEqual((config.text_model.provider, config.text_model.model, config.text_model.think),
-                         ("ollama", "qwen3.5:9b", False))
+                         ("agy", "qwen3.5:9b", False))
         self.assertEqual((config.image.candidates, config.image.max_rounds, config.budget.daily_usd), (2, 2, 3.0))
         self.assertIs(config.image.review_bypass, False)
         self.assertEqual((config.contract.api_origin, config.contract.site_origin, config.contract.verified),
                          ("https://api.nailhub.ai", "https://nailhub.ai", False))
 
-    def test_full_config_parses_prices_and_deepseek(self):
+    def test_full_agy_config_parses(self):
         with tempfile.TemporaryDirectory() as directory:
             config = load(directory, None,
-                          text_model='provider = "deepseek"\nmodel = "deepseek-chat"\nkey_file = "/etc/nailblog/private/model-key.json"',
-                          image='provider = "openai"\n' + LIVE_IMAGE + "\ncandidates = 3\nmax_rounds = 1",
-                          budget='daily_usd = 1.5\n[budget.image_prices]\n"c" = 0.04',
-                          **{'budget.text_prices."deepseek-chat"': "input_per_m = 0.27\noutput_per_m = 1.1"},
-                          console='revision = "abc"')
-        self.assertEqual((config.text_model.provider, config.image.provider, config.image.candidates), ("deepseek", "openai", 3))
-        self.assertEqual(config.budget.text_prices, {"deepseek-chat": (0.27, 1.1)})
-        self.assertEqual((config.budget.image_prices, config.budget.daily_usd, config.console_revision), ({"c": 0.04}, 1.5, "abc"))
+                          text_model='provider = "agy"\nmodel = "m"\ntimeout_seconds = 300',
+                          image='provider = "subscription"\ncandidates = 3\nmax_rounds = 1',
+                          budget='ledger_db_path = "/var/lib/agentfleet/nailblog/ledger.sqlite3"',
+                          subscription='text_agent = "my-agent"\ntext_timeout_seconds = 120\nmax_daily_jobs = 10',
+                          admin='create_timeout_seconds = 300', console='revision = "abc"')
+        self.assertEqual((config.text_model.provider, config.text_model.model, config.text_model.timeout_seconds),
+                         ("agy", "m", 300))
+        self.assertEqual((config.image.provider, config.image.candidates), ("subscription", 3))
+        self.assertEqual(config.budget.ledger_db_path, "/var/lib/agentfleet/nailblog/ledger.sqlite3")
+        self.assertEqual((config.subscription.text_agent, config.subscription.text_timeout_seconds,
+                          config.subscription.max_daily_jobs, config.admin.create_timeout_seconds, config.console_revision),
+                         ("my-agent", 120, 10, 300, "abc"))
 
     def test_live_requires_verified_contract_and_reference(self):
-        self.invalid("live mode needs", {"mode": "live"}, image=LIVE_IMAGE)
-        self.invalid("live mode needs", {"mode": "live"}, image=LIVE_IMAGE, contract="verified = true")
-        self.invalid("live mode needs", {"mode": "live"}, image=LIVE_IMAGE,
-                     contract='verified = true\nverification_ref = "  "')
-        self.invalid("live mode needs", {"mode": "live"}, image=LIVE_IMAGE,
-                     contract='verified = false\nverification_ref = "x"')
+        live = dict(image=LIVE_IMAGE, subscription=LIVE_SUBSCRIPTION)
+        self.invalid("live mode needs", {"mode": "live"}, **live)
+        self.invalid("live mode needs", {"mode": "live"}, contract="verified = true", **live)
+        self.invalid("live mode needs", {"mode": "live"}, contract='verified = true\nverification_ref = "  "', **live)
+        self.invalid("live mode needs", {"mode": "live"}, contract='verified = false\nverification_ref = "x"', **live)
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(load(directory, {"mode": "live"}, image=LIVE_IMAGE, contract=LIVE_CONTRACT).mode, "live")
+            self.assertEqual(load(directory, {"mode": "live"}, contract=LIVE_CONTRACT_STAGING, **live).mode, "live")
 
-    def test_live_requires_image_models_and_key_file(self):
-        self.invalid("requires image models", {"mode": "live"}, contract=LIVE_CONTRACT)
+    def test_live_subscription_gates(self):
+        self.invalid("requires staging and the existing Owner review_bypass", {"mode": "live"},
+                     contract=LIVE_CONTRACT, image=LIVE_IMAGE, subscription=LIVE_SUBSCRIPTION)
+        self.invalid("requires staging and the existing Owner review_bypass", {"mode": "live"},
+                     contract=LIVE_CONTRACT_STAGING, image="candidates = 1\nmax_rounds = 1", subscription=LIVE_SUBSCRIPTION)
+        self.invalid("requires queue_dir and private_dir", {"mode": "live"}, contract=LIVE_CONTRACT_STAGING, image=LIVE_IMAGE)
+        self.invalid("candidates = 1 and max_rounds = 1", {"mode": "live"}, contract=LIVE_CONTRACT_STAGING,
+                     image="review_bypass = true", subscription=LIVE_SUBSCRIPTION)
 
     def test_mode_must_be_preview_or_live(self):
         self.invalid("service.mode", {"mode": "dry"})
@@ -65,8 +80,8 @@ class ConfigTests(unittest.TestCase):
         self.invalid("service.db_path must be an absolute", {"db_path": "relative/db.sqlite3"})
         self.invalid("service.db_path must be a non-empty", {"db_path": None})
         self.invalid("telegram.session must be an absolute", telegram='session = "nailblog.session"')
-        self.invalid("text_model.key_file must be an absolute", text_model='key_file = "model-key.json"')
-        self.invalid("image.key_file must be an absolute", image='key_file = "image-key.json"')
+        self.invalid("budget.ledger_db_path must be an absolute", budget='ledger_db_path = "ledger.sqlite3"')
+        self.invalid("subscription.queue_dir must be an absolute", subscription='queue_dir = "queue"')
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ConfigError, "absolute TOML path"):
                 load_config("relative.toml")
@@ -115,33 +130,62 @@ class ConfigTests(unittest.TestCase):
             for mode in ("fixed", "random", "adaptive"):
                 self.assertEqual(load(directory, None, schedule=f'image_mode = "{mode}"').schedule.image_mode, mode)
 
-    def test_text_model_is_local_first_and_no_thinking(self):
-        self.invalid("text_model.provider", text_model='provider = "openai"')
-        self.invalid("text_model.think", text_model="think = true")
-        self.invalid("text_model.think", text_model='think = "false"')
-        for url in ("https://127.0.0.1:11434", "http://example.com:11434", "http://user@127.0.0.1:11434",
-                    "http://127.0.0.1:11434/api"):
-            with self.subTest(url=url):
-                self.invalid("localhost Ollama", text_model=f'url = "{url}"')
+    def test_text_model_provider_is_agy_only(self):
+        for provider in ("ollama", "deepseek", "gemini", "openai"):
+            with self.subTest(provider=provider):
+                self.invalid("text_model.provider must be agy", text_model=f'provider = "{provider}"')
         self.invalid("text_model.model", text_model='model = ""')
-        self.invalid("model is required for deepseek", text_model='provider = "deepseek"\nkey_file = "/k.json"')
-        self.invalid("key_file is required for deepseek", text_model='provider = "deepseek"\nmodel = "m"')
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(load(directory, None, text_model='provider = "agy"').text_model.provider, "agy")
 
     def test_image_validation(self):
-        self.invalid("image.provider", image='provider = "stability"')
+        for provider in ("gemini", "openai", "cloudflare", "stability"):
+            with self.subTest(provider=provider):
+                self.invalid("image.provider must be subscription", image=f'provider = "{provider}"')
         self.invalid("image.candidates", image="candidates = 0")
         self.invalid("image.review_bypass", image='review_bypass = "yes"')
         self.invalid("image.candidates", image="candidates = 9")
         self.invalid("image.max_rounds", image="max_rounds = 0")
-        self.invalid("image.model_body", image="model_body = 7")
 
-    def test_budget_validation(self):
-        self.invalid("budget.daily_usd", budget="daily_usd = -1")
-        self.invalid("budget.daily_usd", budget='daily_usd = "3"')
-        self.invalid("budget.daily_usd", budget="daily_usd = nan")
-        self.invalid("needs input_per_m and output_per_m", **{'budget.text_prices."m"': "input_per_m = 1"})
-        self.invalid("input_per_m", **{'budget.text_prices."m"': 'input_per_m = -1\noutput_per_m = 1'})
-        self.invalid("budget.image_prices", budget="[budget.image_prices]\nm = true")
+    def test_removed_keys_and_tables_fail_with_their_path(self):
+        removed = {
+            "text_model": ("url", "key_file", "num_predict", "think", "section_thinking"),
+            "image": ("key_file", "key_source", "model_body", "model_cover", "review_model", "input_ceiling",
+                      "output_ceiling", "body_output_ceiling", "review_input_ceiling", "review_output_ceiling",
+                      "cover_size", "body_size"),
+            "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices", "image_unit_prices"),
+            "autoflow": ("run_usd",)}
+        for section, names in removed.items():
+            for name in names:
+                with self.subTest(key=f"{section}.{name}"):
+                    self.invalid(f"^removed_key:{section}[.]{name}$", **{section: f"{name} = 1"})
+        self.invalid("^removed_key:cloudflare$", cloudflare='account_id = ""')
+        self.invalid("^removed_key:cloudflare$", cloudflare="")
+
+    def test_subscription_text_keys_bounds(self):
+        for body in ("text_timeout_seconds = 119", "text_timeout_seconds = 901", 'text_timeout_seconds = "600"',
+                     "max_daily_jobs = 49", "max_daily_jobs = 0"):
+            with self.subTest(body=body):
+                self.invalid("subscription[.]", subscription=body)
+        self.invalid("subscription.text_agent must be a non-empty string", subscription='text_agent = ""')
+        with tempfile.TemporaryDirectory() as directory:
+            for value in (120, 900):
+                config = load(directory, None, subscription=f"text_timeout_seconds = {value}")
+                self.assertEqual(config.subscription.text_timeout_seconds, value)
+
+    def test_admin_create_timeout_bounds(self):
+        for body in ("14", "301", '"90"', "true"):
+            with self.subTest(body=body):
+                self.invalid("admin.create_timeout_seconds must be an integer in 15..300",
+                             admin=f"create_timeout_seconds = {body}")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(load(directory, None, admin="create_timeout_seconds = 15").admin.create_timeout_seconds, 15)
+
+    def test_budget_keeps_only_the_ledger_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = load(directory, None, budget='ledger_db_path = "/var/lib/agentfleet/nailblog/ledger.sqlite3"')
+        self.assertEqual(config.budget.ledger_db_path, "/var/lib/agentfleet/nailblog/ledger.sqlite3")
+        self.invalid("budget.surprise: unknown configuration key", budget="surprise = 1")
 
     def test_contract_origins_are_pinned(self):
         for origin in ("https://evil.example", "http://api.nailhub.ai", "https://api.nailhub.ai/v1",
@@ -154,6 +198,7 @@ class ConfigTests(unittest.TestCase):
     def test_secrets_in_toml_are_refused_wherever_they_appear(self):
         self.invalid("never in TOML", text_model='key = "sk-123"')
         self.invalid("never in TOML", image='api_key = "abc"')
+        self.invalid("never in TOML", subscription='agy_token = "abc"')
         self.invalid("never in TOML", budget='token = "abc"')
         self.invalid("never in TOML", {"password": "pw"})
         self.invalid("never in TOML", x='nested = { secret = "s" }')
@@ -168,7 +213,15 @@ class ConfigTests(unittest.TestCase):
                 load_config(path)
             path.write_text(text.replace("owner_ids = []", f"owner_ids = [{OWNER}]"), encoding="utf-8")
             config = load_config(path)
-        self.assertEqual((config.mode, config.owner_ids, config.slots), ("preview", (OWNER,), ("06:00", "19:00")))
+        self.assertEqual((config.mode, config.owner_ids, config.slots),
+                         ("preview", (OWNER,), ("06:00", "10:00", "15:00", "19:00")))
+        self.assertEqual((config.text_model.provider, config.image.provider), ("agy", "subscription"))
+        self.assertEqual((config.subscription.text_agent, config.subscription.text_timeout_seconds,
+                          config.subscription.max_daily_jobs), ("nailblog-text-only", 600, 48))
+        self.assertEqual(config.daily.slot_categories, AGY_SLOT_CATEGORIES)
+        active = "".join(line for line in text.splitlines(True) if not line.lstrip().startswith("#"))
+        for removed in ("cloudflare", "daily_usd", "run_usd", "key_source", "model_body"):
+            self.assertNotIn(removed, active)
         self.assertIn("review_bypass = false", text)
         self.assertIs(config.image.review_bypass, False)
 
