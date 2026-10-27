@@ -22,7 +22,6 @@ from nailblog.publication import AdminError
 from nailblog.schedule import iso_slot
 from nailblog.state import State
 from nailblog.telegram import OwnerMediaSendError
-from nailblog.usage import BudgetExceeded
 from tests.helpers import OWNER, settings
 
 VN = timezone(timedelta(hours=7))
@@ -53,8 +52,8 @@ class FakeOnePost:
     def args(self, name):
         return [call[1] for call in self.calls if call[0] == name]
 
-    async def prepare(self, run_id, topic_id, out, *, paid_enabled=False, ceiling=None, before_dispatch=None):
-        self.calls.append(('prepare', (run_id, topic_id, out), {'paid_enabled': paid_enabled, 'ceiling': ceiling,
+    async def prepare(self, run_id, topic_id, out, *, before_dispatch=None):
+        self.calls.append(('prepare', (run_id, topic_id, out), {
                                                                'before_dispatch': before_dispatch}))
         if self.on_prepare:
             self.on_prepare()
@@ -335,7 +334,8 @@ class HappyPathTests(Base):
         row = await fx.tick(restart=restart)
         self.assertEqual((row['stage'], op.n('prepare')), ('images_send', 1))
         call = op.calls[0]
-        self.assertEqual((call[2]['paid_enabled'], call[2]['ceiling'], callable(call[2]['before_dispatch'])), (True, 0.5, True))
+        self.assertEqual(sorted(call[2]), ['before_dispatch'])        # no paid/ceiling arguments any more
+        self.assertTrue(callable(call[2]['before_dispatch']))
         row = await fx.tick(restart=restart)
         self.assertEqual(row['stage'], 'images_wait')
         self.assertEqual(len(fx.media), 1)
@@ -346,7 +346,6 @@ class HappyPathTests(Base):
         self.assertIn(f"/nailblog ok {request['id']}", card)
         self.assertIn(f"/nailblog reject {request['id']} <lý do>", card)
         self.assertIn('Slot: ' + slot_text(3, 6), card)
-        self.assertIn('Chi phí ảnh đã chi (quyết toán): 0.00 USD; còn lại hôm nay: 3.00 USD', card)   # S10a m3: ledger, not run_usd
         self.assertIn('ảnh chưa qua model chấm (bypass)', card)
         self.assertEqual(json.loads(fx.approvals.get(request['id'])['message_ids']), [1010, 1011, 1012, 1013])
         stored = request['snapshot']
@@ -517,27 +516,38 @@ class DraftRejectTests(Base):
                          (0, 1, 0, 1, 0))
 
 
-class BudgetTests(Base):
-    async def test_budget_waits_for_vietnam_midnight_with_one_dm_per_day(self):
+class ReconcilingTests(Base):
+    async def test_create_unknown_reconciling_waits_without_counting_a_failure(self):
         fx = self.fixture()
-        fx.onepost.prepare_error = BudgetExceeded('daily')
+        fx.onepost.prepare_error = AdminError('create_unknown_reconciling')
         row = await fx.tick()
-        self.assertEqual((row['stage'], row['failures'], row['next_attempt_at']), ('new', 0, at(3, 0)))
-        await fx.tick(at(2, 14))
-        await fx.tick(at(2, 23, 59))
-        self.assertEqual((fx.onepost.n('prepare'), len(fx.dms)), (1, 1))
-        self.assertIn('ngân sách', fx.dms[0])
+        self.assertEqual((row['stage'], row['failures'], row['next_attempt_at']), ('new', 0, fx.now + 300))
+        for _ in range(3):                         # passes inside the 300 s wait: no second attempt, no hold, no DM
+            await fx.tick()
+        self.assertEqual((fx.onepost.n('prepare'), fx.row()['stage'], len(fx.dms)), (1, 'new', 0))
         fx.onepost.prepare_error = None
-        row = await fx.tick(at(3, 0, 5))
-        self.assertEqual((fx.onepost.n('prepare'), row['stage'], len(fx.dms)), (2, 'images_send', 1))
+        fx.now += 400
+        row = await fx.tick()
+        self.assertEqual((fx.onepost.n('prepare'), row['stage']), (2, 'images_send'))
 
-    async def test_two_runs_over_budget_share_one_dm_and_next_day_gets_another(self):
-        fx = self.fixture(topics=((3, 6, 'hot-trend'), (3, 19, 'nail-salon')))
-        fx.onepost.prepare_error = BudgetExceeded('daily')
-        await fx.tick(at(2, 20))
-        self.assertEqual((fx.onepost.n('prepare'), len(fx.dms)), (2, 1))
-        await fx.tick(at(3, 0, 5))
-        self.assertEqual((fx.onepost.n('prepare'), len([d for d in fx.dms if 'ngân sách' in d])), (4, 2))
+    async def test_new_hold_codes_hold_once_with_one_dm(self):
+        for code in ('text_quality_held', 'text_unknown', 'duplicate_on_site', 'unknown_onepost_run'):
+            with self.subTest(code):
+                fx = self.fixture()
+                fx.onepost.prepare_error = AdminError(code)
+                await fx.tick()
+                await fx.ticks(4)
+                row = fx.row()
+                self.assertEqual((row['stage'], row['terminal_reason'], fx.onepost.n('prepare'), len(fx.dms)), ('held', code, 1, 1))
+
+    async def test_transient_text_codes_back_off_and_keep_trying(self):
+        for code in ('text_daily_cap', 'text_not_ready', 'duplicate_scan_incomplete'):
+            with self.subTest(code):
+                fx = self.fixture()
+                fx.onepost.prepare_error = AdminError(code)
+                row = await fx.tick()
+                self.assertEqual((row['stage'], row['failures']), ('new', 1))
+                self.assertGreater(row['next_attempt_at'], fx.now)
 
 
 class ErrorTests(Base):
@@ -623,9 +633,8 @@ class ReconciliationCodeTests(Base):
 
     def test_every_reconciliation_code_in_the_package_is_a_hold(self):
         found = self.package_codes()
-        self.assertIn('existing_intent_requires_reconciliation', found)
         self.assertIn('create_outcome_uncertain', found)
-        self.assertIn('text_requires_manual_reconciliation', found)
+        self.assertIn('create_requires_manual_reconciliation', found)
         missed = sorted(code for code in found if not autoflow.is_hold_code(code))
         self.assertEqual(missed, [], f'reconciliation codes that autoflow would retry: {missed}')
 

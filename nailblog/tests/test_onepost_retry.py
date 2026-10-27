@@ -3,8 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from nailblog.admin_images import validate_files
 from nailblog.config import PRODUCTION_MEDIA_ORIGIN, ContractConfig
@@ -14,6 +13,7 @@ from nailblog.images.post import crop, webp
 from nailblog.onepost import OnePost
 from nailblog.publication import AdminError, digest
 from nailblog.service import Service
+from tests import fakes
 from tests.fakes import make_article
 from tests.helpers import settings
 from tests.test_real_images import fixture_image
@@ -31,10 +31,10 @@ class FakePipeline:
         self.config = config
         return self
 
-    async def run(self, article, out, run_id, ceiling, *, paid_enabled=False, free_enabled=False, **_kw):
+    async def run(self, article, out, run_id, ceiling=None, *, subscription_enabled=False, **_kw):
         generation = len(self.runs)
         self.runs.append({'out': out, 'run_id': run_id, 'ceiling': ceiling,
-                          'paid_enabled': paid_enabled, 'free_enabled': free_enabled})
+                          'subscription_enabled': subscription_enabled})
         if generation >= self.generations:
             raise ImageError('no_untried_candidates')
         out.mkdir(parents=True, exist_ok=True)
@@ -77,14 +77,14 @@ class RetryBase(unittest.IsolatedAsyncioTestCase):
                                                   '2026-10-25T19:00+07:00', state='approved')
         self.workflow = OnePost(self.service)
         self.article = make_article()
-        self.service.draft = AsyncMock(return_value=SimpleNamespace(article=self.article))
         self.pipeline = FakePipeline()
         patcher = patch('nailblog.onepost.ImagePipeline', self.pipeline)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     async def prepare(self, **extra):
-        return await self.workflow.prepare('one', self.topic, self.root/'out', paid_enabled=True, ceiling=150, **extra)
+        extra.setdefault('article', self.article)    # text is not under test here: an injected article skips the Agy jobs
+        return await self.workflow.prepare('one', self.topic, self.root/'out', **extra)
 
 
 class RetryImagesTests(RetryBase):
@@ -97,8 +97,8 @@ class RetryImagesTests(RetryBase):
         self.assertTrue(set(second['image_hashes']).isdisjoint(first['image_hashes']))
         self.assertEqual(self.pipeline.runs[0].pop('out'), self.pipeline.runs[1].pop('out'))
         self.assertEqual(self.pipeline.runs[0], self.pipeline.runs[1])
-        self.assertEqual(self.pipeline.runs[1], {'run_id': 'one-images', 'ceiling': 150,
-                                                 'paid_enabled': True, 'free_enabled': False})
+        self.assertEqual(self.pipeline.runs[1], {'run_id': 'one-images', 'ceiling': None,
+                                                 'subscription_enabled': True})
         self.assertEqual([(r[1], r[2]) for r in self.pipeline.rejections],
                          list(zip(['cover', 'body-1', 'body-2', 'body-3'], first['image_hashes'])))
         self.assertTrue(all(r[3] == 'cover looks wrong' for r in self.pipeline.rejections))
@@ -159,47 +159,43 @@ class MarkPublishedTests(RetryBase):
 
 
 class BeforeDispatchTests(RetryBase):
-    def draft_through_hook(self):
-        """Mirror text.py: a hook failure becomes DispatchPaused before the transport is used."""
-        calls = []
+    """The hook is consulted before EVERY Agy `ask`; a stop leaves the run resumable in `text_jobs`."""
 
-        async def draft(topic, model, **_kw):
-            try:
-                model.before_dispatch()
-            except Exception:
-                raise DispatchPaused('workflow_paused_before_dispatch') from None
-            calls.append(1)
-            return SimpleNamespace(article=self.article)
-        self.service.draft = AsyncMock(side_effect=draft)
-        return calls
+    def setUp(self):
+        super().setUp()
+        from tests.test_writer_agy import reply
+        self.asks = []
+
+        def ask(prompt, schema, *, purpose, deadline=None):
+            self.asks.append(purpose)
+            return reply()
+        self.ask = ask
+        with self.service.state.connection() as db:
+            db.execute('UPDATE topics SET sources_json=? WHERE id=?',
+                       (json.dumps({'sources': [fakes.SOURCE], 'product_promo': False}), self.topic))
 
     async def test_false_before_first_text_dispatch_pauses_and_resume_works(self):
-        calls = self.draft_through_hook()
-        with self.assertRaises(DispatchPaused):
-            await self.prepare(before_dispatch=lambda: False)
-        self.assertEqual(calls, [])
-        run = self.workflow.read('one')
-        self.assertEqual(run['phase'], 'text_paused')
-        self.assertFalse(json.loads(run['document']).get('text_dispatches'))
-        resumed = await self.prepare(before_dispatch=lambda: True)
+        with self.assertRaisesRegex(AdminError, 'dispatch_stopped'):
+            await self.prepare(article=None, text=self.ask, before_dispatch=lambda: False)
+        self.assertEqual(self.asks, [])
+        self.assertEqual(self.workflow.read('one')['phase'], 'text_jobs')
+        resumed = await self.prepare(article=None, text=self.ask, before_dispatch=lambda: True)
         self.assertEqual(resumed['phase'], 'images_ready')
-        self.assertEqual(calls, [1])
+        self.assertEqual(self.asks, ['nailblog-write'])
+        self.assertEqual(resumed['text_dispatches'], 1)
 
     async def test_raising_hook_pauses_like_false(self):
-        calls = self.draft_through_hook()
-
         def boom():
             raise RuntimeError('stop requested')
         with self.assertRaises(DispatchPaused):
-            await self.prepare(before_dispatch=boom)
-        self.assertEqual(calls, [])
-        self.assertEqual(self.workflow.read('one')['phase'], 'text_paused')
+            await self.prepare(article=None, text=self.ask, before_dispatch=boom)
+        self.assertEqual(self.asks, [])
+        self.assertEqual(self.workflow.read('one')['phase'], 'text_jobs')
 
     async def test_default_none_keeps_behaviour(self):
-        calls = self.draft_through_hook()
-        result = await self.prepare()
+        result = await self.prepare(article=None, text=self.ask)
         self.assertEqual(result['phase'], 'images_ready')
-        self.assertEqual(calls, [1])
+        self.assertEqual(self.asks, ['nailblog-write'])
 
 
 if __name__ == '__main__':

@@ -272,7 +272,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_finished_native_dimensions_receipts_cache_no_paid_intents_and_source_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
             c,pipeline,calls=await self.make(directory); out=Path(directory)/'out'
-            with patch('nailblog.images.pipeline.PaidLedger',side_effect=AssertionError('no API ledger')):
+            with patch('nailblog.paid.PaidLedger',side_effect=AssertionError('no API ledger')):
                 document=await pipeline.run(article(),out,'run',None,subscription_enabled=True)
             self.assertEqual(len(calls),4)
             self.assertEqual(decode(Path(document['cover_path']).read_bytes()).size,(1376,768))

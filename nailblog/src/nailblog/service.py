@@ -25,10 +25,10 @@ from .quality import gate
 from .schedule import VN_TZ, is_due_for_publish
 from .sources import SourceError, fetch_feeds, fetch_posts
 from .state import State, startup_binding
-from .text import TextModel, TextModelError
-from .usage import UsageRecorder, text_cost, write_atomic
+from .text import TextModelError
+from .usage import UsageRecorder, write_atomic
 from .writer import (annotate_repair_outcome, build_jsonld, editorial_repair_issues, rebalance_paragraphs, han_fields, hold_unexpected_han, placeholder_images, render_html,
-                     repair_article, trim_list_items, word_count, write_article)
+                     repair_article, trim_list_items, word_count, write_agy, write_article)
 
 LOG = logging.getLogger(__name__)
 TICK_SECONDS = 60
@@ -36,6 +36,7 @@ CACHE_NAME = "blog-cache.json"
 OCCUPYING_STATES = ("writing", "review", "scheduled", "before_publish", "published", "uncertain")
 WEEK_DAYS = 7   # a weekly plan needs WEEK_DAYS x (configured slots per day) topics
 READBACK_BACKOFF_SECONDS = 300
+RECONCILE_WINDOW_SECONDS = 30 * 60   # an unknown Create is reconciled read-only for this long, then a human takes over
 READBACK_BACKOFF_MAX_SECONDS = 3600
 REFUSAL_TEXT = {
     'daily_publish_limit': 'đã đủ số bài được đăng trong ngày (daily_publish_limit), bài này không được đăng.',
@@ -90,22 +91,6 @@ async def wait_for_stop(stop, seconds):
     return stop.is_set()
 
 
-class _Meter:
-    """Token counts reported by ai_transport.complete through its `usage_sink` hook."""
-
-    def __init__(self):
-        self.calls = self.prompt = self.completion = 0
-        self.uncertain = False
-
-    def add(self, usage):
-        if usage.get('_uncertain'):
-            self.uncertain = True
-            return
-        self.calls += 1
-        self.prompt += int(usage.get("prompt_tokens", 0))
-        self.completion += int(usage.get("completion_tokens", 0))
-
-
 class Service:
     def __init__(self, config, *, state=None, clock=time.time, config_path=None):
         self.config = config
@@ -123,7 +108,7 @@ class Service:
         self._announced = set()
         self._bad_rows = set()
         self.opener = None       # injected by tests; None means the real network openers
-        self.text = None         # injected by tests; None means a TextModel on this service's model_call
+        self.text = None         # injected by tests; None means AgyText(config).ask
         self.job_failures = {}   # (day, step) -> (failures, retry not before)
         self.refresh_trends = True  # False: a CLI run for a past day (--date) must not fetch today's real trends
         self._jobs = None
@@ -165,14 +150,15 @@ class Service:
         return [row["id"] for row in due]
 
     async def model_call(self, function, *args, stop=None, provider=None, model=None, before_dispatch=None):
-        """Every model call yields to triage through the shared lock.
+        """Run a blocking `function` in a thread.
 
-        With `provider`/`model` the call is accounted: a paid provider (anything but ollama) is refused when the
-        daily budget is spent or the model has no price, BEFORE the request; usage is recorded AFTER it, even when
-        the call failed. `function` then receives a keyword `usage_sink` (as ai_transport.complete does)."""
-        paid = provider is not None and provider != "ollama"
-        meter = _Meter() if provider is not None else None
+        provider None: yields to triage through the shared lock as a background job (non-text callers).
+        provider "agy": the Agy worker takes the shared lock itself, so the bot never holds MODEL_LOCK here, touches
+        no ledger and records no cost. Any other provider is refused: no paid text route exists any more."""
         from .images.pipeline import DispatchPaused
+        if provider not in (None, "agy"):
+            raise RuntimeError("paid_text_removed")
+
         def check_dispatch():
             if before_dispatch is not None:
                 try:
@@ -180,51 +166,21 @@ class Service:
                 except Exception:
                     raise DispatchPaused('workflow_paused_before_dispatch') from None
         check_dispatch()
-        cancelled_before_dispatch = False
-        if paid:
-            self.usage.check()
-            text_cost(self.config.budget, provider, model, 0, 0)  # unpriced model: refuse before spending
-            from .paid import PaidLedger
-            from uuid import uuid4
-            ledger = PaidLedger(self.state, self.config, self.clock)
-            intent = 'text-' + uuid4().hex
-            # Transport limits input to 128 KiB. Gemini can make two attempts,
-            # each with at most 32768 output/thinking tokens.
-            attempts = 2 if provider == 'gemini' else 1
-            bound = text_cost(self.config.budget, provider, model, attempts * 128 * 1024, attempts * 32768)
-            ledger.reserve(intent, provider, model, bound)
 
         def run():
+            if provider == "agy":
+                check_dispatch()
+                return function(*args)
             with MODEL_LOCK.enter(background=True, stop=stop):
                 check_dispatch()
-                return function(*args, usage_sink=meter.add) if meter is not None else function(*args)
+                return function(*args)
         # Cancelling to_thread does not stop the call; finish it before releasing resources.
         task = asyncio.create_task(asyncio.to_thread(run))
         try:
-            try:
-                return await asyncio.shield(task)
-            except asyncio.CancelledError:
-                await task
-                raise
-        except DispatchPaused as error:
-            if paid and not error.dispatched:
-                from .paid import cancel_pending_before_dispatch
-                cancel_pending_before_dispatch(ledger.state,'paid_intents',intent,self.clock)
-                cancelled_before_dispatch = True
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
             raise
-        finally:
-            if meter is not None and (paid or meter.calls):
-                usd = text_cost(self.config.budget, provider, model, meter.prompt, meter.completion)
-                if paid and cancelled_before_dispatch:
-                    self.usage.publish()
-                elif paid:
-                    if meter.calls and not meter.uncertain and meter.prompt + meter.completion > 0:
-                        ledger.settle(intent, meter.prompt + meter.completion, usd)
-                    else:
-                        ledger.uncertain(intent)
-                    self.usage.publish()
-                else:
-                    self.usage.record(provider, model, meter.prompt + meter.completion, usd)
 
     async def notify(self):
         if self.notice_send is None:
@@ -241,6 +197,11 @@ class Service:
                 return await self._save_remote_draft(post_id, payload, cover_path=cover_path, image_paths=image_paths)
 
     async def _save_remote_draft(self, post_id, payload, *, cover_path, image_paths):
+        """Create one Draft. Order: validate -> read-only duplicate scan -> durable Create claim -> the single POST.
+
+        After an unknown Create outcome (a claimed operation without an admin id, or `create_timeout`) the only thing
+        allowed is a read-only reconciliation by `find_duplicates`: adopt exactly one Draft candidate, wait while the
+        operation is younger than RECONCILE_WINDOW_SECONDS, else hand over to a human. Never a second POST."""
         from .admin import Admin
         from .admin_state import AdminStore
         from .publication import AdminError
@@ -251,36 +212,64 @@ class Service:
         browser.write_ready()
         store = AdminStore(self.state, self.config)
         op = store.operation(post_id)
+        row = self.state.get_post(post_id)
+        if not row:
+            raise AdminError('draft_state_invalid')
+        title = payload['translations'][0]['title']
+        slug = str(json.loads(row['draft_json'] or '{}').get('slug', ''))
         if op is None:
-            row = self.state.get_post(post_id)
-            if not row:
-                raise AdminError('draft_state_invalid')
             if han_fields(payload) or han_fields(json.loads(row['draft_json'])):
                 raise AdminError('unexpected_han_requires_review')
             store.check_write(post_id)
             hashes = validate_files(cover_path, image_paths, config=self.config)
-            verify_reviews(json.loads(row['draft_json']), hashes,config=self.config)
-            store.claim_create(post_id, payload)
+            verify_reviews(json.loads(row['draft_json']), hashes, config=self.config)
         async with browser as admin:
             await admin.ready()
             if op:
                 # A create intent survives an unknown outcome. Never issue another POST.
-                row = self.state.get_post(post_id)
                 if row['admin_id']:
                     actual = await admin.read(row['admin_id'])
                     store.record_draft(post_id, actual)
                     return actual
-                candidates = await admin.find_drafts(json.loads(op['payload']))
-                if len(candidates) != 1:
-                    raise AdminError('create_requires_manual_reconciliation')
-                store.record_draft(post_id, candidates[0])
-                return candidates[0]
+                return await self._reconcile_create(admin, store, post_id, title, slug)
+            if await admin.find_duplicates(title, slug):
+                raise AdminError('duplicate_on_site')          # nothing claimed, nothing posted
+            store.claim_create(post_id, payload)
+            self._note_create_claim(post_id)
             admin.guard.check_action = lambda: store.check_write(post_id)
             admin.file_hashes = dict(zip([str(Path(p).resolve()) for p in [cover_path, *image_paths]], hashes))
-            actual = await admin.save_draft(payload, lambda value: store.materialized(post_id, value),
-                                            cover_path=cover_path, image_paths=image_paths)
+            try:
+                actual = await admin.save_draft(payload, lambda value: store.materialized(post_id, value),
+                                                cover_path=cover_path, image_paths=image_paths)
+            except AdminError as error:
+                if str(error) == 'create_timeout':             # the POST hung: outcome unknown, reconcile read-only
+                    raise AdminError('create_unknown_reconciling') from None
+                raise
             store.record_draft(post_id, actual)
             return actual
+
+    def _note_create_claim(self, post_id):
+        """First moment this process knows a Create was claimed for `post_id` (INSERT OR IGNORE keeps the earliest)."""
+        with self.state.connection() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS create_reconcile(post_id INTEGER PRIMARY KEY, claimed_at REAL NOT NULL)')
+            db.execute('INSERT OR IGNORE INTO create_reconcile VALUES(?,?)', (post_id, self.clock()))
+
+    def _create_age(self, post_id):
+        self._note_create_claim(post_id)   # a claim from before this table existed starts its window now
+        with self.state.connection() as db:
+            claimed = db.execute('SELECT claimed_at FROM create_reconcile WHERE post_id=?', (post_id,)).fetchone()[0]
+        return self.clock() - claimed
+
+    async def _reconcile_create(self, admin, store, post_id, title, slug):
+        from .publication import AdminError
+        candidates = await admin.find_duplicates(title, slug)
+        if len(candidates) == 1 and candidates[0].get('status') == 'Draft':
+            actual = await admin.read(candidates[0]['id'])
+            store.record_draft(post_id, actual)
+            return actual
+        if candidates or self._create_age(post_id) > RECONCILE_WINDOW_SECONDS:
+            raise AdminError('create_requires_manual_reconciliation')
+        raise AdminError('create_unknown_reconciling')
 
     def recover_interrupted_publish(self):
         """After a restart a leftover `before_publish` becomes `uncertain` (read-only readback follows), but only
@@ -424,7 +413,8 @@ class Service:
             raise
         except Exception as error:
             # Never log raw Playwright/API error text: it may include request contents.
-            timed_out = isinstance(error, TimeoutError) and limit is not None and limit.expired()
+            timed_out = ((isinstance(error, TimeoutError) and limit is not None and limit.expired())
+                         or (isinstance(error, AdminError) and str(error) == 'readback_timeout'))
             if timed_out:
                 reason = 'publish_interrupted' if stop is not None and stop.is_set() else 'publish_readback_timeout'
                 self._note_timeout(row['id'], self.clock())
@@ -437,7 +427,45 @@ class Service:
             return False
 
     def text_model(self, stop=None):
-        return self.text or TextModel(self.config, self.model_call, stop=stop)
+        """The Agy `ask(prompt, schema, *, purpose, deadline=None)` (sync, blocking; call it via asyncio.to_thread).
+
+        A bare callable on purpose: `daily._planner_reply` takes the Agy branch only for a callable WITHOUT an `ask`
+        attribute. `service.text` (tests) replaces it."""
+        if self.text is not None:
+            return self.text
+        from .agy_text import AgyText
+        agy = AgyText(self.config)
+
+        def ask(prompt, schema, *, purpose, deadline=None):
+            self._count_agy_ask()
+            return agy.ask(prompt, schema, purpose=purpose, deadline=deadline)
+        return ask
+
+    def _agy_day(self):
+        return datetime.fromtimestamp(self.clock(), VN_TZ).date().isoformat()
+
+    def _count_agy_ask(self):
+        """One more `ask` sent today (Vietnam day), kept in the bot DB: the worker's own count is not readable here."""
+        with self.state.connection() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS agy_asks(day TEXT PRIMARY KEY, n INTEGER NOT NULL)')
+            db.execute('INSERT INTO agy_asks VALUES(?,1) ON CONFLICT(day) DO UPDATE SET n=n+1', (self._agy_day(),))
+
+    def agy_jobs_today(self):
+        """Number of Agy `ask` calls sent today (Vietnam day) through `text_model()`; a re-attach after a restart counts again."""
+        with self.state.connection() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS agy_asks(day TEXT PRIMARY KEY, n INTEGER NOT NULL)')
+            row = db.execute('SELECT n FROM agy_asks WHERE day=?', (self._agy_day(),)).fetchone()
+        return row[0] if row else 0
+
+    async def _deliver_outbox(self):
+        """Retry the text outbox every tick (S6 `notices.deliver_pending(state, send, now)`); absent before S6 lands."""
+        from . import notices
+        deliver = getattr(notices, 'deliver_pending', None)
+        if deliver is None or self.notice_send is None:
+            return
+        result = deliver(self.state, self.notice_send, self.clock())
+        if asyncio.iscoroutine(result):
+            await result
 
     def _start_jobs(self, stop):
         """Trend poll and daily steps run in their own task so a long article never delays the minute tick.
@@ -460,6 +488,7 @@ class Service:
                         await self.publish_pass(stop=stop)
                     self.usage.prune()
                     await self.notify()
+                    await self._deliver_outbox()
                     self._start_jobs(stop)
                 except Exception as error:
                     LOG.warning("NailBlog scheduler pass failed exception=%s", type(error).__name__)
@@ -611,6 +640,22 @@ class Service:
         article = annotate_repair_outcome(article, result)
         article = {**article, "jsonld": build_jsonld(article, self.config.contract.site_origin, topic["slot_at"])}
         return Draft(article, content, images, ungrounded, result, word_count(article), repaired)
+
+    async def write_agy_draft(self, ask, topic, *, posts, today):
+        """One article through `writer.write_agy` (at most two `ask` calls). Runs in a worker thread: no
+        `browser_lock` and no `MODEL_LOCK` are held while the Agy worker runs. Errors of `ask` propagate."""
+        sources, promo, _scores = topic_meta(topic)
+        try:
+            metadata = json.loads(topic.get('sources_json', '{}'))
+        except (TypeError, ValueError):
+            metadata = {}
+        hints = {key: metadata[key] for key in ('primary_keyword', 'secondary_keywords')
+                 if isinstance(metadata, dict) and key in metadata}
+        request = {"title": topic["title"], "category": topic["category"], "product_promo": promo,
+                   "slot_at": topic["slot_at"], **hints}
+        context = {"sources": sources, "today": today, "posts": list(posts), "related_posts": list(posts),
+                   "others": self._occupied_slots()}
+        return await asyncio.to_thread(write_agy, ask, request, context, self.config)
 
     @staticmethod
     def document(draft, topic):

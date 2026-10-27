@@ -9,7 +9,6 @@ import html
 import hashlib
 import os
 import tempfile
-from functools import partial
 from datetime import datetime
 from pathlib import Path
 
@@ -21,7 +20,7 @@ from .images import ImageError
 from .publication import AdminError, binding, digest, row_fingerprint
 from .quality import gate
 from .schedule import VN_TZ
-from .usage import BudgetExceeded, write_atomic
+from .usage import write_atomic
 from .writer import han_fields, hold_unexpected_han, placeholder_images, render_html, word_count
 
 
@@ -74,15 +73,16 @@ class OnePost:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def retain_article(self, run_id, article, result, sources, directory, *, slot_at, repaired=()):
+    def retain_article(self, run_id, article, result, sources, directory, *, slot_at, repaired=(), override=False,
+                       extra=None):
         """Commit completed text before filesystem work or a terminal quality error."""
         current = json.loads(self.read(run_id)['document'])
         saved = {**current, 'article': article, 'quality': result.as_dict(), 'slot_at': slot_at,
                  'facts': {'ungrounded': facts.check(article, sources)}, 'words': word_count(article),
                  'source_material': sources,
                  'repaired': list(repaired), 'writer_audit': list(article.get('writer_audit', [])),
-                 'artifact_status': 'pending'}
-        phase = 'text_ready' if result.ok else 'held'
+                 'artifact_status': 'pending', **(extra or {})}
+        phase = 'text_ready' if (result.ok or override) else 'held'
         self.store(run_id, phase, saved)
         try:
             if directory.is_symlink() or any(parent.is_symlink() for parent in directory.parents):
@@ -194,8 +194,65 @@ class OnePost:
                 raise AdminError('complete_reviewed_image_provenance_required')
         return digest(manifest)
 
+    async def text_jobs(self, run_id, topic, text, posts, today, before_dispatch):
+        """The Agy text job(s) of one run: `write_agy` (at most 2 `ask` calls) in a worker thread.
+
+        `unknown` (no native output) allows exactly ONE new job: the purpose that ended unknown gets a `#retry1`
+        suffix, durably recorded BEFORE the new dispatch; a second `unknown` holds the run (`text_unknown`).
+        `daily_cap`/`not_ready` and the other codes keep the purpose and surface as transient errors."""
+        from .agy_text import AgyTextError
+        from .images.pipeline import DispatchPaused
+        from .text import TextModelError
+        ask = text if text is not None else self.service.text_model()
+        if not callable(ask) or hasattr(ask, 'ask'):
+            raise AdminError('text_ask_required')
+
+        def gate_dispatch():
+            self.active()
+            if before_dispatch is None:
+                return
+            try:
+                stopped = before_dispatch() is False
+            except Exception:
+                raise DispatchPaused('workflow_paused_before_dispatch') from None
+            if stopped:
+                raise AdminError('dispatch_stopped')
+        gate_dispatch()
+        while True:
+            retries = dict(json.loads(self.read(run_id)['document']).get('text_retry', {}))
+            last = []
+
+            def asker(prompt, schema, *, purpose, deadline=None, _retries=retries, _last=last):
+                gate_dispatch()
+                _last[:] = [purpose]
+                suffix = '#retry' + str(_retries[purpose]) if _retries.get(purpose) else ''
+                return ask(prompt, schema, purpose=purpose + suffix, deadline=deadline)
+            try:
+                return await self.service.write_agy_draft(asker, topic, posts=posts, today=today)
+            except AgyTextError as error:
+                if error.code == 'unknown':
+                    if retries or not last:
+                        self.store_progress(run_id, 'held', text_unknown=True)
+                        raise AdminError('text_unknown') from None
+                    self.store_progress(run_id, 'text_jobs', text_retry={last[0]: 1})
+                    continue
+                if error.code == 'held':
+                    raise AdminError('text_held_by_worker') from None
+                raise AdminError('text_' + error.code) from None
+            except TextModelError as error:
+                raise AdminError(str(getattr(error, 'code', '') or 'text_model_error')) from None
+
+    def store_progress(self, run_id, phase, **fields):
+        document = json.loads(self.read(run_id)['document'])
+        for name, value in fields.items():
+            document[name] = {**document.get(name, {}), **value} if isinstance(value, dict) else value
+        self.store(run_id, phase, document)
+
     async def prepare(self, run_id, topic_id, out, *, text=None, article=None, images_document=None,
-                      free_enabled=False, paid_enabled=False, ceiling=None, before_dispatch=None, subscription_enabled=False):
+                      before_dispatch=None, subscription_enabled=True):
+        """Text job(s) -> gate -> images. `text` is the Agy `ask(prompt, schema, *, purpose, deadline=None)` (sync);
+        default `service.text_model()`. A run held by the gate with only overridable issues still gets its images and
+        carries `requires_override` for the Owner cards; any other hold stops before images."""
         self.active()
         if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 160:
             raise AdminError('invalid_run_id')
@@ -216,8 +273,7 @@ class OnePost:
         identity = digest({'environment': binding(self.config), 'topic': topic, 'out': str(directory.resolve()),
                            'article': article, 'image_input': str(image_input) if image_input else None,
                            'image_document_digest': digest(image_data) if image_data else None,
-                           'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling,
-                           **({'subscription_enabled': True} if subscription_enabled else {})})
+                           'subscription_enabled': bool(subscription_enabled)})
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT * FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
@@ -235,58 +291,39 @@ class OnePost:
                 if db.execute('SELECT 1 FROM posts WHERE topic_id=?', (topic_id,)).fetchone():
                     raise AdminError('topic_already_has_post')
                 db.execute('INSERT INTO onepost_runs(run_id,binding,phase,document) VALUES(?,?,?,?)',
-                           (run_id, identity, 'text_pending', json.dumps({'topic_id':topic_id,'out':str(directory.resolve())})))
-            elif current['phase'] == 'text_pending':
-                raise AdminError('text_requires_manual_reconciliation')
-            elif current['phase'] == 'text_paused':
-                db.execute('UPDATE onepost_runs SET phase=? WHERE run_id=?', ('text_pending',run_id))
+                           (run_id, identity, 'text_jobs', json.dumps({'topic_id':topic_id,'out':str(directory.resolve())})))
+            elif current['phase'] in ('text_pending', 'text_paused'):
+                # Agy jobs are keyed by (purpose, prompt): re-entering reattaches to the same job, never dispatches twice.
+                db.execute('UPDATE onepost_runs SET phase=? WHERE run_id=?', ('text_jobs',run_id))
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         current = self.read(run_id)
         saved = json.loads(current['document'])
         if saved.get('article') and han_fields(saved['article']):
             raise AdminError('unexpected_han_requires_reconciliation')
-        if current['phase'] == 'text_pending':
+        if current['phase'] == 'text_jobs':
             draft = None
             today = datetime.fromtimestamp(self.service.clock(), VN_TZ).date()
-            if article is None:
-                from .text import TextModel
-                from .images.pipeline import DispatchPaused
-                def dispatch_gate():
-                    # `before_dispatch` (e.g. a stop event) joins the pause check; False or a raise stops like a pause.
-                    self.active()
-                    if before_dispatch is not None and before_dispatch() is False:
-                        raise AdminError('dispatch_stopped')
-                def text_dispatch():
-                    dispatch_gate()
-                    with self.state.connection() as db:
-                        db.execute('BEGIN IMMEDIATE')
-                        row = db.execute('SELECT document FROM onepost_runs WHERE run_id=?',(run_id,)).fetchone()
-                        progress = json.loads(row['document'])
-                        progress['text_dispatches'] = progress.get('text_dispatches',0)+1
-                        db.execute('UPDATE onepost_runs SET document=? WHERE run_id=?',(json.dumps(progress),run_id))
-                model = text or TextModel(self.config, partial(self.service.model_call, before_dispatch=dispatch_gate),
-                                           before_dispatch=text_dispatch)
-                try:
-                    draft = await self.service.draft(topic, model, posts=cache['posts'], today=today)
-                except (DispatchPaused, BudgetExceeded):
-                    progress = json.loads(self.read(run_id)['document'])
-                    # Retrying the whole writer is safe ONLY when no transport
-                    # has started (a budget refusal comes before the dispatch hook).
-                    # Partial articles retain reconciliation state.
-                    if not progress.get('text_dispatches'):
-                        self.store(run_id,'text_paused',progress)
-                    raise
-                article = draft.article
             sources = json.loads(topic['sources_json'])
             sources = sources.get('sources', []) if isinstance(sources, dict) else sources
-            result = gate(article, category=topic['category'], existing_slugs=[p.get('slug') for p in cache['posts']],
-                          posts=cache['posts'], today=today, ungrounded=facts.check(article, sources),
-                          site_origin=self.config.contract.site_origin)
-            result = hold_unexpected_han(article, result)
-            saved = self.retain_article(run_id, article, result, sources, directory,
-                                        slot_at=topic['slot_at'], repaired=getattr(draft, 'repaired', ()))
-            if not result.ok:
-                raise AdminError('quality_pass_required')
+            if article is None:
+                draft = await self.text_jobs(run_id, topic, text, cache['posts'], today, before_dispatch)
+                article, result = draft.article, draft.result
+                overridable = draft.held and draft.can_override
+                extra = {'text_dispatches': draft.asks}
+                if overridable:
+                    extra.update(requires_override=True, override_issues=draft.issues)
+                elif draft.held:
+                    extra.update(text_issues=draft.issues)
+            else:
+                result = gate(article, category=topic['category'], existing_slugs=[p.get('slug') for p in cache['posts']],
+                              posts=cache['posts'], today=today, ungrounded=facts.check(article, sources),
+                              site_origin=self.config.contract.site_origin)
+                result = hold_unexpected_han(article, result)
+                overridable, extra = False, {}
+            saved = self.retain_article(run_id, article, result, sources, directory, slot_at=topic['slot_at'],
+                                        repaired=getattr(draft, 'repaired', ()), override=overridable, extra=extra)
+            if not result.ok and not overridable:
+                raise AdminError('text_quality_held' if draft is not None else 'quality_pass_required')
             self.store(run_id, 'text_ready', saved)
         elif current['phase'] == 'held':
             raise AdminError('onepost_held')
@@ -297,13 +334,11 @@ class OnePost:
         self.verify_article_artifacts(saved)
         if image_data is None:
             # Exact limits of this generation, so a one-time retry can never raise them.
-            saved['image_run'] = {'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling,
-                                  **({'subscription_enabled': True} if subscription_enabled else {})}
+            saved['image_run'] = {'subscription_enabled': bool(subscription_enabled)}
         self.store(run_id, 'images_pending', saved)
         if image_data is None:
-            image_data = await ImagePipeline(self.config, before_dispatch=self.active).run(article, directory/'images', run_id+'-images', ceiling,
-                                                             free_enabled=free_enabled, paid_enabled=paid_enabled,
-                                                             **({'subscription_enabled': True} if subscription_enabled else {}))
+            image_data = await ImagePipeline(self.config, before_dispatch=self.active).run(
+                article, directory/'images', run_id+'-images', subscription_enabled=bool(subscription_enabled))
             image_base = directory/'images'
         else:
             image_base = image_input.parent
@@ -371,6 +406,8 @@ class OnePost:
             review.update(review_bypass=saved['review_bypass'],automatic_flow_verdict='REVIEW_BYPASSED')
         if saved.get('image_source'):
             review['image_source'] = saved['image_source']
+        if saved.get('requires_override'):
+            review.update(requires_override=True, issues=saved.get('override_issues') or [])
         review.update(facts=saved.get('facts'), words=saved.get('words'), repaired=saved.get('repaired'),
                       writer_audit=saved.get('writer_audit'), text_dispatches=saved.get('text_dispatches'),
                       artifact_status=saved.get('artifact_status'))
@@ -490,10 +527,8 @@ class OnePost:
         self.store(run_id, 'images_pending', saved)
         for position, sha in zip(positions, hashes):
             pipeline.reject_selected(directory/'images', position, sha, reason)
-        image_data = await pipeline.run(saved['article'], directory/'images', run_id+'-images', limits.get('ceiling'),
-                                        free_enabled=limits.get('free_enabled', False),
-                                        paid_enabled=limits.get('paid_enabled', False),
-                                        **({'subscription_enabled': True} if limits.get('subscription_enabled') else {}))
+        image_data = await pipeline.run(saved['article'], directory/'images', run_id+'-images',
+                                        subscription_enabled=bool(limits.get('subscription_enabled')))
         self.attach_images(saved, saved['article'], image_data, directory/'images', None)
         self.store(run_id, 'images_ready', saved)
         return self.artifact(run_id)

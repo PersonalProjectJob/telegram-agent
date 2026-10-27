@@ -12,7 +12,7 @@ from nailblog import schedule as s
 from nailblog.config import BudgetConfig, _is_secret_name
 from nailblog.service import Service
 from nailblog.state import EvidenceRequired, InvalidTransition, State, StateError
-from nailblog.usage import BudgetExceeded, UnpricedModel, UsageRecorder
+from nailblog.usage import BudgetExceeded, UsageRecorder
 from tests.helpers import load, settings
 
 PRICES = BudgetConfig(daily_usd=1.0, text_prices={"deepseek-chat": (0.5, 2.0)}, image_prices={"img": 0.25})
@@ -46,8 +46,8 @@ class SecretKeyTests(unittest.TestCase):
         for name in ("model", "feeds", "verification_ref", "daily_usd", "owner_ids", "keys_count_note"):
             self.assertFalse(_is_secret_name(name), name)
         with tempfile.TemporaryDirectory() as directory:
-            config = load(directory, text_model='provider = "deepseek"\nmodel = "m"\n' + KEY)
-        self.assertEqual(config.text_model.key_file, "/etc/nailblog/private/model-key.json")
+            config = load(directory, text_model='provider = "agy"\nmodel = "m"')
+        self.assertEqual((config.text_model.provider, config.text_model.model), ("agy", "m"))
 
 
 class UnknownKeyTests(unittest.TestCase):
@@ -75,9 +75,9 @@ class UnknownKeyTests(unittest.TestCase):
             config = load(directory, {"timezone": "Asia/Ho_Chi_Minh", "slots": ["06:00", "19:00"],
                                       "late_window_minutes": 10, "owner_username": "SotaThao"},
                           telegram='session = "/var/lib/agentfleet/nailblog/nailblog.session"',
-                          text_model='num_predict = 500\ntimeout_seconds = 30', console='revision = "r1"',
+                          text_model='timeout_seconds = 30', console='revision = "r1"',
                           sources='feeds = ["https://www.bustle.com/rss"]\ntimeout_seconds = 5')
-        self.assertEqual((config.text_model.num_predict, config.text_model.timeout_seconds), (500, 30))
+        self.assertEqual(config.text_model.timeout_seconds, 30)
         self.assertEqual((config.sources.feeds, config.sources.timeout_seconds), (("https://www.bustle.com/rss",), 5))
 
     def test_sources_and_text_model_values_are_validated(self):
@@ -86,7 +86,7 @@ class UnknownKeyTests(unittest.TestCase):
                 self.invalid("sources.feeds", sources=f"feeds = [{feed}]")
         self.invalid("sources.feeds", sources='feeds = ["https://a.example/x", "https://a.example/x"]')
         self.invalid("sources.timeout_seconds", sources="timeout_seconds = 0")
-        self.invalid("text_model.num_predict", text_model="num_predict = 10")
+        self.invalid("text_model.provider", text_model='provider = "deepseek"')
         self.invalid("text_model.timeout_seconds", text_model="timeout_seconds = 5")
 
 
@@ -214,76 +214,29 @@ class ModelCallBillingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(inspect.signature(getattr(FakeUsage, name)).parameters.keys(),
                              inspect.signature(getattr(UsageRecorder, name)).parameters.keys())
 
-    async def test_paid_provider_checks_before_and_records_after(self):
+    async def test_agy_provider_touches_no_usage_record_ledger_or_lock(self):
         service = self.make()
-        self.assertEqual(service.state.usage_between(0,2*10**10),[])
 
-        def call(value, usage_sink=None):
+        def call(value):
             self.events.append("call")
-            self.assertEqual(service.state.usage_between(0,2*10**10),[])
-            with service.state.connection() as db:
-                intent=db.execute("SELECT status,reserved FROM paid_intents").fetchone()
-            self.assertEqual(intent['status'],'pending');self.assertGreater(intent['reserved'],0)
-            usage_sink({"prompt_tokens": 1000, "completion_tokens": 500})
             return value
-        self.assertEqual(await service.model_call(call, 7, provider="deepseek", model="deepseek-chat"), 7)
-        self.assertEqual(self.events, ["check", "call", 'publish'])
-        rows=service.state.usage_between(0,2*10**10)
-        self.assertEqual([(row[1],row[2],row[3]) for row in rows],[('deepseek','deepseek-chat',1500)])
-        self.assertAlmostEqual(rows[0][4],.0015)
-        with service.state.connection() as db:
-            self.assertEqual(db.execute('SELECT status,charged FROM paid_intents').fetchone()[:],('settled',1500))
+        self.assertEqual(await service.model_call(call, 7, provider="agy", model="gemini-3.8-flash-medium"), 7)
+        self.assertEqual(self.events, ["call"])                                  # no check, no record, no publish
+        self.assertEqual(service.state.usage_between(0, 2 * 10**10), [])
 
-    async def test_budget_exceeded_stops_the_call_before_it_starts(self):
+    async def test_every_paid_or_api_provider_is_refused_before_the_call_and_before_any_check(self):
         service = self.make()
-        service.usage.fail_check = True
-        with self.assertRaises(BudgetExceeded):
-            await service.model_call(lambda usage_sink=None: self.events.append("call"),
-                                     provider="deepseek", model="deepseek-chat")
-        self.assertEqual(self.events, ["check"])
-
-    async def test_unpriced_paid_model_is_refused_before_the_call(self):
-        service = self.make()
-        with self.assertRaises(UnpricedModel):
-            await service.model_call(lambda usage_sink=None: self.events.append("call"),
-                                     provider="deepseek", model="not-priced")
-        self.assertEqual(self.events, ["check"])
-
-    async def test_failed_paid_call_is_still_recorded(self):
-        service = self.make()
-        self.assertEqual(service.state.usage_between(0,2*10**10),[])
-
-        def call(usage_sink=None):
-            usage_sink({"prompt_tokens": 10, "completion_tokens": 0})
-            raise OSError("boom")
-        with self.assertRaises(OSError):
-            await service.model_call(call, provider="deepseek", model="deepseek-chat")
-        self.assertEqual(self.events, ["check", 'publish'])
-        rows=service.state.usage_between(0,2*10**10)
-        self.assertEqual([(row[1],row[2],row[3]) for row in rows],[('deepseek','deepseek-chat',10)])
-        self.assertAlmostEqual(rows[0][4],.000005)
-        with service.state.connection() as db:
-            self.assertEqual(db.execute('SELECT status,charged FROM paid_intents').fetchone()[:],('settled',5))
-
-    async def test_local_provider_is_never_checked_and_costs_nothing(self):
-        service = self.make()
-
-        def call(usage_sink=None):
-            usage_sink({"prompt_tokens": 400, "completion_tokens": 100})
-        await service.model_call(call, provider="ollama", model="qwen3.5:9b")
-        self.assertEqual(self.events, [("record", "ollama", "qwen3.5:9b", 500, 0.0)])
+        for provider in ("deepseek", "gemini", "ollama", "openai"):
+            with self.subTest(provider):
+                with self.assertRaisesRegex(RuntimeError, "paid_text_removed"):
+                    await service.model_call(lambda usage_sink=None: self.events.append("call"),
+                                             provider=provider, model="deepseek-chat")
+        self.assertEqual(self.events, [])
 
     async def test_unbilled_call_has_the_old_plain_shape(self):
         service = self.make()
         self.assertEqual(await service.model_call(lambda a, b: a + b, 2, 3), 5)
         self.assertEqual(self.events, [])
-
-    async def test_real_recorder_refuses_once_the_daily_budget_is_spent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            service = Service(replace(settings(directory), budget=replace(PRICES, daily_usd=0.001)))
-            service.usage.record("deepseek", "deepseek-chat", 1, 0.002)
-            with self.assertRaises(BudgetExceeded):
-                await service.model_call(lambda usage_sink=None: None, provider="deepseek", model="deepseek-chat")
 
 
 class SummaryImagesTests(unittest.TestCase):
