@@ -16,6 +16,7 @@ KINDS = ('images', 'draft')
 VN_TZ = timezone(timedelta(hours=7))
 DASH = '—'
 MAX_REASON = 500
+MAX_ISSUES = 20
 CARD_LIMIT = 4096  # Telegram text message limit
 
 
@@ -25,7 +26,23 @@ class ApprovalError(ValueError):
 
 def _result(ok, code, row=None):
     return {'ok': ok, 'code': code, 'id': row['id'] if row else None,
-            'status': row['status'] if row else None, 'reason': row['reason'] if row else None}
+            'status': row['status'] if row else None, 'reason': row['reason'] if row else None,
+            'requires_override': bool(row['requires_override']) if row else None,
+            'override': bool(row['override']) if row else None}
+
+
+def _issue_list(issues):
+    """Normalize held-card issues (dicts, objects with code/message, or plain strings) to [{'code','message'}]."""
+    out = []
+    for item in list(issues or ())[:MAX_ISSUES]:
+        if isinstance(item, dict):
+            code, message = item.get('code'), item.get('message')
+        elif isinstance(item, str):
+            code, message = item, ''
+        else:
+            code, message = getattr(item, 'code', None), getattr(item, 'message', None)
+        out.append({'code': str(code or '?')[:60], 'message': ' '.join(str(message or '').split())[:200]})
+    return out
 
 
 class ApprovalStore:
@@ -38,8 +55,14 @@ class ApprovalStore:
                 status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired','superseded')),
                 reason TEXT, created_at REAL NOT NULL, deadline REAL NOT NULL, decided_at REAL, decided_by INTEGER,
                 message_ids TEXT NOT NULL DEFAULT '[]', UNIQUE(run_id, kind, snapshot))''')
+            have = {row['name'] for row in db.execute('PRAGMA table_info(approval_requests)')}
+            for column, ddl in (('requires_override', 'INTEGER NOT NULL DEFAULT 0'),
+                                ('issues', "TEXT NOT NULL DEFAULT '[]'"),
+                                ('override', 'INTEGER NOT NULL DEFAULT 0')):
+                if column not in have:   # old DBs stay readable: new columns default to 0 / '[]'
+                    db.execute(f'ALTER TABLE approval_requests ADD COLUMN {column} {ddl}')
 
-    def request(self, kind, run_id, snapshot, deadline, now):
+    def request(self, kind, run_id, snapshot, deadline, now, *, requires_override=False, issues=None):
         if kind not in KINDS:
             raise ApprovalError('invalid_kind')
         if not isinstance(run_id, str) or not run_id or not isinstance(snapshot, str) or not snapshot:
@@ -54,10 +77,12 @@ class ApprovalStore:
                 return same['id']
             db.execute("UPDATE approval_requests SET status='superseded' WHERE run_id=? AND kind=? AND status='pending'",
                        (run_id, kind))
-            return db.execute('INSERT INTO approval_requests(run_id,kind,snapshot,status,created_at,deadline) '
-                              "VALUES(?,?,?,'pending',?,?)", (run_id, kind, snapshot, now, deadline)).lastrowid
+            return db.execute('INSERT INTO approval_requests(run_id,kind,snapshot,status,created_at,deadline,'
+                              "requires_override,issues) VALUES(?,?,?,'pending',?,?,?,?)",
+                              (run_id, kind, snapshot, now, deadline, 1 if requires_override else 0,
+                               json.dumps(_issue_list(issues), ensure_ascii=False))).lastrowid
 
-    def decide(self, request_id, verdict, reason, sender_id, owner_id, now):
+    def decide(self, request_id, verdict, reason, sender_id, owner_id, now, *, override=False):
         """Record only; never publishes. Returns {'ok','code','id','status','reason'}; refusals change nothing
         (except marking a pending request past its deadline as expired)."""
         if verdict not in ('ok', 'reject'):
@@ -87,8 +112,16 @@ class ApprovalStore:
                 db.execute("UPDATE approval_requests SET status='expired' WHERE id=? AND status='pending'", (request_id,))
                 return _result(False, 'expired', db.execute('SELECT * FROM approval_requests WHERE id=?',
                                                             (request_id,)).fetchone())
-            db.execute('UPDATE approval_requests SET status=?, reason=?, decided_at=?, decided_by=? WHERE id=?',
-                       (want, reason[:MAX_REASON] if verdict == 'reject' else None, now, sender_id, request_id))
+            overriding = verdict == 'ok' and bool(override)
+            if verdict == 'ok' and row['requires_override']:
+                if not overriding:
+                    return _result(False, 'override_required', row)
+                if not reason:
+                    return _result(False, 'reason_required', row)
+            keep_reason = verdict == 'reject' or (overriding and bool(reason))
+            db.execute('UPDATE approval_requests SET status=?, reason=?, decided_at=?, decided_by=?, override=? '
+                       'WHERE id=?', (want, reason[:MAX_REASON] if keep_reason else None, now, sender_id,
+                                      1 if overriding else 0, request_id))
             return _result(True, 'recorded', db.execute('SELECT * FROM approval_requests WHERE id=?',
                                                         (request_id,)).fetchone())
 
@@ -168,12 +201,16 @@ def _count(value):
     return str(value) if isinstance(value, int) and not isinstance(value, bool) else DASH
 
 
-def _commands(request_id):
+def _commands(request_id, held=False):
     ident = request_id if request_id is not None else '<id>'
-    return f'/nailblog ok {ident}\n/nailblog reject {ident} <lý do>'
+    text = f'/nailblog ok {ident}\n/nailblog reject {ident} <lý do>'
+    if held:
+        text += f'\nBài trượt kiểm chất lượng — cần /nailblog ok {ident} override <lý do>'
+    return text
 
 
-def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=None, environment=''):
+def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=None, environment='',
+                  requires_override=None, issues=None):
     """Return (jpeg_bytes_list, text_card, preview_html). Sources on disk are only read, never rewritten.
 
     approval_id/deadline may also come from artifact['approval_id'] / artifact['approval_deadline'];
@@ -184,6 +221,8 @@ def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=Non
     artifact = artifact if isinstance(artifact, dict) else {}
     approval_id = artifact.get('approval_id') if approval_id is None else approval_id
     deadline = artifact.get('approval_deadline') if deadline is None else deadline
+    held = bool(artifact.get('requires_override') if requires_override is None else requires_override)
+    issue_rows = _issue_list(artifact.get('issues') if issues is None else issues)
     article = artifact.get('article') if isinstance(artifact.get('article'), dict) else {}
     if kind == 'images':
         jpegs = [_jpeg(path) for path in (image_paths or ())]
@@ -216,7 +255,11 @@ def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=Non
                  f"Fingerprint Draft: {_head(artifact.get('draft_fingerprint'))}", f'Hạn duyệt: {_when(deadline)}']
     if environment == 'staging':
         lines[0] = '[staging] ' + lines[0]
-    tail = '\n\n' + _commands(approval_id)
+    if held or issue_rows:
+        lines.append(f'Lỗi kiểm chất lượng ({len(issue_rows)}):')
+        lines += [f"- {row['code']}: {row['message']}" if row['message'] else f"- {row['code']}"
+                  for row in issue_rows[:10]]
+    tail = '\n\n' + _commands(approval_id, held)
     body = '\n'.join(lines)
     if len(body) + len(tail) > CARD_LIMIT:
         body = body[:CARD_LIMIT - len(tail) - 1] + '…'

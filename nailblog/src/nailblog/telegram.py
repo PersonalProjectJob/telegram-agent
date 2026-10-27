@@ -11,7 +11,8 @@ from pathlib import Path
 
 from ._errors import ConfigError
 from ._runtime import ProcessLock
-from .commands import make_owner_notice_sender, route_command, verify_owner
+from .commands import route_command, verify_owner
+from .notices import outbox_media_sender
 from .service import Service, wait_for_stop
 
 LOG = logging.getLogger(__name__)
@@ -38,17 +39,41 @@ class OwnerMediaSendError(RuntimeError):
         self.sent_ids = list(sent_ids)
 
 
-def make_owner_media_sender(client, owner_ids):
+async def raw_send_message(client, owner_id, text, random_id):
+    """Text DM with a caller-fixed MTProto random_id (so Telegram deduplicates a resend); returns server message ids."""
+    from telethon import functions
+    from .notices import message_ids
+    peer = await client.get_input_entity(owner_id)
+    result = await client(functions.messages.SendMessageRequest(peer=peer, message=text[:4096], random_id=random_id,
+                                                                no_webpage=True))
+    return message_ids(result)
+
+
+def make_owner_outbox_sender(client, owner_ids, *, raw_send=raw_send_message):
+    """Owner text sender for the outbox: same single-Owner check as `make_owner_notice_sender`; with `random_id`
+    the request carries it, without it falls back to `client.send_message`."""
+    if len(owner_ids) != 1 or type(owner_ids[0]) is not int or owner_ids[0] <= 0:
+        raise ValueError('verified single Owner binding required')
+    owner_id = owner_ids[0]
+
+    async def send(text, random_id=None):
+        if random_id is None:
+            return await client.send_message(owner_id, text, parse_mode=None, link_preview=False)
+        return await raw_send(client, owner_id, text, random_id)
+    return send
+
+
+def make_owner_media_sender(client, owner_ids, *, raw_send=raw_send_message):
     """Album of in-memory JPEGs then the text card, to the single verified Owner DM only."""
     if len(owner_ids) != 1 or type(owner_ids[0]) is not int or owner_ids[0] <= 0:
         raise ValueError('verified single Owner binding required')
     bound = owner_ids[0]
 
-    async def send(owner_id, files, caption_text):
+    async def send(owner_id, files, caption_text, *, random_id=None, skip_files=False):
         if owner_id != bound:
             raise ValueError('recipient is not the verified Owner')
         streams = []
-        for index, data in enumerate(files, 1):
+        for index, data in enumerate([] if skip_files else files, 1):
             if isinstance(data, (bytes, bytearray)):
                 data = io.BytesIO(bytes(data))
                 data.name = f'nailblog-{index}.jpg'
@@ -58,8 +83,11 @@ def make_owner_media_sender(client, owner_ids):
             for start in range(0, len(streams), 10):  # Telegram albums hold at most 10 items
                 result = await client.send_file(bound, streams[start:start + 10])
                 sent.extend(getattr(m, 'id', m) for m in (result if isinstance(result, (list, tuple)) else [result]))
-            message = await client.send_message(bound, caption_text, parse_mode=None, link_preview=False)
-            sent.append(getattr(message, 'id', message))
+            if random_id is None:
+                message = await client.send_message(bound, caption_text, parse_mode=None, link_preview=False)
+                sent.append(getattr(message, 'id', message))
+            else:
+                sent.extend(await raw_send(client, bound, caption_text, random_id))
         except Exception as error:
             raise OwnerMediaSendError(sent, type(error).__name__) from None
         return sent
@@ -207,9 +235,10 @@ async def _run_locked(config):
                 return
             if not selected:
                 raise RuntimeError('Owner binding is unverified')
-            sender = make_owner_notice_sender(client, selected)
+            sender = make_owner_outbox_sender(client, selected)
             service.notice_send = sender
-            service.media_send = make_owner_media_sender(client, selected)
+            service.media_send = outbox_media_sender(service.state, make_owner_media_sender(client, selected),
+                                                     clock=service.clock)
             service.notice_owner_id = selected[0]
             verified_owner_ids.extend(selected)
         except ConfigError:

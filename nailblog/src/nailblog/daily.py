@@ -529,18 +529,145 @@ def _post_block(service, target, hhmm, topic):
     return "\n".join(lines)
 
 
+NONE = "chưa có"
+
+
+def _find_all(value, key):
+    """Every value stored under `key` anywhere in nested dict/list data."""
+    found = []
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if name == key:
+                found.append(item)
+            found += _find_all(item, key)
+    elif isinstance(value, list):
+        for item in value:
+            found += _find_all(item, key)
+    return found
+
+
+def _json(text):
+    try:
+        value = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, (dict, list)) else {}
+
+
+def _admin_receipt(state, post_id):
+    with state.connection() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='admin_operations'").fetchone() is None:
+            return None
+        row = db.execute("SELECT receipt FROM admin_operations WHERE post_id=?", (post_id,)).fetchone()
+    return None if row is None else _json(row["receipt"])
+
+
+def _hhmm(value):
+    try:
+        number = float(value)
+        if number > 1e11:   # milliseconds
+            number /= 1000
+        return datetime.fromtimestamp(number, VN_TZ).strftime("%H:%M")
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(VN_TZ).strftime("%H:%M")
+    except ValueError:
+        return NONE
+
+
+def _first_text(values):
+    return next((v for v in values if isinstance(v, str) and v.strip()), None)
+
+
+def report_slot(service, day, hhmm):
+    """The 20:00 report block of one slot of `day`: only what the state really holds, `chưa có` otherwise."""
+    state, config = service.state, service.config
+    head = f"Slot {hhmm} ngày {day:%d/%m}"
+    topic = chosen_topic(state, day, hhmm)
+    if topic is None:
+        return f"{head}: chưa có chủ đề."
+    posts = state.posts_for_topic(topic["id"])
+    post = posts[-1] if posts else None
+    from .autoflow import AutoflowRuns
+    run = AutoflowRuns(state).by_topic(topic["id"])
+    document = _json(post["draft_json"]) if post else {}
+    article = document.get("article") if isinstance(document.get("article"), dict) else {}
+    title = article.get("title") or document.get("title") or topic["title"]
+    details = _json(post["details"]) if post else {}
+    evidence = details.get("evidence")
+    receipt = _admin_receipt(state, post["id"]) if post else None
+    slug = _first_text(_find_all(evidence, "slug"))
+    origin = getattr(getattr(config, "contract", None), "site_origin", "") or ""
+    url = f"{origin.rstrip('/')}/blog/{slug}" if slug and origin else (slug and f"/blog/{slug}") or NONE
+    created = NONE
+    if receipt is not None or (post and post["admin_id"]):
+        stamp = next(iter(_find_all(receipt, "created_at") + _find_all(receipt, "createdAt")), None)
+        created = (_hhmm(stamp) if stamp is not None else "đã tạo, giờ chưa có")
+    draft = f"đã lưu (admin_id {post['admin_id']})" if post and post["admin_id"] else NONE
+    published = NONE
+    if post and post["state"] == "published":
+        at = next(iter(_find_all(evidence, "publishedAt")), None)
+        published = _hhmm(at) if at is not None else "đã đăng, giờ chưa có"
+    elif post and post["state"] == "scheduled":
+        published = "đã lên lịch, chưa đăng"
+    readback = "có" if evidence else NONE
+    flags = _find_all(evidence, "mime_defect") + _find_all(receipt, "mime_defect")
+    flags = [flag for flag in flags if isinstance(flag, bool)]
+    mime = NONE if not flags else ("CÓ" if any(flags) else "không")
+    state_text = (run["stage"] if run else None) or (post["state"] if post else NONE)
+    lines = [f"{head} — [{state_text}]", f"Tiêu đề: {_text_cap(title, 110)}", f"URL: {url}",
+             f"Create: {created} · Draft: {draft} · Publish: {published} · Readback: {readback} · mime_defect: {mime}"]
+    if run and run["stage"] == "held":
+        lines.append(f"Held: {run['terminal_reason'] or NONE}")
+    return "\n".join(lines)
+
+
+def _text_cap(value, limit):
+    value = " ".join(str(value).split())
+    return value if len(value) <= limit else value[:limit - 1] + "…"
+
+
+def report_footer(service):
+    """Agy jobs used / cap and the retired API ledger line (read-only)."""
+    config = service.config
+    cap = getattr(getattr(config, "subscription", None), "max_daily_jobs", None)
+    counter = getattr(service, "agy_jobs_today", None)
+    try:
+        used = counter() if callable(counter) else None
+    except Exception:
+        used = None
+    jobs = f"Job agy hôm nay: {used if isinstance(used, int) and not isinstance(used, bool) else NONE}" \
+           f" / {cap if cap is not None else NONE}"
+    from .paid import LedgerSnapshotUnstable, report as legacy_report
+    try:
+        legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))
+        old = f"uncertain {legacy['uncertain_usd']:.6f} USD"
+    except LedgerSnapshotUnstable:
+        old = "không đọc được (đang ghi)"
+    return f"{jobs}\nSổ API cũ: {old}"
+
+
 async def preview_dm(service, text, today, *, opener=None):
-    """Step 20:00. Returns (DM, complete): one block per slot of tomorrow."""
+    """Step 20:00. Returns (DM, complete). Autoflow on: today's report per slot (title, URL, Create/Draft/publish/
+    readback, mime_defect, held reason) + agy job count + legacy ledger line, then tomorrow's stages."""
     state, config = service.state, service.config
     target = today + timedelta(days=1)
     flow = autoflow_enabled(config)
-    block = _flow_block if flow else _post_block
+    state.set_last_result(f"daily preview {target.isoformat()}")
+    if flow:
+        head = f"NailBlog {today:%d/%m} {config.daily.preview_at}: báo cáo ngày {today:%d/%m}"
+        blocks = [report_slot(service, today, hhmm) for hhmm in slots_of(config)]
+        tomorrow = [_flow_block(service, target, hhmm, chosen_topic(state, target, hhmm)) for hhmm in slots_of(config)]
+        tail = ("Xem /nailblog flow; duyệt bằng /nailblog ok <id> hoặc /nailblog reject <id> <lý do>. "
+                "Không duyệt đúng hạn thì bài không lên lịch.")
+        return "\n\n".join([head] + blocks + [report_footer(service), f"Ngày mai {target:%d/%m}:"] + tomorrow
+                            + [tail]), True
+    block = _post_block
     blocks = [block(service, target, hhmm, chosen_topic(state, target, hhmm)) for hhmm in slots_of(config)]
     head = f"NailBlog {today:%d/%m} {config.daily.preview_at}: xem trước bài ngày mai {target:%d/%m}"
-    tail = ("Autoflow đang bật: bài được viết và gửi thẻ duyệt ảnh/Draft riêng, trả lời bằng /nailblog ok <id> hoặc "
-            "/nailblog reject <id> <lý do>. Xem /nailblog flow. Không duyệt đúng hạn thì bài không lên lịch.") if flow else ("Chế độ preview: không có link website, bài chỉ là file trên máy; chưa đăng gì lên nailhub.ai. "
+    tail = ("Chế độ preview: không có link website, bài chỉ là file trên máy; chưa đăng gì lên nailhub.ai. "
             "Không duyệt đúng hạn thì bài không lên lịch.")
-    state.set_last_result(f"daily preview {target.isoformat()}")
     return "\n\n".join([head] + blocks + [tail]), True
 
 

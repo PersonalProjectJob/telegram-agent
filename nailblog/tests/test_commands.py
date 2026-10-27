@@ -255,7 +255,8 @@ class ExecuteTests(unittest.TestCase):
         self.state.add_usage(NOW - 2 * 86400, "gemini", "img", 1, 9.0)
         self.state.set_paused(True)
         text = self.run_command("/nailblog status")[0]
-        for part in ("mode=preview", "paused=True", "ảnh=fixed", "review=1", "$0.75/$3.00"):
+        for part in ("mode=preview", "paused=True", "ảnh=fixed", "review=1", "Sổ API cũ: uncertain 0.000000 USD",
+                     "outbox: 0 tin chờ gửi"):
             self.assertIn(part, text)
 
     def test_service_command_applies_to_its_own_state(self):
@@ -264,6 +265,83 @@ class ExecuteTests(unittest.TestCase):
         self.assertEqual(self.state.control()["paused"], 1)
         service.command("mode", ("adaptive",))
         self.assertEqual(self.state.control()["image_mode"], "adaptive")
+
+
+class OverrideCommandTests(unittest.IsolatedAsyncioTestCase):
+    """`/nailblog ok <id> override <lý do>` end to end on a real sqlite State."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.state = State(Path(self.directory.name) / "state.sqlite3")
+        from nailblog.approvals import ApprovalStore
+        self.store = ApprovalStore(self.state)
+        self.held = self.store.request("draft", "run1", "snap", NOW + 3600, NOW, requires_override=True,
+                                       issues=[{"code": "cliche", "message": "sáo rỗng"}])
+
+    async def say(self, text, sender=OWNER):
+        service = SimpleNamespace(state=self.state, clock=lambda: NOW + 1, command=Mock(return_value=["?"]))
+        event = dm(raw_text=text, sender_id=sender, chat_id=sender)
+        event.get_sender = AsyncMock(return_value=SimpleNamespace(id=sender, bot=False, is_self=False))
+        event.get_chat = AsyncMock(return_value=SimpleNamespace(id=sender, bot=False, is_self=False))
+        await route_command(event, service, (sender,))
+        return [call.args[0] for call in event.reply.await_args_list]
+
+    def test_parse_override_forms(self):
+        self.assertEqual(parse("/nailblog ok 5"), ("ok", (5,)))
+        self.assertEqual(parse("/nailblog ok 5 override đã đọc kỹ"), ("ok_override", (5, "đã đọc kỹ")))
+        self.assertEqual(parse("/nailblog ok 5 OVERRIDE"), ("ok_override", (5, "")))
+        self.assertIsNone(parse("/nailblog ok 5 force vì sao"))
+        self.assertIsNone(parse("/nailblog ok 5 6"))
+
+    async def test_plain_ok_then_empty_reason_then_override_with_reason(self):
+        reply = (await self.say(f"/nailblog ok {self.held}"))[0]
+        self.assertIn("[override_required]", reply)
+        self.assertIn(f"/nailblog ok {self.held} override <lý do>", reply)
+        self.assertIn("[reason_required]", (await self.say(f"/nailblog ok {self.held} override"))[0])
+        self.assertEqual(self.store.get(self.held)["status"], "pending")
+        reply = (await self.say(f"/nailblog ok {self.held} override chấp nhận lỗi văn phong"))[0]
+        self.assertIn("[recorded]", reply)
+        self.assertIn("OK + override", reply)
+        self.assertEqual(self.store.get(self.held)["reason"], "chấp nhận lỗi văn phong")
+        self.assertIn("[already_decided]", (await self.say(f"/nailblog ok {self.held} override lại"))[0])
+
+    async def test_wrong_sender_expired_and_superseded_have_vietnamese_messages(self):
+        service = SimpleNamespace(state=self.state, clock=lambda: NOW + 1)
+        from nailblog.commands import decide_approval
+        wrong = decide_approval(self.state, "ok", self.held, "x", sender_id=OWNER + 1, owner_ids=(OWNER,), now=NOW + 1,
+                                override=True)[0]
+        self.assertIn("[wrong_sender]", wrong)
+        self.assertIn("không phải Owner", wrong)
+        late = decide_approval(self.state, "ok", self.held, "x", sender_id=OWNER, owner_ids=(OWNER,), now=NOW + 9999,
+                               override=True)[0]
+        self.assertIn("[expired]", late)
+        self.assertIn("quá hạn", late)
+        newer = self.store.request("draft", "run1", "snap2", NOW + 3600, NOW)
+        old = self.store.request("draft", "run9", "a", NOW + 3600, NOW)
+        self.store.request("draft", "run9", "b", NOW + 3600, NOW)
+        stale = decide_approval(self.state, "ok", old, "", sender_id=OWNER, owner_ids=(OWNER,), now=NOW + 1)[0]
+        self.assertIn("[superseded]", stale)
+        self.assertIn("thẻ mới", stale)
+        self.assertNotEqual(newer, self.held)
+        self.assertEqual(self.state.control()["paused"], 0)
+        del service
+
+    def test_flow_lists_each_run_by_slot_with_override_flag_and_deadline(self):
+        from nailblog.autoflow import AutoflowRuns
+        runs = AutoflowRuns(self.state)
+        runs.create("rB", 2, "2026-10-17T19:00+07:00", "/o", 0)
+        runs.create("rA", 1, "2026-10-17T06:00+07:00", "/o", 0)
+        ok_card = self.store.request("images", "rA", "s", NOW + 7200, NOW)
+        runs.update("rA", stage="images_wait", ctx={"images": {"id": ok_card, "snapshot": "s"}})
+        runs.update("rB", stage="draft_wait", ctx={"draft": {"id": self.held, "snapshot": "snap"}})
+        lines = execute(self.state, "flow", (), now=NOW, config=None)[0].split("\n")
+        self.assertIn("slot 2026-10-17T06:00+07:00 [images_wait]", lines[1])
+        self.assertIn("requires_override=không", lines[1])
+        self.assertIn("slot 2026-10-17T19:00+07:00 [draft_wait]", lines[2])
+        self.assertIn("requires_override=có", lines[2])
+        self.assertIn(f"/nailblog ok {self.held} override <lý do>", lines[2])
+        self.assertIn("hạn duyệt", lines[2])
 
 
 if __name__ == "__main__":
