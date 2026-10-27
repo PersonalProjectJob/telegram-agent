@@ -65,6 +65,9 @@ class Directory:
             return True
         except FileNotFoundError: return False
 
+    def stat(self, name):
+        return os.stat(self._name(name), dir_fd=self.fd, follow_symlinks=False)
+
     def names(self): return os.listdir(self.fd if self.fd is not None else self.path)
 
     def mkdir(self, name, mode=0o2770):
