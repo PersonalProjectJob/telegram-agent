@@ -24,7 +24,8 @@ from ..model_lock import LockStopped
 from ..publication import digest
 from ..schedule import VN_TZ
 from . import ImageError
-from .agy_native import (native_image, native_call, final_text, collapse_json, native_text, salvage_text,
+from .agy_native import (native_image, native_call, final_text, collapse_json, collapse_value, wrap_answer,
+                         native_text, salvage_text,
                          text_transcript, MAX_TEXT_TRANSCRIPT_BYTES,
                          assistant_text, user_prompt, HELD)
 from .subscription_sqlite import snapshot_rows
@@ -672,15 +673,16 @@ class Worker:
             raise ImageError('cli_session_not_fresh_or_denied')
         rows, snapshot = snapshot_rows(conversations / (session + '.db'), private, owner=self.uid)
         native = native_text(rows, prompt)
-        article, _ = collapse_json(envelope.get('response'))
-        final, final_copies = collapse_json(native['final_text'])
-        if article != final:
+        response, _ = collapse_value(envelope.get('response'))
+        if response != native['final_value']:
             raise ImageError(HELD + 'stdout_native_mismatch')
+        article, wrapped = wrap_answer(native['final_value'], request['schema'])
         from ..text import check_schema
         if check_schema(request['schema'], article):
             raise ImageError('cli_text_schema_mismatch')
         return self.text_result(request, directory, session, snapshot, native, article,
-                                status='complete', stdout_copies=copies, native_copies=final_copies)
+                                status='complete', stdout_copies=copies, native_copies=native['final_copies'],
+                                wrapped=wrapped)
 
     def salvage_text(self, request, directory, private, conversations, before, timed_out):
         fresh = sorted({p.name for p in conversations.glob('*.db')} - before)
@@ -696,17 +698,17 @@ class Worker:
         if native is None:
             raise timed_out
         try:
-            article, copies = collapse_json(native['final_text'])
+            article, wrapped = wrap_answer(native['final_value'], request['schema'])
             from ..text import check_schema
             if check_schema(request['schema'], article): raise timed_out
         except ImageError:
             raise timed_out from None
         return self.text_result(request, directory, session, snapshot, native, article,
-                                status='complete_salvaged', stdout_copies=None, native_copies=copies,
-                                salvaged_from=str(timed_out))
+                                status='complete_salvaged', stdout_copies=None, native_copies=native['final_copies'],
+                                salvaged_from=str(timed_out), wrapped=wrapped)
 
     def text_result(self, request, directory, session, snapshot, native, article, *, status, stdout_copies, native_copies,
-                    salvaged_from=None):
+                    salvaged_from=None, wrapped=False):
         cfg = self.cfg
         agent = check_agent(cfg.text_agent)
         output = enc(article)
@@ -724,7 +726,9 @@ class Worker:
                   'native_user_sha': sha(native['user_raw']), 'native_steps': native['steps'],
                   'native_transcript_sha': sha(transcript),
                   'tool_calls_observed': 0, 'native_images': 0, 'stdout_copies': stdout_copies,
-                  'native_final_copies': native_copies, 'billing': dict(BILLING)}
+                  'native_final_copies': native_copies, 'billing': dict(BILLING),
+                  'answers_count': native['answers_count'], 'answers_distinct': native['answers_distinct'],
+                  'answer_shas': native['answer_shas'], 'accepted': 'final', 'wrapped_array': wrapped}
         if status == 'complete_salvaged': result['salvaged_from'] = salvaged_from
         return result
 
@@ -755,10 +759,15 @@ def verify_text_receipt(cfg, receipt, request, output, final_raw, user_raw, tran
         raise ImageError('cli_receipt_invalid')
     try:
         user_prompt(user_raw, request['prompt'])
-        final, _ = collapse_json(assistant_text(final_raw))
+        final, wrapped = wrap_answer(collapse_value(assistant_text(final_raw))[0], request['schema'])
         value = json.loads(output)
-    except ValueError:
+    except (ValueError, ImageError):
         raise ImageError('cli_receipt_invalid') from None
-    if enc(final) != output or enc(value) != output:
+    from ..text import check_schema
+    if (enc(final) != output or enc(value) != output or check_schema(request['schema'], final) or
+            receipt.get('accepted') != 'final' or receipt.get('wrapped_array') is not wrapped or
+            receipt.get('answers_count') != native['answers_count'] or
+            receipt.get('answers_distinct') != native['answers_distinct'] or
+            receipt.get('answer_shas') != native['answer_shas']):
         raise ImageError('cli_receipt_invalid')
     return value

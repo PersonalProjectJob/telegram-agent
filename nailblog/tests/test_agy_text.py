@@ -96,7 +96,7 @@ class NativeTextTests(unittest.TestCase):
         native = native_text(rows, 'P')
         self.assertEqual((native['final_text'], native['steps']), (json.dumps(ARTICLE), [14, 15]))
         self.assertEqual(salvage_text(rows, 'P')['final_text'], json.dumps(ARTICLE))
-        self.assertEqual(salvage_text(rows_for('P', 'thinking', json.dumps(ARTICLE)), 'P')['steps'], [14, 15, 15])
+        self.assertEqual(salvage_text(rows_for('P', json.dumps({'title': 'draft'}), json.dumps(ARTICLE)), 'P')['steps'], [14, 15, 15])
 
     def test_unknown_native_shapes_hold_and_salvage_refuses(self):
         good = rows_for('P', json.dumps(ARTICLE))
@@ -361,7 +361,7 @@ class WorkerTextTests(Env):
 
     def test_timeout_with_final_answer_is_salvaged_once(self):
         def timeout_after_answer(args, timeout):
-            self.conversation(args[args.index('--print') + 1], 'thinking...', json.dumps(ARTICLE))
+            self.conversation(args[args.index('--print') + 1], json.dumps({'title': 'draft'}), json.dumps(ARTICLE))
             raise ImageError('cli_timeout_unknown')
         self.behaviour = timeout_after_answer
         job_id, result = self.run_job()

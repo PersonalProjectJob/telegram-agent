@@ -51,8 +51,8 @@ class NativeNudgeTests(unittest.TestCase):
         proof = json.dumps(native['transcript']).encode()
         self.assertEqual(text_transcript(proof),rows)
 
-    def test_no_nudge_retains_existing_non_json_intermediate_assistant_behavior(self):
-        self.assertEqual(json.loads(native_text(rows_for('P','thinking',json.dumps(ARTICLE)),'P')['final_text']),ARTICLE)
+    def test_non_json_intermediate_assistant_answer_is_held_even_without_nudge(self):
+        with self.assertRaises(ImageError):native_text(rows_for('P','thinking',json.dumps(ARTICLE)),'P')
 
     def test_unknown_or_changed_nudge_changed_answer_tools_and_bad_wire_fail_closed(self):
         good = nudged_rows()
@@ -67,8 +67,6 @@ class NativeNudgeTests(unittest.TestCase):
             'unknown nudge body field':replace_record(good,2,nudge_record(extra_body=True)),
             'nudge metadata tool':replace_record(good,2,nudge_record(tool=True)),
             'unknown nudge metadata':replace_record(good,2,nudge_record(unknown_metadata=True)),
-            'changed answer':replace_record(good,3,assistant_record(json.dumps({'title':'Changed'}))),
-            'format-only answer change':replace_record(good,3,assistant_record(json.dumps(ARTICLE,indent=2))),
             'intermediate tool call':replace_record(good,3,assistant_record(json.dumps(ARTICLE),tool=True)),
             'unknown assistant wire':replace_record(good,3,assistant_record(json.dumps(ARTICLE),extra=True)),
             'malformed user wire':replace_record(good,2,b'not native protobuf'),
@@ -137,11 +135,10 @@ class NudgeWorkerProducerTests(Env):
         self.assertEqual(self.submit(),ARTICLE)
         self.assertEqual(len(self.calls),1)
 
-    def test_changed_nudge_answer_remains_final_held_and_never_redispatches(self):
+    def test_changed_intermediate_answer_is_accepted_final_wins_and_never_redispatches(self):
         self.configure_nudges(change=True)
-        for _ in range(2):
-            with self.assertRaises(AgyTextError) as raised:self.submit()
-            self.assertEqual(raised.exception.code,'held')
+        for _ in range(2):self.assertEqual(self.submit(),ARTICLE)
+        self.assertEqual(self.ask.last_receipt['answers_distinct'],2)
         self.assertEqual(len(self.calls),1)
         with Directory(self.cfg.queue_dir) as queue:self.assertIsNone(self.worker.scan(queue,self.private))
 

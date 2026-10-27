@@ -2,6 +2,7 @@
 
 Only the typed generate_image result is authoritative; prose/CLI stdout paths are not receipts.
 """
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -147,12 +148,8 @@ def _held(why):
     return ImageError(HELD + why)
 
 
-def collapse_json(text, *, limit=8):
-    """Collapse only byte-identical repeated JSON objects; never choose among alternatives.
-
-    agy may print the same JSON several times. Identical copies are one answer;
-    different copies, trailing garbage or non-objects are a HOLD.
-    """
+def collapse_value(text, *, limit=8):
+    """Collapse byte-identical repeated JSON values (any type); never choose among alternatives."""
     if not isinstance(text, str):
         raise _held('bad_json')
     decoder, offset, raws, values = json.JSONDecoder(), 0, [], []
@@ -170,9 +167,28 @@ def collapse_json(text, *, limit=8):
             break
     if not 1 <= len(values) <= limit or any(raw != raws[0] for raw in raws):
         raise _held('nonidentical_json')
-    if not isinstance(values[0], dict):
-        raise _held('object_required')
     return values[0], len(values)
+
+
+def collapse_json(text, *, limit=8):
+    """Collapse only byte-identical repeated JSON objects (agy stdout envelope); never choose among alternatives."""
+    value, copies = collapse_value(text, limit=limit)
+    if not isinstance(value, dict):
+        raise _held('object_required')
+    return value, copies
+
+
+def wrap_answer(value, schema):
+    """Final answer -> (object, wrapped_array). A bare list is wrapped only when the schema has exactly one
+    required property and it is an array; any other non-object is a HOLD."""
+    if isinstance(value, dict):
+        return value, False
+    required = schema.get('required') if isinstance(schema, dict) else None
+    properties = schema.get('properties') if isinstance(schema, dict) else None
+    if (isinstance(value, list) and isinstance(required, list) and len(required) == 1 and isinstance(properties, dict)
+            and isinstance(properties.get(required[0]), dict) and properties[required[0]].get('type') == 'array'):
+        return {required[0]: value}, True
+    raise _held('object_required')
 
 
 def user_prompt(raw, prompt):
@@ -256,10 +272,10 @@ def completion_nudge(raw):
 
 
 def native_text(rows, prompt):
-    """Validate every native row. Only the pinned completion nudge may add a user turn.
+    """Validate every native row. Only the pinned completion nudge may add a user turn (0..3).
 
-    No-nudge conversations retain their existing assistant-turn behavior. A nudged conversation must contain
-    byte-identical single JSON-object answers throughout, preventing an earlier answer/intent being hidden.
+    Every assistant answer must decode to JSON (a bad one is a HOLD); the LAST answer is accepted. Earlier
+    answers may differ from it; they are recorded by sha in the receipt, never silently dropped.
     """
     rows = list(rows)
     if (not 2 <= len(rows) <= 16 or any(not isinstance(row, (list, tuple)) or len(row) != 7 for row in rows)
@@ -278,16 +294,14 @@ def native_text(rows, prompt):
             completion_nudge(bytes(row[4]))
         else:
             answers.append((bytes(row[4]), assistant_text(bytes(row[4]))))
-    if nudges:
-        first = answers[0][1]
-        if any(text != first for _, text in answers):
-            raise _held('native_nudge_answer_changed')
-        _, copies = collapse_json(first)
-        if copies != 1:
-            raise _held('native_nudge_answer_invalid')
+    decoded = [collapse_value(text) for _, text in answers]  # any answer that is not JSON -> HOLD
+    if any(copies != 1 for _, copies in decoded):
+        raise _held('native_answer_invalid')  # one JSON value per native answer
     final_raw, final = answers[-1]
-    return {'final_text': final, 'final_raw': final_raw, 'user_raw': bytes(rows[0][4]),
-            'steps': [row[1] for row in rows],
+    shas = [hashlib.sha256(text.encode()).hexdigest() for _, text in answers]
+    return {'final_text': final, 'final_raw': final_raw, 'final_value': decoded[-1][0], 'final_copies': decoded[-1][1],
+            'user_raw': bytes(rows[0][4]), 'steps': [row[1] for row in rows],
+            'answers_count': len(answers), 'answers_distinct': len(set(shas)), 'answer_shas': shas,
             'transcript': [[*row[:4], bytes(row[4]).hex(), row[5], row[6]] for row in rows]}
 
 
