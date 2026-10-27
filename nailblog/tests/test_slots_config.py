@@ -9,8 +9,7 @@ from nailblog import daily
 from nailblog.commands import execute, parse
 from nailblog.planner import (SLOT_GROUPS, assign_slots, build_prompt, propose, slot_groups)
 from nailblog.service import Service
-from nailblog.text import TextModel
-from tests.daily_support import (BLOGS_URL, FEED_1, FEED_2, SOURCES, TARGET, TODAY, WEEK, DailyBase, Model, at,
+from tests.daily_support import (BLOGS_URL, FEED_1, FEED_2, SOURCES, TARGET, TODAY, WEEK, DailyBase, at,
                                  candidate)
 from tests.fakes import ATOM, BLOGS_JSON, RSS, TRENDING_RSS, TRENDS_URL, FakeOpener
 from tests.helpers import load
@@ -24,6 +23,17 @@ WEEK_START = date(2026, 10, 19)   # a Monday
 
 def topic(title, category, score, promo=False):
     return {"title": title, "category": category, "product_promo": promo, "score": score, "slot_at": None}
+
+
+class AskRecorder:
+    """Fake Agy `ask(prompt, schema, *, purpose, deadline=None)` that always answers with the same candidates."""
+
+    def __init__(self, candidates):
+        self.candidates, self.calls = candidates, []
+
+    def __call__(self, prompt, schema, *, purpose, deadline=None):
+        self.calls.append({"prompt": prompt, "schema": schema, "purpose": purpose})
+        return {"candidates": self.candidates}
 
 
 def three_slot_config(directory):
@@ -136,8 +146,8 @@ class ThreeSlotDailyTests(DailyBase):
         self.state = self.service.state
         self.opener = self.service.opener = FakeOpener({FEED_1: RSS, FEED_2: ATOM, BLOGS_URL: BLOGS_JSON,
                                                          TRENDS_URL: TRENDING_RSS})
-        self.model = Model(self.candidates())
-        self.service.text = TextModel(self.config, self.service.model_call, transport=self.model.transport)
+        self.ask = AskRecorder(self.candidates())
+        self.service.text = self.ask
         self.sent = self.service.notice_send = AsyncMock()
 
     def candidates(self):
@@ -155,11 +165,11 @@ class ThreeSlotDailyTests(DailyBase):
 
     async def test_propose_sends_a_twelve_topic_prompt_and_stores_candidates_for_the_noon_slot(self):
         outcome = await self.propose()
-        call = self.model.transport.calls[0]
-        candidates = call["payload"]["format"]["properties"]["candidates"]
+        call = self.ask.calls[0]
+        candidates = call["schema"]["properties"]["candidates"]
         self.assertEqual((candidates["minItems"], candidates["maxItems"]), (6, 18))
-        self.assertIn("Đề xuất 12 chủ đề", str(call["payload"]))
-        self.assertIn("Ba slot: 06:00, 12:00 và 19:00.", str(call["payload"]))
+        self.assertIn("Đề xuất 12 chủ đề", call["prompt"])
+        self.assertIn("Ba slot: 06:00, 12:00 và 19:00.", call["prompt"])
         noon = self.rows(SLOT_12)
         self.assertEqual(len(noon), daily.CANDIDATES_PER_SLOT)
         self.assertEqual({row["category"] for row in noon} - {"nail-job", "nail-salon"}, set())
@@ -205,7 +215,8 @@ class EmptyMappingDailyTests(ThreeSlotDailyTests):
         self.state = self.service.state
         self.opener = self.service.opener = FakeOpener({FEED_1: RSS, FEED_2: ATOM, BLOGS_URL: BLOGS_JSON,
                                                          TRENDS_URL: TRENDING_RSS})
-        self.service.text = TextModel(self.config, self.service.model_call, transport=self.model.transport)
+        self.ask = AskRecorder(self.candidates())
+        self.service.text = self.ask
         self.sent = self.service.notice_send = AsyncMock()
 
     async def test_propose_and_decide_work_without_a_table(self):
@@ -213,7 +224,7 @@ class EmptyMappingDailyTests(ThreeSlotDailyTests):
         slot_07, slot_12 = "2026-10-17T07:00+07:00", "2026-10-17T12:00+07:00"
         self.assertEqual((len(self.rows(slot_07)), len(self.rows(slot_12))), (2, 2))
         self.assertIn("Ứng viên slot 07:00 (mọi category, xếp theo điểm):", outcome.text)
-        self.assertIn("Đề xuất 8 chủ đề", str(self.model.transport.calls[0]["payload"]))
+        self.assertIn("Đề xuất 8 chủ đề", self.ask.calls[0]["prompt"])
         self.now = at("13:05")
         await daily.run_step(self.service, "decide", TODAY, self.service.text, opener=self.opener)
         self.assertIsNotNone(daily.chosen_topic(self.state, TARGET, "07:00"))

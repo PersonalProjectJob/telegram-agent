@@ -19,10 +19,8 @@ from pathlib import Path
 from .approvals import ApprovalError, build_preview
 from .images.pipeline import DispatchPaused
 from .notices import notice_key, send_once
-from .paid import PaidLedger, RunCeilingExceeded
 from .schedule import VN_TZ, approve_deadline, image_deadline, slot_datetime
 from .state import InvalidTransition
-from .usage import BudgetExceeded, UnpricedModel, day_bounds
 
 LOG = logging.getLogger(__name__)
 
@@ -44,6 +42,7 @@ HOLD_CODES = frozenset({
     'image_approval_snapshot_changed', 'draft_approval_snapshot_changed', 'image_approval_changed',
     'image_provenance_changed', 'complete_reviewed_image_provenance_required', 'manual_image_acceptance_required',
     'create_outcome_uncertain', 'test_image_candidate_requires_reconciliation', 'approval_deadline_passed',
+    'text_quality_held', 'text_unknown', 'text_held_by_worker', 'duplicate_on_site', 'unknown_onepost_run',
 })
 HOLD_SUFFIXES = ('_requires_reconciliation', '_requires_manual_reconciliation', '_require_reconciliation')
 
@@ -54,6 +53,10 @@ def is_hold_code(code):
     return code in HOLD_CODES or code.endswith(HOLD_SUFFIXES)
 # paused/mode changed mid-pass, or before_dispatch said stop (run is resumable): retry next tick, no failure, no DM
 QUIET_CODES = frozenset({'explicit_live_unpaused_required', 'dispatch_stopped'})
+# An unknown Create is reconciled read-only by the service (it hands over to a human after 30 minutes): not a failure,
+# just wait. Repeating the step is safe because the service never POSTs again once the Create claim exists.
+RECONCILING_CODE = 'create_unknown_reconciling'
+RECONCILE_RETRY_SECONDS = 300
 
 REASON_TEXT = {
     'owner_images_rejected': 'ảnh bị từ chối (đã thử lại tối đa một lần), bài chuyển sang giữ lại',
@@ -65,14 +68,18 @@ REASON_TEXT = {
     'category_unmapped': 'danh mục chưa có GUID trong cấu hình admin.category_ids',
     'approval_superseded': 'yêu cầu duyệt bị thay thế, cần kiểm tra thủ công',
     'unexpected_phase': 'pipeline ở trạng thái không mong đợi, cần kiểm tra thủ công',
-    'unpriced_model': 'model trả phí chưa có giá trong cấu hình ngân sách',
+    'text_quality_held': 'bài viết không qua cổng chất lượng và có lỗi không được override (facts/Hán/y tế/cấu trúc), '
+                         'không tạo ảnh',
+    'text_unknown': 'Agy không trả kết quả đọc được cho job viết bài (đã thử 1 job mới), cần kiểm tra thủ công',
+    'text_held_by_worker': 'worker Agy từ chối job viết bài, cần kiểm tra thủ công',
+    'duplicate_on_site': 'đã có bài trùng tiêu đề/slug trên trang (mọi trạng thái), không tạo Draft',
+    'unknown_onepost_run': 'run không có bản ghi one-post tương ứng, không đăng',
     'approval_deadline_passed': 'Owner duyệt Draft đúng hạn nhưng xử lý sau hạn, không tự duyệt (Draft chưa đăng)',
     'images_not_approved': 'ảnh đã được chấp nhận ngoài luồng autoflow, chưa có duyệt của Owner, không tự lưu Draft',
     'topic_changed': 'chủ đề không còn được duyệt hoặc không còn giữ slot này, dừng trước bước trả phí/lưu/duyệt tiếp theo',
     'post_changed_outside_autoflow': 'bài bị đổi trạng thái ngoài autoflow (không qua /nailblog ok), autoflow dừng',
     'publish_not_done': 'quá giờ slot hơn 1 tiếng mà chưa xác nhận đã đăng (bài có thể đã lên trang dù hệ thống ghi '
                         'đã lên lịch); không đăng lại, kiểm tra trang quản trị',
-    'run_ceiling_reached': 'chạm trần chi phí của run (autoflow.run_usd), không tạo thêm ảnh',
     'image_retry_interrupted': 'lần tạo lại ảnh duy nhất bị gián đoạn (tạm dừng hoặc hết ngân sách), chưa có ảnh mới',
 }
 PUBLISH_GRACE_SECONDS = 3600   # a post still `scheduled` this long after its slot was not published
@@ -160,17 +167,6 @@ def _ctx(row):
     return json.loads(row['ctx'] or '{}')
 
 
-def _budget_error(error):
-    """The BudgetExceeded behind `error` (itself or its cause), else None."""
-    if isinstance(error, BudgetExceeded):
-        return error
-    return error.__cause__ if isinstance(error.__cause__, BudgetExceeded) else None
-
-
-def _number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 class _Env:
     def __init__(self, service, stop, onepost, approvals, now):
         self.service, self.stop, self.onepost, self.approvals, self.now = service, stop, onepost, approvals, now
@@ -191,10 +187,6 @@ class _Env:
             return self.onepost.artifact(row['run_id']).get('post_id')
         except Exception:   # no artifact yet -> no post
             return None
-
-    def ledger(self):
-        return PaidLedger(self.state, self.config, self.service.clock if callable(getattr(self.service, 'clock', None))
-                          else (lambda: self.now))
 
     def owns_slot(self, row):
         """The topic is still approved, still on the run's slot, and no other approved topic holds that slot."""
@@ -245,13 +237,6 @@ class _Env:
         self.runs.update(row['run_id'], failures=failures, next_attempt_at=self.now + BACKOFF_SECONDS * 2 ** (failures - 1),
                          **({'ctx': ctx} if ctx else {}))
 
-    async def budget(self, row):
-        self.runs.update(row['run_id'], next_attempt_at=day_bounds(self.now)[1])
-        day = datetime.fromtimestamp(self.now, VN_TZ).date().isoformat()
-        await self.dm(notice_key('budget', day),
-                      f'NailBlog autoflow: hết ngân sách ngày {day} (trần USD/ngày). '
-                      'Các bài đang chờ sẽ thử lại từ ngày mới theo giờ Việt Nam.')
-
     def settle(self, request_id):
         """The request row, marking a pending request past its deadline as expired through the store's own API."""
         found = self.approvals.get(request_id)
@@ -261,23 +246,11 @@ class _Env:
         return found
 
     def preview_artifact(self, art, row):
-        """Artifact as build_preview wants it: slot, USD forecast and the bypass block added."""
-        if self.config.image.provider == 'subscription':
-            return {**art, 'slot_at': row['slot_at'],
-                    'image_source': {'route': 'subscription', 'api_usd': None, 'plan_cost_included': 'unknown'}}
-        forecast = art.get('image_quota_forecast') if isinstance(art.get('image_quota_forecast'), dict) else {}
-        usd = next((forecast[k] for k in ('usd', 'forecast_usd', 'estimated_usd', 'run_usd') if _number(forecast.get(k))),
-                   row['run_usd'])
-        out = {**art, 'slot_at': row['slot_at'], 'forecast_usd': float(usd),
-               'image_quota_forecast': {**forecast, 'forecast_usd': float(usd)}}
+        """Artifact as build_preview wants it: slot added; images come from the subscription, no API cost."""
+        out = {**art, 'slot_at': row['slot_at'],
+               'image_source': {'route': 'subscription', 'api_usd': None, 'plan_cost_included': 'unknown'}}
         if not out.get('review_bypass') and getattr(self.config.image, 'review_bypass', False):
             out['review_bypass'] = {'enabled': True, 'source': 'config'}
-        try:   # the real settled spend of this run's images and what is left of today's cap, not the run ceiling
-            ledger = self.ledger()
-            out['image_spend'] = {'settled_usd': ledger.settled_usd(row['run_id'] + '-images'),
-                                  'daily_left_usd': ledger.daily_left_usd()}
-        except Exception as error:
-            LOG.warning('NailBlog autoflow run=%s ledger read failed exception=%s', row['run_id'], type(error).__name__)
         return out
 
     def image_paths(self, run_id):
@@ -323,6 +296,14 @@ ROUTE = {'images_ready': 'images_send', 'images_approved': 'saving', 'draft_veri
          'scheduled': 'scheduled', 'published': 'scheduled'}
 
 
+def _override(art):
+    """Extra `ApprovalStore.request` arguments for a run the gate held with only overridable issues: plain `ok` is then
+    refused and only `/nailblog ok <id> override <reason>` approves. Nothing extra for a passing run."""
+    if not art.get('requires_override'):
+        return {}
+    return {'requires_override': True, 'issues': art.get('issues') or []}
+
+
 async def _route(env, row, art):
     stage = ROUTE.get(art.get('phase'))
     if stage is None:
@@ -332,10 +313,7 @@ async def _route(env, row, art):
 
 
 async def _prepare(env, row):
-    cli = env.config.image.provider == 'subscription'
-    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], paid_enabled=not cli,
-                                    ceiling=row['run_usd'], before_dispatch=env.before_dispatch,
-                                    **({'subscription_enabled': True} if cli else {}))
+    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], before_dispatch=env.before_dispatch)
     await _route(env, row, art)
 
 
@@ -349,10 +327,14 @@ async def _images_send(env, row):
         return await _route(env, row, art)
     deadline = env.image_ts(row)
     try:
-        request_id = env.approvals.request('images', row['run_id'], art['snapshot'], deadline, env.now)
+        request_id = env.approvals.request('images', row['run_id'], art['snapshot'], deadline, env.now,
+                                           **_override(art))
     except ApprovalError as error:
         if str(error) == 'snapshot_superseded':
             return await env.finish(row, 'held', 'approval_superseded')
+        if str(error) == 'not_overridable':        # the store refuses a card whose issues the Owner may not override
+            env.hold_post(art.get('post_id'), 'text_quality_held')
+            return await env.finish(row, 'held', 'text_quality_held')
         raise
     request = env.approvals.get(request_id)
     unsent = not json.loads(request['message_ids'] or '[]') or _ctx(row).get('resend') == request_id
@@ -464,10 +446,14 @@ async def _draft_send(env, row):
         return await env.finish(row, 'skipped', 'draft_deadline_missed')
     deadline = env.approve_ts(row)
     try:
-        request_id = env.approvals.request('draft', row['run_id'], art['snapshot'], deadline, env.now)
+        request_id = env.approvals.request('draft', row['run_id'], art['snapshot'], deadline, env.now,
+                                           **_override(art))
     except ApprovalError as error:
         if str(error) == 'snapshot_superseded':
             return await env.finish(row, 'held', 'approval_superseded')
+        if str(error) == 'not_overridable':        # the store refuses a card whose issues the Owner may not override
+            env.hold_post(art.get('post_id'), 'text_quality_held')
+            return await env.finish(row, 'held', 'text_quality_held')
         raise
     request = env.approvals.get(request_id)
     unsent = not json.loads(request['message_ids'] or '[]') or _ctx(row).get('resend') == request_id
@@ -544,17 +530,12 @@ async def _advance(env, row):
         await HANDLERS[row['stage']](env, row)
     except DispatchPaused:
         return                                      # stop/pause before any transport call: no failure, retry next pass
-    except UnpricedModel:
-        await env.finish(row, 'held', 'unpriced_model')
     except Exception as error:
-        budget = _budget_error(error)
-        if isinstance(budget, RunCeilingExceeded):   # the run's own ceiling, not the daily cap: hold, do not wait a day
-            env.hold_post(env.post_id(row), 'run_ceiling_reached')
-            return await env.finish(row, 'held', 'run_ceiling_reached')
-        if budget is not None:
-            return await env.budget(row)
         code = _code(error)
         if code in QUIET_CODES:
+            return
+        if code == RECONCILING_CODE:
+            env.runs.update(row['run_id'], next_attempt_at=env.now + RECONCILE_RETRY_SECONDS)
             return
         if is_hold_code(code):
             return await env.finish(row, 'held', code)

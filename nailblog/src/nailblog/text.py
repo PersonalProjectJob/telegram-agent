@@ -1,20 +1,17 @@
-"""Text model: schema-validated JSON from a local Ollama (default, O-2), DeepSeek or Gemini.
+"""Text model: schema-validated JSON through the Agy worker (agy_text.AgyText), the only text route.
 
-Every call goes through an injected `call` (Service.model_call): that enters MODEL_LOCK as a background
-job, checks the daily budget for paid providers and records usage. Prompts, source text and model output
-are never logged.
+There is no paid or local-API route any more. `TextModel` is a thin async adapter for the legacy
+`await text.ask(purpose, system, user, schema, ...)` callers (planner, writer.write_article, CLI): it runs the
+synchronous `AgyText.ask` in a thread and never holds MODEL_LOCK (the worker takes the shared lock itself).
+Prompts, source text and model output are never logged.
 """
 
+import asyncio
 import json
 import logging
 import time
 
-from . import gemini_text
-from .ai_transport import ENDPOINTS, TEXT_INPUT_LIMIT, ProviderError, complete, read_key, request_json
-
 LOG = logging.getLogger(__name__)
-DEEPSEEK_BASE = ENDPOINTS["deepseek"]
-KEY_GROUP = "tgnailblog"
 
 
 class TextModelError(RuntimeError):
@@ -91,85 +88,48 @@ def check_schema(schema, value, path="$"):
     return problems
 
 
+def _ask_over_transport(transport):
+    """Test seam only: adapt an injected `transport(url, payload, headers, timeout, provider)` whose envelope has the
+    shape `{"message": {"content": <json text>}}` to the Agy `ask` contract. No network, no provider route."""
+    def ask(prompt, schema, *, purpose, deadline=None):
+        payload = {"format": schema, "messages": [{"role": "user", "content": prompt}], "purpose": purpose}
+        return json.loads(transport("agy://test-seam", payload, {}, 0, "agy")["message"]["content"])
+    return ask
+
+
 class TextModel:
-    """`call` is an async callable with Service.model_call's signature."""
+    """Async adapter over `ask(prompt, schema, *, purpose, deadline=None)` (default `AgyText(config).ask`).
 
-    def __init__(self, config, call, *, transport=request_json, key_reader=read_key, stop=None, before_dispatch=None):
+    `call` is accepted for the old constructor shape and ignored; so are provider-era options (transport, key_reader)."""
+
+    def __init__(self, config, call=None, *, ask=None, stop=None, before_dispatch=None, **_ignored):
         self.config = config.text_model
-        self.call = call
-        self.transport = transport
-        self.key_reader = key_reader
-        self.stop = stop
-        self.before_dispatch = before_dispatch
+        self.stop, self.before_dispatch = stop, before_dispatch
+        if ask is None and _ignored.get("transport") is not None:
+            ask = _ask_over_transport(_ignored["transport"])
+        if ask is None:
+            from .agy_text import AgyText
+            ask = AgyText(config).ask
+        self._ask = ask
 
-    def _complete(self, messages, schema, max_tokens, context, light=False, usage_sink=None):
-        cfg = self.config
-        output = min(cfg.num_predict, max_tokens)
-        raw_transport = gemini_text.request_gemini if cfg.provider == 'gemini' and self.transport is request_json else self.transport
-        dispatched = 0
-        def bounded_transport(url, payload, headers, timeout, provider):
-            nonlocal dispatched
-            if len(json.dumps(payload).encode()) > TEXT_INPUT_LIMIT:
-                raise ProviderError('input_too_large')
-            if self.before_dispatch is not None:
-                try:
-                    self.before_dispatch()
-                except Exception:
-                    from .images.pipeline import DispatchPaused
-                    raise DispatchPaused('workflow_paused_before_dispatch', dispatched=dispatched>0) from None
-            dispatched += 1
-            envelope = raw_transport(url,payload,headers,timeout,provider)
-            if provider == 'deepseek' and usage_sink is not None:
-                reported = envelope.get('usage',{})
-                if (not isinstance(reported,dict) or any(type(reported.get(name)) is not int or reported[name] < 0
-                        for name in ('prompt_tokens','completion_tokens'))):
-                    usage_sink({'_uncertain':True})
-            return envelope
-        if cfg.provider == "gemini":
-            key = self.key_reader(cfg.key_file, gemini_text.KEY_SCOPE, group_name=KEY_GROUP)
-            return gemini_text.complete(cfg.model, messages, schema, key=key, timeout=cfg.timeout_seconds,
-                                        max_output=output, thinking=(cfg.section_thinking or None) if light else None,
-                                        transport=bounded_transport, usage_sink=usage_sink)
-        if cfg.provider == "ollama":
-            return complete("ollama", cfg.url, cfg.model, messages, schema, timeout=cfg.timeout_seconds,
-                            max_output=output, think=False, context=context, transport=bounded_transport,
-                            usage_sink=usage_sink)
-        key = self.key_reader(cfg.key_file, "deepseek|" + DEEPSEEK_BASE, group_name=KEY_GROUP)
-        return complete("deepseek", DEEPSEEK_BASE, cfg.model, messages, schema, key=key, timeout=cfg.timeout_seconds,
-                        max_output=output, transport=bounded_transport, usage_sink=usage_sink)
-
-    async def ask(self, purpose, system, user, schema, *, max_tokens, context=8192, light=False, attempts=2):
-        """One JSON object matching `schema`; by default one repair call that carries only a short error note.
-
-        `attempts` (default 2) is the total number of tries; the outline call asks for 3 and each retry then carries
-        the concrete validation errors (field path + message).
-
-        `light` marks a section/repair call: Gemini then runs at [text_model] section_thinking (low by default)."""
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        for attempt in range(1, attempts + 1):
-            started = time.monotonic()
-            try:
-                result = await self.call(self._complete, messages, schema, max_tokens, context, light,
-                                         provider=self.config.provider, model=self.config.model, stop=self.stop)
-            except ProviderError as error:
-                outcome = error.code
-                if error.code != "invalid_json" or attempt == attempts:
-                    LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
-                    raise TextModelError(f"model call failed: {error.code}") from None
-                note = "đầu ra không phải JSON đọc được"
-            else:
-                problems = check_schema(schema, result)
-                outcome = "valid" if not problems else "invalid_schema"
-                if not problems:
-                    LOG.info("text purpose=%s attempt=%d ms=%d outcome=valid", purpose, attempt, _ms(started))
-                    return result
-                if attempt == attempts:
-                    LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
-                    raise TextModelError("model JSON does not match the schema: " + "; ".join(problems[:3]))
-                note = "; ".join(problems[:(3 if attempts <= 2 else 6)])
-            LOG.info("text purpose=%s attempt=%d ms=%d outcome=%s", purpose, attempt, _ms(started), outcome)
-            messages = messages + [{"role": "user", "content": (
-                f"Kết quả trước không hợp lệ ({note}). Trả lại duy nhất một JSON đúng schema, sửa các lỗi trên.")}]
+    async def ask(self, purpose, system, user, schema, *, max_tokens=None, context=None, light=False, attempts=2):
+        """One JSON object matching `schema`. The worker validates the schema; this re-checks it locally.
+        Errors surface as TextModelError (the AgyTextError code is the message)."""
+        if self.before_dispatch is not None:
+            self.before_dispatch()
+        started = time.monotonic()
+        try:
+            prompt = system + chr(10) * 2 + user
+            result = await asyncio.to_thread(self._ask, prompt, schema, purpose=purpose)
+        except Exception as error:
+            code = getattr(error, "code", None)
+            LOG.info("text purpose=%s ms=%d outcome=%s", purpose, _ms(started), code or type(error).__name__)
+            raise TextModelError(f"model call failed: {code or type(error).__name__}") from None
+        problems = check_schema(schema, result)
+        LOG.info("text purpose=%s ms=%d outcome=%s", purpose, _ms(started), "valid" if not problems else "invalid_schema")
+        if problems:
+            raise TextModelError("model JSON does not match the schema: " + "; ".join(problems[:3]))
+        return result
 
 
 def _ms(started):
