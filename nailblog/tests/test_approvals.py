@@ -391,5 +391,161 @@ class SenderTests(unittest.TestCase):
         self.assertEqual(client.calls, [])
 
 
+ISSUES = [{'code': 'cliche', 'message': 'Dùng cụm sáo rỗng', 'overridable': True, 'kind': 'fixable'},
+          {'code': 'wall_of_text', 'overridable': True}]
+
+
+def json_issues(row):
+    import json
+    return json.loads(row['issues'])
+
+
+class OverrideTests(Base):
+    """Decisions on a real sqlite file: repeat, wrong sender, expiry, superseded, override."""
+
+    def held(self, snapshot='h1', deadline=NOW + 100, run='runH'):
+        return self.store.request('draft', run, snapshot, deadline, NOW, requires_override=True, issues=ISSUES)
+
+    def decide(self, rid, verdict='ok', reason='', sender=OWNER, now=NOW + 1, **kw):
+        return self.store.decide(rid, verdict, reason, sender, OWNER, now, **kw)
+
+    def test_plain_ok_on_a_held_request_needs_override_and_changes_nothing(self):
+        rid = self.held()
+        result = self.decide(rid)
+        self.assertEqual((result['ok'], result['code']), (False, 'override_required'))
+        row = self.store.get(rid)
+        self.assertEqual((row['status'], row['requires_override'], row['override']), ('pending', 1, 0))
+        self.assertEqual(json_issues(row), [
+            {'code': 'cliche', 'message': 'Dùng cụm sáo rỗng', 'overridable': True, 'kind': 'fixable'},
+            {'code': 'wall_of_text', 'message': '', 'overridable': True, 'kind': ''}])
+        self.assertFalse(self.store.is_approved('runH', 'draft', 'h1'))
+
+    def test_override_without_reason_is_refused_and_with_reason_approves_and_records_it(self):
+        rid = self.held()
+        self.assertEqual(self.decide(rid, override=True, reason='  ')['code'], 'reason_required')
+        self.assertEqual(self.store.get(rid)['status'], 'pending')
+        result = self.decide(rid, override=True, reason='Owner  đã đọc,  chấp nhận')
+        self.assertEqual((result['ok'], result['code'], result['status']), (True, 'recorded', 'approved'))
+        row = self.store.get(rid)
+        self.assertEqual((row['override'], row['reason']), (1, 'Owner đã đọc, chấp nhận'))
+        self.assertTrue(self.store.is_approved('runH', 'draft', 'h1'))
+        again = self.decide(rid, override=True, reason='lần hai')
+        self.assertEqual((again['ok'], again['code']), (True, 'already_decided'))
+        self.assertEqual(self.store.get(rid)['reason'], 'Owner đã đọc, chấp nhận')
+
+    def test_reject_still_works_without_override_on_a_held_request(self):
+        rid = self.held()
+        self.assertEqual(self.decide(rid, 'reject')['code'], 'reason_required')
+        self.assertEqual(self.decide(rid, 'reject', 'sai')['status'], 'rejected')
+
+    def test_override_on_a_normal_request_is_accepted_like_ok_and_not_flagged(self):
+        rid = self.store.request('images', 'run1', 's1', NOW + 100, NOW)
+        self.assertEqual(self.store.get(rid)['requires_override'], 0)
+        result = self.decide(rid, override=True)
+        self.assertEqual((result['ok'], result['code'], result['status']), (True, 'recorded', 'approved'))
+        row = self.store.get(rid)
+        self.assertEqual((row['override'], row['reason']), (0, None))   # F5: only a held request records override=1
+        plain = self.store.request('images', 'run2', 's1', NOW + 100, NOW)
+        self.decide(plain)
+        self.assertEqual(self.store.get(plain)['override'], 0)
+
+    def test_wrong_sender_expired_and_superseded_refuse_even_with_override(self):
+        rid = self.held()
+        wrong = self.decide(rid, override=True, reason='x', sender=OWNER + 1)
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'wrong_sender'))
+        self.assertEqual(self.store.get(rid)['status'], 'pending')
+        late = self.decide(rid, override=True, reason='x', now=NOW + 101)
+        self.assertEqual((late['ok'], late['code']), (False, 'expired'))
+        self.assertEqual(self.store.get(rid)['status'], 'expired')
+        old = self.held('h2', run='runS')
+        self.held('h3', run='runS')
+        self.assertEqual(self.store.get(old)['status'], 'superseded')
+        stale = self.decide(old, override=True, reason='x')
+        self.assertEqual((stale['ok'], stale['code']), (False, 'superseded'))
+        self.assertFalse(self.store.is_approved('runS', 'draft', 'h2'))
+
+    def test_layer1_request_refuses_non_overridable_issues_and_creates_no_row(self):
+        bad = ({'code': 'han_violation', 'overridable': False}, {'code': 'cliche'}, 'plain_string',
+               {'code': 'facts', 'overridable': True}, {'code': 'unexpected_han', 'overridable': True},
+               {'code': 'medical_claim', 'overridable': True}, {'code': 'x', 'overridable': True, 'kind': 'hold'},
+               {'code': 'x', 'overridable': 'yes'})
+        for issue in bad:
+            with self.subTest(issue=issue):
+                with self.assertRaises(ApprovalError) as raised:
+                    self.store.request('draft', 'runX', 'x1', NOW + 100, NOW, requires_override=True,
+                                       issues=[ISSUES[0], issue])
+                self.assertEqual(str(raised.exception), 'not_overridable')
+        self.assertEqual(self.store.pending(), [])
+
+    def test_layer2_decide_refuses_override_on_a_stored_non_overridable_issue(self):
+        import json
+        for stored in ([{'code': 'han_violation', 'overridable': False}], [{'code': 'facts', 'overridable': True}],
+                       [{'code': 'a', 'overridable': True, 'kind': 'hold'}], [{'code': 'cliche'}], ['x'], 'not json'):
+            with self.subTest(stored=stored):
+                with self.state.connection() as db:   # a row written by older code, bypassing request()
+                    db.execute("DELETE FROM approval_requests")
+                    db.execute("INSERT INTO approval_requests(run_id,kind,snapshot,status,created_at,deadline,"
+                               "requires_override,issues) VALUES('old','draft','s','pending',1,?,1,?)",
+                               (NOW + 100, stored if isinstance(stored, str) else json.dumps(stored)))
+                    rid = db.execute('SELECT id FROM approval_requests').fetchone()[0]
+                result = self.decide(rid, override=True, reason='cứ duyệt')
+                self.assertEqual((result['ok'], result['code']), (False, 'override_forbidden'))
+                row = self.store.get(rid)
+                self.assertEqual((row['status'], row['override'], row['reason']), ('pending', 0, None))
+                self.assertFalse(self.store.is_approved('old', 'draft', 's'))
+                self.assertEqual(self.decide(rid, 'reject', 'sai')['status'], 'rejected')   # reject still allowed
+
+    def test_f1_repeat_request_raises_a_pending_row_but_never_lowers_or_touches_a_decided_one(self):
+        plain = self.store.request('draft', 'runU', 'u1', NOW + 100, NOW)
+        self.assertEqual(self.held('u1', run='runU'), plain)
+        row = self.store.get(plain)
+        self.assertEqual(row['requires_override'], 1)
+        self.assertEqual(len(json_issues(row)), 2)
+        self.assertEqual(self.decide(plain)['code'], 'override_required')
+        self.assertEqual(self.store.request('draft', 'runU', 'u1', NOW + 100, NOW), plain)   # not lowered
+        self.assertEqual(self.store.get(plain)['requires_override'], 1)
+        done = self.store.request('draft', 'runD', 'd1', NOW + 100, NOW)
+        self.decide(done)
+        self.assertEqual(self.held('d1', run='runD'), done)
+        row = self.store.get(done)
+        self.assertEqual((row['status'], row['requires_override'], row['issues']), ('approved', 0, '[]'))
+
+    def test_request_is_idempotent_and_keeps_its_flag(self):
+        first = self.held()
+        self.assertEqual(self.store.request('draft', 'runH', 'h1', NOW + 100, NOW), first)
+        self.assertEqual(self.store.get(first)['requires_override'], 1)
+
+    def test_old_database_without_the_new_columns_is_migrated_and_stays_readable(self):
+        path = self.root / 'old.db'
+        db = sqlite3.connect(path)
+        db.execute("""CREATE TABLE approval_requests(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('images','draft')), snapshot TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired','superseded')),
+            reason TEXT, created_at REAL NOT NULL, deadline REAL NOT NULL, decided_at REAL, decided_by INTEGER,
+            message_ids TEXT NOT NULL DEFAULT '[]', UNIQUE(run_id, kind, snapshot))""")
+        db.execute("INSERT INTO approval_requests(run_id,kind,snapshot,status,created_at,deadline) "
+                   "VALUES('old','images','s','pending',1,?)", (NOW + 100,))
+        db.commit()
+        db.close()
+        store = ApprovalStore(State(path))
+        ApprovalStore(State(path))   # second open: guard, no duplicate-column error
+        row = store.get(1)
+        self.assertEqual((row['requires_override'], row['issues'], row['override']), (0, '[]', 0))
+        self.assertEqual(store.decide(1, 'ok', '', OWNER, OWNER, NOW + 1)['status'], 'approved')
+
+    def test_held_card_lists_issues_and_all_three_command_lines(self):
+        rid = self.held()
+        artifact = {'article': {'title': 'T'}, 'snapshot': 'h1' * 8}
+        _, card, _ = build_preview('draft', artifact, [], approval_id=rid, deadline=NOW + 100,
+                                   requires_override=True, issues=ISSUES)
+        for line in (f'/nailblog ok {rid}\n', f'/nailblog reject {rid} <lý do>',
+                     'Lỗi kiểm chất lượng (2):', '- cliche: Dùng cụm sáo rỗng', '- wall_of_text',
+                     f'Bài trượt kiểm chất lượng — cần /nailblog ok {rid} override <lý do>'):
+            self.assertIn(line, card)
+        _, normal, _ = build_preview('draft', artifact, [], approval_id=rid, deadline=NOW + 100)
+        self.assertNotIn('override', normal)
+
+
 if __name__ == '__main__':
     unittest.main()
