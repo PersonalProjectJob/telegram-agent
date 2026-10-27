@@ -152,20 +152,33 @@ def text_config_identity(cfg):
             'text_policy_sha': text_policy_sha(agent)}
 
 
-def text_job_id(purpose, prompt, schema):
-    return digest({'protocol': TEXT_PROTOCOL, 'kind': 'text', 'purpose': purpose, 'prompt': prompt, 'schema': schema})
+MAX_TEXT_ARGV_BYTES = 100000   # prompt + schema travel in argv (visible via ps/cmdline); stay far below E2BIG
+TRANSIENT_REJECTIONS = ('cli_daily_job_cap', 'cli_job_expired', 'cli_job_cancelled', 'cli_lock_stopped')
+PRINT_TIMEOUT_MARGIN = 15       # CLI stops itself before the worker's hard kill
+SALVAGE_ERRORS = ('cli_timeout_unknown', 'cli_process_failed_unknown')
+
+
+def text_argv_bytes(prompt, schema):
+    return len(prompt.encode()) + len(json.dumps(schema, ensure_ascii=False).encode())
+
+
+def text_job_id(purpose, prompt, schema, attempt=0):
+    """attempt > 0 only after a TRANSIENT rejection (nothing ran); unknown/complete jobs are never recreated."""
+    return digest({'protocol': TEXT_PROTOCOL, 'kind': 'text', 'purpose': purpose, 'prompt': prompt, 'schema': schema,
+                   'attempt': attempt})
 
 
 def validate_text_request(request, job_id, cfg):
-    if (not isinstance(request, dict) or set(request) != {'protocol', 'kind', 'job_id', 'purpose', 'prompt', 'schema', 'expires_at', 'config'} or
+    if (not isinstance(request, dict) or set(request) != {'protocol', 'kind', 'job_id', 'purpose', 'prompt', 'schema', 'attempt', 'expires_at', 'config'} or
             request['protocol'] != TEXT_PROTOCOL or request['kind'] != 'text' or request['job_id'] != job_id or
             not HEX.fullmatch(job_id) or not isinstance(request['purpose'], str) or not PURPOSE_RE.fullmatch(request['purpose']) or
-            not isinstance(request['prompt'], str) or not 1 <= len(request['prompt']) <= 60000 or
-            not isinstance(request['schema'], dict) or
+            not isinstance(request['prompt'], str) or not request['prompt'] or
+            not isinstance(request['schema'], dict) or type(request['attempt']) is not int or request['attempt'] < 0 or
             type(request['expires_at']) not in (int, float) or not math.isfinite(request['expires_at'])):
         raise ImageError('cli_request_invalid')
     if (request['config'] != text_config_identity(cfg) or
-            job_id != text_job_id(request['purpose'], request['prompt'], request['schema'])):
+            text_argv_bytes(request['prompt'], request['schema']) > MAX_TEXT_ARGV_BYTES or
+            job_id != text_job_id(request['purpose'], request['prompt'], request['schema'], request['attempt'])):
         raise ImageError('cli_request_invalid')
 
 
@@ -370,8 +383,12 @@ class Worker:
         self.uid = os.getuid() if os.name == 'posix' else None  # owner pin only exists on POSIX
 
     def _busy(self, job_id):
+        # Heartbeat trouble must never reject or alter a valid job; a stale file already fails closed.
         if self.beat is not None:
-            self.beat.set_busy(job_id)
+            try:
+                self.beat.set_busy(job_id)
+            except Exception as error:
+                self.beat.last_error = type(error).__name__
 
     def text_ready(self, private):
         """Text jobs are advertised only when the pinned text agent is installed and discovered."""
@@ -455,6 +472,7 @@ class Worker:
             result['request_sha'] = digest(request)
             self.check_pending(request, job)
             day = datetime.fromtimestamp(self.clock(), VN_TZ).date().isoformat()
+            result['day'] = day
             records = [json.loads(read(p, owner=uid(self.cfg.worker_user))) for p in private.glob('*.json')]
             dispatched = [r for r in records if r.get('status') == 'dispatched']
             run_id = 'text:' + name if text else request['run_id']
@@ -615,7 +633,7 @@ class Worker:
                     time.sleep(min(.05, max(0, deadline - time.monotonic())))
                 return self.is_set()
         command = [cfg.executable, '--agent', agent, '--model', cfg.agent_model, '--effort', cfg.effort,
-                   '--output-format', 'json', '--print-timeout', str(cfg.text_timeout_seconds) + 's',
+                   '--output-format', 'json', '--print-timeout', str(cfg.text_timeout_seconds - PRINT_TIMEOUT_MARGIN) + 's',
                    '--json-schema', json.dumps(request['schema'], ensure_ascii=False), '--print', prompt]
         timed_out = stdout = None
         try:
@@ -629,7 +647,7 @@ class Worker:
                 try:
                     stdout = self.runner(command, cwd=workspace, timeout=cfg.text_timeout_seconds)
                 except ImageError as error:
-                    if str(error) != 'cli_timeout_unknown': raise
+                    if str(error) not in SALVAGE_ERRORS: raise
                     timed_out = error
         except LockStopped:
             self.check_pending(request, directory)
@@ -677,9 +695,11 @@ class Worker:
         except ImageError:
             raise timed_out from None
         return self.text_result(request, directory, session, snapshot, native, article,
-                                status='complete_salvaged', stdout_copies=None, native_copies=copies)
+                                status='complete_salvaged', stdout_copies=None, native_copies=copies,
+                                salvaged_from=str(timed_out))
 
-    def text_result(self, request, directory, session, snapshot, native, article, *, status, stdout_copies, native_copies):
+    def text_result(self, request, directory, session, snapshot, native, article, *, status, stdout_copies, native_copies,
+                    salvaged_from=None):
         cfg = self.cfg
         agent = check_agent(cfg.text_agent)
         output = enc(article)
@@ -693,7 +713,7 @@ class Worker:
                   'native_user_sha': sha(native['user_raw']), 'native_steps': native['steps'],
                   'tool_calls_observed': 0, 'native_images': 0, 'stdout_copies': stdout_copies,
                   'native_final_copies': native_copies, 'billing': dict(BILLING)}
-        if status == 'complete_salvaged': result['salvaged_from'] = 'cli_timeout_unknown'
+        if status == 'complete_salvaged': result['salvaged_from'] = salvaged_from
         return result
 
 

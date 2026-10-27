@@ -100,6 +100,12 @@ never dispatches again: it returns `complete_salvaged` only if the new native
 conversation already holds a valid final assistant answer, otherwise `unknown`.
 Identical repeated stdout JSON collapses to one; differing copies or any unknown native
 record hold the job. Text and image jobs share `subscription.max_daily_jobs`.
+The prompt and JSON schema are passed in the agy argv, so they are visible to other
+local users through `ps`/`/proc/<pid>/cmdline` while the job runs; never put secrets
+in a text prompt. Prompt plus schema are capped at 100000 UTF-8 bytes (E2BIG guard),
+checked before the job is created and again before the dispatch marker is written.
+`--print-timeout` is `text_timeout_seconds - 15` so the CLI stops before the hard kill.
+Salvage also applies when the CLI process fails after writing a complete native answer.
 The worker refreshes `worker-ready.json` about every 15s even during a long job and
 records `busy_job`; a dead worker stops refreshing and the producer fails closed.
 Text is advertised in the heartbeat only when the text agent was verified, so a missing

@@ -5,22 +5,27 @@ receipt. It NEVER holds MODEL_LOCK while waiting: the worker takes the shared
 lock itself, so a bot-held lock would deadlock. A job that ended `unknown` is
 final; callers decide whether to ask again with a different `purpose`.
 """
+from datetime import datetime
 import json
 import time
 
 from .images import ImageError
-from .images.subscription import (Directory, TEXT_PROTOCOL, PURPOSE_RE, check_agent,
-                                  check_ready, text_config_identity, text_job_id, uid, validate_text_request,
-                                  verify_text_receipt)
+from .images.subscription import (Directory, TEXT_PROTOCOL, PURPOSE_RE, MAX_TEXT_ARGV_BYTES, TRANSIENT_REJECTIONS,
+                                  check_agent, check_ready, text_argv_bytes, text_config_identity, text_job_id, uid,
+                                  validate_text_request, verify_text_receipt)
 from .publication import digest
+from .schedule import VN_TZ
 
-MAX_PROMPT = 60000
 POLL_SECONDS = 1
 WAIT_MARGIN_SECONDS = 30
+MAX_ATTEMPTS = 16
 
 
 class AgyTextError(Exception):
-    """`code`: unknown | not_ready | held | daily_cap | expired | cancelled | invalid | schema | failed."""
+    """`code`: unknown | not_ready | held | daily_cap | expired | cancelled | invalid | schema | failed.
+
+    `detail` carries the original receipt/worker error code (e.g. cli_timeout_unknown).
+    """
 
     def __init__(self, code, detail=''):
         super().__init__(code + (': ' + detail if detail else ''))
@@ -48,38 +53,70 @@ class AgyText:
     def ask(self, prompt, schema, *, purpose, deadline=None):
         """Return the model's JSON object. `deadline` (epoch) is the last moment a job may START.
 
-        The same (purpose, prompt, schema) always maps to the same job, so a restart
-        reattaches to it instead of dispatching again.
+        The same (purpose, prompt, schema) maps to the same job, so a restart reattaches to it
+        instead of dispatching again. `unknown` and `complete*` jobs are final: to ask again after
+        `unknown` the caller MUST change `purpose`. Only a job rejected BEFORE dispatch for a
+        transient reason (daily cap of an earlier day, expired, cancelled, lock stopped) is retried
+        automatically, as a new attempt job; nothing ran in the old one.
+        Prompt and schema travel in the agy argv, so they are visible via ps/cmdline.
         """
-        if (not isinstance(prompt, str) or not 1 <= len(prompt) <= MAX_PROMPT or not isinstance(schema, dict) or
-                not isinstance(purpose, str) or not PURPOSE_RE.fullmatch(purpose)):
+        try:
+            too_big = (not isinstance(prompt, str) or not isinstance(schema, dict) or
+                       text_argv_bytes(prompt, schema) > MAX_TEXT_ARGV_BYTES)
+        except (TypeError, ValueError):
+            too_big = True
+        if too_big or not prompt or not isinstance(purpose, str) or not PURPOSE_RE.fullmatch(purpose):
             raise AgyTextError('invalid')
         try:
             cfg = self.cfg
             check_agent(cfg.text_agent)
-            job_id = text_job_id(purpose, prompt, schema)
             with Directory(cfg.queue_dir) as queue:
+                job_id, attempt = self._pick(queue, purpose, prompt, schema)
                 if not queue.exists(job_id):
                     try:
                         check_ready(cfg, self.clock, text=True)
                     except Exception:
                         raise AgyTextError('not_ready') from None
-                    now = self.clock()
-                    expires = deadline if deadline is not None else now + 2 * cfg.text_timeout_seconds
-                    if expires <= now:
+                    if deadline is not None and deadline <= self.clock():
                         raise AgyTextError('expired')
                     queue.mkdir(job_id)
+                    self._write_request(queue, job_id, attempt, purpose, prompt, schema, deadline)
+                else:
                     with Directory(job_id, parent=queue, owner=uid(cfg.producer_user)) as job:
-                        job.atomic('request.json', {
-                            'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job_id, 'purpose': purpose,
-                            'prompt': prompt, 'schema': schema, 'expires_at': expires,
-                            'config': text_config_identity(cfg)})
+                        missing = not job.exists('request.json')
+                    if missing:
+                        # Interrupted between mkdir and the request write: nothing dispatched; write it again.
+                        self._write_request(queue, job_id, attempt, purpose, prompt, schema, deadline)
                 with Directory(job_id, parent=queue, owner=uid(cfg.producer_user)) as job:
                     return self._wait(job, job_id)
         except ImageError as error:
-            raise AgyTextError(classify(error)) from None
+            raise AgyTextError(classify(error), str(error)) from None
         except (ValueError, TypeError, OSError) as error:
             raise AgyTextError('failed', type(error).__name__) from None
+
+    def _pick(self, queue, purpose, prompt, schema):
+        """Attach to the existing job; advance only past a transient pre-dispatch rejection."""
+        cfg = self.cfg
+        today = datetime.fromtimestamp(self.clock(), VN_TZ).date().isoformat()
+        for attempt in range(MAX_ATTEMPTS):
+            job_id = text_job_id(purpose, prompt, schema, attempt)
+            if not queue.exists(job_id): return job_id, attempt
+            with Directory(job_id, parent=queue, owner=uid(cfg.producer_user)) as job:
+                if not job.exists('receipt.json'): return job_id, attempt
+                receipt = json.loads(job.read('receipt.json', owner=uid(cfg.worker_user)))
+            error = receipt.get('error') if isinstance(receipt, dict) else None
+            if (not isinstance(receipt, dict) or receipt.get('status') != 'rejected' or error not in TRANSIENT_REJECTIONS or
+                    (error == 'cli_daily_job_cap' and receipt.get('day') == today)):
+                return job_id, attempt
+        raise AgyTextError('failed', 'too_many_attempts')
+
+    def _write_request(self, queue, job_id, attempt, purpose, prompt, schema, deadline):
+        cfg = self.cfg
+        expires = deadline if deadline is not None else self.clock() + 2 * cfg.text_timeout_seconds
+        with Directory(job_id, parent=queue, owner=uid(cfg.producer_user)) as job:
+            job.atomic('request.json', {
+                'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job_id, 'purpose': purpose, 'prompt': prompt,
+                'schema': schema, 'attempt': attempt, 'expires_at': expires, 'config': text_config_identity(cfg)})
 
     def _wait(self, job, job_id):
         cfg = self.cfg
@@ -97,10 +134,11 @@ class AgyText:
                 receipt.get('request_sha') != digest(request)):
             raise AgyTextError('unknown', 'receipt_mismatch')
         if receipt.get('status') not in ('complete', 'complete_salvaged'):
-            code = classify(receipt.get('error'))
+            error = str(receipt.get('error', ''))
+            code = classify(error)
             if code == 'unknown' and receipt.get('status') == 'rejected':
                 code = 'failed'
-            raise AgyTextError(code, str(receipt.get('error', '')))
+            raise AgyTextError(code, error)
         worker = uid(cfg.worker_user)
         output = job.read('output.json', owner=worker, limit=2 * 1024 * 1024)
         value = verify_text_receipt(cfg, receipt, request, output,

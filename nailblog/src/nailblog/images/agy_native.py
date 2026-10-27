@@ -247,5 +247,5 @@ def salvage_text(rows, prompt):
     """After a CLI timeout: the finished final assistant answer, or None. Never raises."""
     try:
         return native_text(rows, prompt)
-    except (ImageError, TypeError, IndexError):
+    except (ImageError, TypeError, IndexError, ValueError, UnicodeError):
         return None

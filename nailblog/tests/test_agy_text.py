@@ -3,6 +3,7 @@
 Pure logic (collapse, salvage, heartbeat) and the worker/producer round trip run on any OS.
 """
 from contextlib import closing
+from datetime import datetime
 from dataclasses import replace
 import json
 import os
@@ -140,7 +141,7 @@ class PolicyAndIdentityTests(unittest.TestCase):
             cfg = config(root).subscription
             job = text_job_id('p', 'prompt', SCHEMA)
             req = {'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job, 'purpose': 'p', 'prompt': 'prompt', 'schema': SCHEMA,
-                   'expires_at': 5, 'config': text_config_identity(cfg)}
+                   'attempt': 0, 'expires_at': 5, 'config': text_config_identity(cfg)}
             validate_text_request(req, job, cfg)
             for change in ({'prompt': 'other'}, {'purpose': 'q'}, {'kind': 'image'}, {'extra': 1}, {'expires_at': float('inf')},
                            {'config': {**text_config_identity(cfg), 'text_agent': 'x'}}, {'schema': {}}):
@@ -206,6 +207,7 @@ class Env(unittest.TestCase):
         patcher = patch.dict(os.environ, {'AGENTFLEET_LOCK_DIR': str(locks)}); patcher.start(); self.addCleanup(patcher.stop)
         self.clock = Clock()
         self.calls = []
+        self.on_agent = None
         self.behaviour = self.answer
         self.worker = Worker(self.cfg, runner=self.runner, clock=self.clock, home=self.home)
         self.ask = AgyText(self.c, clock=self.clock, sleep=self.tick)
@@ -215,7 +217,10 @@ class Env(unittest.TestCase):
     # --- fake agy subprocess ---
     def runner(self, args, *, cwd, timeout):
         if args[1:] == ['--version']: return b'agy 1.2.11\n'
-        if args[1:] == ['agent']: return b'nailblog-text-only\nnailblog-image-only\n'
+        if args[1:] == ['agent']:
+            hook, self.on_agent = self.on_agent, None
+            if hook: hook()
+            return b'nailblog-text-only\nnailblog-image-only\n'
         self.calls.append((list(args), timeout))
         return self.behaviour(args, timeout)
 
@@ -260,10 +265,62 @@ class WorkerTextTests(Env):
         job_id = text_job_id(purpose, prompt, SCHEMA)
         path = Path(self.cfg.queue_dir) / job_id; path.mkdir(mode=0o700)
         atomic(path / 'request.json', {'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job_id, 'purpose': purpose, 'prompt': prompt,
-                                       'schema': SCHEMA, 'expires_at': self.clock() + 5000, 'config': text_config_identity(self.cfg)})
+                                       'schema': SCHEMA, 'attempt': 0, 'expires_at': self.clock() + 5000, 'config': text_config_identity(self.cfg)})
         with Directory(self.cfg.queue_dir) as queue:
             result = self.worker.scan(queue, self.private)
         return job_id, result
+
+    def installed_policy(self):
+        return self.home / 'snap/antigravity-cli/common/.gemini/config/agents/nailblog-text-only.md'
+
+    def tamper(self):
+        path = self.installed_policy()
+        path.write_bytes(path.read_bytes().replace(b'tools: []', b'tools: [a]'))
+
+    def test_modified_installed_policy_blocks_dispatch(self):
+        self.tamper()
+        job_id, result = self.run_job()
+        self.assertEqual(result['error'], 'cli_tool_policy_changed')
+        self.assertEqual(self.calls, [])
+
+    def test_policy_changed_between_preflight_and_lock_blocks_dispatch(self):
+        self.on_agent = self.tamper          # fires during the pre-lock discovery listing
+        job_id, result = self.run_job()
+        self.assertEqual(result['error'], 'cli_tool_policy_changed')
+        self.assertEqual(self.calls, [])
+
+    def test_heartbeat_failure_never_rejects_a_valid_job(self):
+        class Broken:
+            last_error = None
+            def set_busy(self, job): raise OSError('disk full')
+        self.worker.beat = Broken()
+        job_id, result = self.run_job()
+        self.assertEqual(result['status'], 'complete', result)
+        self.assertEqual(self.worker.beat.last_error, 'OSError')
+
+    def test_oversized_request_is_rejected_before_dispatch(self):
+        big = 'ạ' * 40000
+        job_id = text_job_id('big', big, SCHEMA)
+        path = Path(self.cfg.queue_dir) / job_id; path.mkdir()
+        atomic(path / 'request.json', {'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job_id, 'purpose': 'big',
+                                       'prompt': big, 'schema': SCHEMA, 'attempt': 0, 'expires_at': self.clock() + 5000,
+                                       'config': text_config_identity(self.cfg)})
+        with Directory(self.cfg.queue_dir) as queue: result = self.worker.scan(queue, self.private)
+        self.assertEqual((result['status'], result['error']), ('rejected', 'cli_request_invalid'))
+        self.assertEqual(self.calls, [])
+        self.assertEqual([m for m in self.markers() if m['status'] == 'dispatched'], [])
+
+    def test_process_failure_after_complete_answer_is_salvaged_but_other_errors_are_not(self):
+        def failed_after_answer(args, timeout):
+            self.conversation(args[args.index('--print') + 1], json.dumps(ARTICLE)); raise ImageError('cli_process_failed_unknown')
+        self.behaviour = failed_after_answer
+        job_id, result = self.run_job(prompt='crash')
+        self.assertEqual((result['status'], result['salvaged_from']), ('complete_salvaged', 'cli_process_failed_unknown'))
+        def output_limit(args, timeout):
+            self.conversation(args[args.index('--print') + 1], json.dumps(ARTICLE)); raise ImageError('cli_output_limit_unknown')
+        self.behaviour = output_limit
+        job_id, result = self.run_job(prompt='limit')
+        self.assertEqual((result['status'], result['error']), ('unknown', 'cli_output_limit_unknown'))
 
     def test_four_identical_stdout_copies_collapse_and_receipt_has_provenance(self):
         job_id, result = self.run_job()
@@ -271,7 +328,7 @@ class WorkerTextTests(Env):
         self.assertEqual((result['stdout_copies'], result['tool_calls_observed'], result['native_images']), (4, 0, 0))
         command = self.calls[0][0]
         self.assertEqual(command[command.index('--agent') + 1], 'nailblog-text-only')
-        self.assertEqual(command[command.index('--print-timeout') + 1], '600s')
+        self.assertEqual(command[command.index('--print-timeout') + 1], '585s')
         self.assertEqual(self.calls[0][1], 600)
         self.assertNotIn('--accept-edits', command)
         self.assertEqual(result['prompt_sha'], __import__('hashlib').sha256(b'write json').hexdigest())
@@ -395,7 +452,7 @@ class WorkerTextTests(Env):
         job_id = text_job_id('hb', 'p', SCHEMA)
         path = Path(self.cfg.queue_dir) / job_id; path.mkdir()
         atomic(path / 'request.json', {'protocol': TEXT_PROTOCOL, 'kind': 'text', 'job_id': job_id, 'purpose': 'hb', 'prompt': 'p',
-                                       'schema': SCHEMA, 'expires_at': time.time() + 5000, 'config': text_config_identity(self.cfg)})
+                                       'schema': SCHEMA, 'attempt': 0, 'expires_at': time.time() + 5000, 'config': text_config_identity(self.cfg)})
         with Heartbeat(self.cfg, clock=time.time, interval=0.02) as beat:
             worker.beat = beat
             with Directory(self.cfg.queue_dir) as queue: result = worker.scan(queue, self.private)
@@ -456,12 +513,54 @@ class AgyTextTests(Env):
         def timeout(args, t): raise ImageError('cli_timeout_unknown')
         self.behaviour = timeout
         with self.assertRaises(AgyTextError) as caught: self.submit()
-        self.assertEqual(caught.exception.code, 'unknown')
+        self.assertEqual((caught.exception.code, caught.exception.detail), ('unknown', 'cli_timeout_unknown'))
         self.autorun = False
         with self.assertRaises(AgyTextError) as again: self.submit()
         self.assertEqual(again.exception.code, 'unknown')
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(len([p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir()]), 1)
+
+    def test_transient_rejection_gets_a_new_attempt_job_once_the_day_changes(self):
+        from nailblog.schedule import VN_TZ
+        day = datetime.fromtimestamp(self.clock(), VN_TZ).date().isoformat()
+        for i in range(self.cfg.max_daily_jobs):
+            atomic(self.private / ('%064x.json' % i), {'day': day, 'run_id': 'img', 'status': 'dispatched'})
+        with self.assertRaises(AgyTextError) as caught: self.submit()
+        self.assertEqual(caught.exception.code, 'daily_cap')
+        jobs = lambda: len([p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir()])
+        self.assertEqual(jobs(), 1)
+        self.sleeps = 0
+        with self.assertRaises(AgyTextError) as same_day: self.submit()      # same day: stays the same rejected job
+        self.assertEqual((same_day.exception.code, jobs()), ('daily_cap', 1))
+        self.clock.t += 86400
+        self.sleeps = 0
+        self.assertEqual(self.submit(), ARTICLE)                            # next day: one new attempt, runs once
+        self.assertEqual((len(self.calls), jobs()), (1, 2))
+        self.sleeps = 0; self.autorun = False
+        self.assertEqual(self.submit(), ARTICLE)                            # complete is final: reattach, no 3rd job
+        self.assertEqual((len(self.calls), jobs()), (1, 2))
+
+    def test_expired_rejection_retries_but_complete_never_does(self):
+        self.assertEqual(self.submit(), ARTICLE)
+        job = next(p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir())
+        receipt = json.loads((job / 'receipt.json').read_bytes())
+        atomic(job / 'receipt.json', {**receipt, 'status': 'rejected', 'error': 'cli_job_expired'})
+        self.sleeps = 0
+        self.assertEqual(self.submit(), ARTICLE)
+        self.assertEqual(len([p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir()]), 2)
+
+    def test_oversized_prompt_is_invalid_with_no_job_no_marker_no_dispatch(self):
+        self.beat()
+        with self.assertRaises(AgyTextError) as caught: self.ask.ask('ạ' * 40000, SCHEMA, purpose='big')
+        self.assertEqual(caught.exception.code, 'invalid')
+        with self.assertRaises(AgyTextError) as caught: self.ask.ask('x', {'t': 'ạ' * 40000}, purpose='big')
+        self.assertEqual(caught.exception.code, 'invalid')
+        self.assertEqual(([p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir()], self.markers(), self.calls), ([], [], []))
+
+    def test_job_dir_without_request_is_repaired_not_failed(self):
+        (Path(self.cfg.queue_dir) / text_job_id('run1:write', 'write json', SCHEMA, 0)).mkdir()
+        self.assertEqual(self.submit(), ARTICLE)
+        self.assertEqual(len(self.calls), 1)
 
     def test_salvaged_answer_is_returned_and_flagged(self):
         def timeout_after_answer(args, t):
