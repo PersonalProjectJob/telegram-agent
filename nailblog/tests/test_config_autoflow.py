@@ -22,9 +22,10 @@ IDS = "\n".join(f'{slug} = "{GUID}"' for slug in CATEGORIES)
 
 def live_sections(**extra):
     """A complete live-gemini-env configuration; keyword args replace or add raw TOML tables."""
-    sections = {"contract": CONTRACT, "image": IMAGE_ENV, "budget": "daily_usd = 3.0",
+    sections = {"contract": CONTRACT + '\nenvironment = "staging"', "image": IMAGE_ENV,   # S10a: staging + shared ledger
+                "budget": 'daily_usd = 3.0\nledger_db_path = "/var/lib/agentfleet/nailblog-ledger/ledger.sqlite3"',
                 "budget__image_unit_prices__m-cover": '"2K" = 0.134', "budget__image_unit_prices__m-body": '"1K" = 0.039',
-                "admin__category_ids": IDS,
+                "admin": "daily_publish_limit = 2", "admin__category_ids": IDS,
                 "autoflow": 'enabled = true\nrun_usd = 1.0\nruns_dir = "/var/lib/agentfleet/nailblog/runs"'}
     sections.update(extra)
     return {name: body for name, body in sections.items() if body is not None}

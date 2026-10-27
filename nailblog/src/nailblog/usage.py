@@ -132,8 +132,18 @@ class UsageRecorder:
         self._lock = threading.Lock()
         self._last_write = None
 
+    def _shared(self):
+        """The shared paid-ledger State when `budget.ledger_db_path` is set (and is not this DB), else None."""
+        shared = getattr(self.budget, "ledger_db_path", "")
+        if not shared or str(shared) == str(self.state.path):
+            return None
+        from .paid import _shared_state
+        return _shared_state(shared)
+
     def total_today(self):
-        return self.state.usd_between(*day_bounds(self.clock()))
+        shared = self._shared()
+        total = self.state.usd_between(*day_bounds(self.clock()))
+        return total + (shared.usd_between(*day_bounds(self.clock())) if shared is not None else 0.0)
 
     def check(self):
         """Call before every paid request: refuse once today's total reaches the ceiling."""
@@ -162,7 +172,11 @@ class UsageRecorder:
                 return False
             try:
                 start = day_bounds(now)[0] - (DAILY_DAYS - 1) * 86400
-                write_atomic(self.path, build_summary(self.state.usage_between(start, now + 1), now,
+                rows = self.state.usage_between(start, now + 1)
+                shared = self._shared()
+                if shared is not None:   # paid images/text are booked in the shared ledger, not in this root
+                    rows = sorted(rows + shared.usage_between(start, now + 1))
+                write_atomic(self.path, build_summary(rows, now,
                                                       image_models=frozenset(self.budget.image_prices) | frozenset(self.budget.image_output_prices)))
             except Exception as error:
                 LOG.warning("Usage summary write failed exception=%s", type(error).__name__)

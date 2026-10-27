@@ -253,7 +253,7 @@ def _run_locked(config, article, directory, variants, max_usd, prompts, clock, s
     ledger = PaidLedger(state, config, clock)
     now = clock()
     # Crash recovery normally runs inside ImagePipeline.run only; do it before any reservation here too.
-    ledger.reconcile_stale(now, config.image.timeout_seconds + STALE_MARGIN_S)
+    ledger.reconcile_stale(now, config.image.timeout_seconds + STALE_MARGIN_S, run_prefix='compare-')
     ledger.age_out_uncertain(now)
     run_id = 'compare-' + datetime.fromtimestamp(now, timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + secrets.token_hex(3)
     ceiling = min(micros(max_usd), max(0, _daily_left_micros(ledger, now)))

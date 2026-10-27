@@ -1,0 +1,26 @@
+[Unit]
+Description=NailBlog native subscription image queue worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=startechai
+Group=startechai
+SupplementaryGroups=nailblog-image
+WorkingDirectory=/home/startechai/snap/antigravity-cli/common/nailblog-worker
+ExecStart=/opt/agentfleet/nailblog/.venv/bin/python -m nailblog.subscription_worker --config /etc/nailblog-subscription/worker.toml
+Restart=on-failure
+RestartSec=30
+UMask=0027
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/home/startechai/snap/antigravity-cli/common /var/lib/nailblog-subscription/queue /run/agentfleet
+TimeoutStopSec=630
+KillMode=control-group
+MemoryMax=2G
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

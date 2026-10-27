@@ -19,6 +19,7 @@ from pathlib import Path
 from .approvals import ApprovalError, build_preview
 from .images.pipeline import DispatchPaused
 from .notices import notice_key, send_once
+from .paid import PaidLedger, RunCeilingExceeded
 from .schedule import VN_TZ, approve_deadline, image_deadline, slot_datetime
 from .state import InvalidTransition
 from .usage import BudgetExceeded, UnpricedModel, day_bounds
@@ -67,7 +68,14 @@ REASON_TEXT = {
     'unpriced_model': 'model trả phí chưa có giá trong cấu hình ngân sách',
     'approval_deadline_passed': 'Owner duyệt Draft đúng hạn nhưng xử lý sau hạn, không tự duyệt (Draft chưa đăng)',
     'images_not_approved': 'ảnh đã được chấp nhận ngoài luồng autoflow, chưa có duyệt của Owner, không tự lưu Draft',
+    'topic_changed': 'chủ đề không còn được duyệt hoặc không còn giữ slot này, dừng trước bước trả phí/lưu/duyệt tiếp theo',
+    'post_changed_outside_autoflow': 'bài bị đổi trạng thái ngoài autoflow (không qua /nailblog ok), autoflow dừng',
+    'publish_not_done': 'quá giờ slot hơn 1 tiếng mà chưa xác nhận đã đăng (bài có thể đã lên trang dù hệ thống ghi '
+                        'đã lên lịch); không đăng lại, kiểm tra trang quản trị',
+    'run_ceiling_reached': 'chạm trần chi phí của run (autoflow.run_usd), không tạo thêm ảnh',
+    'image_retry_interrupted': 'lần tạo lại ảnh duy nhất bị gián đoạn (tạm dừng hoặc hết ngân sách), chưa có ảnh mới',
 }
+PUBLISH_GRACE_SECONDS = 3600   # a post still `scheduled` this long after its slot was not published
 
 
 def run_id_for(slot_at, topic_id):
@@ -145,8 +153,18 @@ def _code(error):
     return text if re.fullmatch(r'[a-z][a-z0-9_]{2,80}', text) else type(error).__name__
 
 
+_NO_BINDING = object()
+
+
 def _ctx(row):
     return json.loads(row['ctx'] or '{}')
+
+
+def _budget_error(error):
+    """The BudgetExceeded behind `error` (itself or its cause), else None."""
+    if isinstance(error, BudgetExceeded):
+        return error
+    return error.__cause__ if isinstance(error.__cause__, BudgetExceeded) else None
 
 
 def _number(value):
@@ -160,12 +178,29 @@ class _Env:
         self.runs = AutoflowRuns(self.state)
         self.owner = self.config.owner_ids[0] if len(self.config.owner_ids) == 1 else None
         self.before_dispatch = (lambda: True) if stop is None else (lambda: not stop.is_set())
+        self.tag = '[staging] ' if self.config.contract.environment == 'staging' else ''
 
     async def dm(self, key, text):
         send = self.service.notice_send
         if send is None:
             return False
-        return await send_once(self.state, send, key, text, now=self.now)
+        return await send_once(self.state, send, key, self.tag + text, now=self.now)
+
+    def post_id(self, row):
+        try:
+            return self.onepost.artifact(row['run_id']).get('post_id')
+        except Exception:   # no artifact yet -> no post
+            return None
+
+    def ledger(self):
+        return PaidLedger(self.state, self.config, self.service.clock if callable(getattr(self.service, 'clock', None))
+                          else (lambda: self.now))
+
+    def owns_slot(self, row):
+        """The topic is still approved, still on the run's slot, and no other approved topic holds that slot."""
+        topic = self.state.get_topic(row['topic_id'])
+        return bool(topic and topic['state'] == 'approved' and topic['slot_at'] == row['slot_at']
+                    and self.state.slot_holder(row['slot_at'], excluding=row['topic_id']) is None)
 
     def move(self, row, stage, ctx=None):
         return self.runs.update(row['run_id'], stage=stage, failures=0, next_attempt_at=0, **({'ctx': ctx} if ctx else {}))
@@ -227,6 +262,9 @@ class _Env:
 
     def preview_artifact(self, art, row):
         """Artifact as build_preview wants it: slot, USD forecast and the bypass block added."""
+        if self.config.image.provider == 'subscription':
+            return {**art, 'slot_at': row['slot_at'],
+                    'image_source': {'route': 'subscription', 'api_usd': None, 'plan_cost_included': 'unknown'}}
         forecast = art.get('image_quota_forecast') if isinstance(art.get('image_quota_forecast'), dict) else {}
         usd = next((forecast[k] for k in ('usd', 'forecast_usd', 'estimated_usd', 'run_usd') if _number(forecast.get(k))),
                    row['run_usd'])
@@ -234,6 +272,12 @@ class _Env:
                'image_quota_forecast': {**forecast, 'forecast_usd': float(usd)}}
         if not out.get('review_bypass') and getattr(self.config.image, 'review_bypass', False):
             out['review_bypass'] = {'enabled': True, 'source': 'config'}
+        try:   # the real settled spend of this run's images and what is left of today's cap, not the run ceiling
+            ledger = self.ledger()
+            out['image_spend'] = {'settled_usd': ledger.settled_usd(row['run_id'] + '-images'),
+                                  'daily_left_usd': ledger.daily_left_usd()}
+        except Exception as error:
+            LOG.warning('NailBlog autoflow run=%s ledger read failed exception=%s', row['run_id'], type(error).__name__)
         return out
 
     def image_paths(self, run_id):
@@ -288,8 +332,10 @@ async def _route(env, row, art):
 
 
 async def _prepare(env, row):
-    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], paid_enabled=True,
-                                    ceiling=row['run_usd'], before_dispatch=env.before_dispatch)
+    cli = env.config.image.provider == 'subscription'
+    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], paid_enabled=not cli,
+                                    ceiling=row['run_usd'], before_dispatch=env.before_dispatch,
+                                    **({'subscription_enabled': True} if cli else {}))
     await _route(env, row, art)
 
 
@@ -312,7 +358,8 @@ async def _images_send(env, row):
     unsent = not json.loads(request['message_ids'] or '[]') or _ctx(row).get('resend') == request_id
     if request['status'] == 'pending' and unsent:
         files, card, _page = build_preview('images', env.preview_artifact(art, row), env.image_paths(row['run_id']),
-                                           approval_id=request_id, deadline=deadline)
+                                           approval_id=request_id, deadline=deadline,
+                                           environment=env.config.contract.environment)
         if not await env.send_card(row, request_id, files, card):
             return
     env.move(row, 'images_wait', ctx={'images': {'id': request_id, 'snapshot': art['snapshot']}, 'resend': None})
@@ -342,12 +389,9 @@ async def _images_wait(env, row):
         env.move(row, 'saving')
 
 
-async def _images_rejected_for_good(env, row):
-    try:
-        env.hold_post(env.onepost.artifact(row['run_id']).get('post_id'), 'owner_images_rejected')
-    except Exception as error:   # no artifact -> there is no post to hold
-        LOG.info('NailBlog autoflow run=%s no post to hold exception=%s', row['run_id'], type(error).__name__)
-    await env.finish(row, 'held', 'owner_images_rejected')
+async def _images_rejected_for_good(env, row, reason='owner_images_rejected'):
+    env.hold_post(env.post_id(row), reason)   # no artifact -> there is no post to hold
+    await env.finish(row, 'held', reason)
 
 
 async def _images_retry(env, row):
@@ -357,8 +401,9 @@ async def _images_retry(env, row):
         return env.move(row, 'images_send')        # the retry already completed before a restart
     if art['phase'] != 'images_ready':
         # retry_images stores `images_pending` BEFORE it reruns the pipeline: a run found there crashed or failed
-        # mid-retry. The outcome is unknown and the single retry is spent, so hold instead of spending again.
-        return await _images_rejected_for_good(env, row)
+        # mid-retry. The outcome is unknown and the single retry is spent, so hold instead of spending again. The
+        # Owner did not reject anything here: the reason says the retry was interrupted.
+        return await _images_rejected_for_good(env, row, 'image_retry_interrupted')
     if env.halted():
         return                                      # paused/stopped: nothing is spent, try again next tick
     try:
@@ -369,7 +414,9 @@ async def _images_retry(env, row):
         # at images_ready consumed nothing and is transient. Any other failure (or a phase that moved on) spent it.
         if _code(error) in QUIET_CODES and env.onepost.artifact(row['run_id'])['phase'] == 'images_ready':
             return
-        return await _images_rejected_for_good(env, row)
+        # The retry is spent. Pause/stop, the daily cap, a pre-dispatch failure or any other error: the Owner did not
+        # reject anything, so never report `owner_images_rejected` here.
+        return await _images_rejected_for_good(env, row, 'image_retry_interrupted')
     env.move(row, 'images_send')
 
 
@@ -391,8 +438,26 @@ async def _saving(env, row):
     env.move(row, 'draft_send')
 
 
+async def _left_review(env, row, art, *, owner_approved=False):
+    """True (run held) when the Draft was approved/scheduled/published outside the engine: the run phase moved to
+    `scheduled`/`published` (one-post CLI approve) or the post left `review`, with no Owner ok on the stored snapshot.
+    A post still `scheduled` is put on `held` so it cannot publish. The one exception is a post the engine itself
+    scheduled after the Owner's ok (crash between approve and the stage move)."""
+    phase = art['phase']
+    post = env.state.get_post(art['post_id']) if art.get('post_id') else None
+    moved = phase in ('scheduled', 'published') or (phase == 'draft_verified' and post is not None
+                                                    and post['state'] != 'review')
+    if not moved or (owner_approved and post is not None and post['state'] in ('scheduled', 'published')):
+        return False
+    env.hold_post(art.get('post_id'), 'post_changed_outside_autoflow')
+    await env.finish(row, 'held', 'post_changed_outside_autoflow')
+    return True
+
+
 async def _draft_send(env, row):
     art = env.onepost.artifact(row['run_id'])
+    if await _left_review(env, row, art):
+        return
     if art['phase'] != 'draft_verified':
         return await _route(env, row, art)
     if env.now >= env.approve_ts(row):
@@ -408,7 +473,8 @@ async def _draft_send(env, row):
     unsent = not json.loads(request['message_ids'] or '[]') or _ctx(row).get('resend') == request_id
     if request['status'] == 'pending' and unsent:
         files, card, _page = build_preview('draft', env.preview_artifact(art, row), [],
-                                           approval_id=request_id, deadline=deadline)
+                                           approval_id=request_id, deadline=deadline,
+                                           environment=env.config.contract.environment)
         if not await env.send_card(row, request_id, files, card):
             return
     env.move(row, 'draft_wait', ctx={'draft': {'id': request_id, 'snapshot': art['snapshot']}, 'resend': None})
@@ -419,6 +485,9 @@ async def _draft_wait(env, row):
     found = env.settle(ctx['draft']['id'])
     snapshot = ctx['draft']['snapshot']
     status = found['status']
+    owner_ok = status == 'approved' and env.approvals.is_approved(row['run_id'], 'draft', snapshot)
+    if await _left_review(env, row, env.onepost.artifact(row['run_id']), owner_approved=owner_ok):
+        return
     if status == 'expired':
         return await env.finish(row, 'skipped', 'draft_deadline_missed')
     if status == 'superseded':
@@ -426,9 +495,10 @@ async def _draft_wait(env, row):
     if status == 'rejected':
         env.hold_post(env.onepost.artifact(row['run_id']).get('post_id'), 'owner_draft_rejected')
         return await env.finish(row, 'held', 'owner_draft_rejected')
-    if status == 'approved' and env.approvals.is_approved(row['run_id'], 'draft', snapshot):
+    if owner_ok:
         art = env.onepost.artifact(row['run_id'])
-        if art['phase'] == 'draft_verified':
+        post = env.state.get_post(art['post_id']) if art.get('post_id') else None
+        if art['phase'] == 'draft_verified' and not (post and post['state'] == 'scheduled'):
             if env.now >= env.approve_ts(row):
                 return await env.finish(row, 'held', 'approval_deadline_passed')
             env.onepost.approve(row['run_id'], snapshot)
@@ -446,6 +516,8 @@ async def _scheduled(env, row):
         await env.finish(row, 'published', '')
     elif post['state'] == 'held':
         await env.finish(row, 'held', 'post_held')
+    elif post['state'] == 'scheduled' and env.now > datetime.fromisoformat(row['slot_at']).timestamp() + PUBLISH_GRACE_SECONDS:
+        await env.finish(row, 'held', 'publish_not_done')   # the scheduler had its window; the post state is not touched
     elif post['state'] == 'uncertain':   # keep watching: it may still resolve to published (or held by the Owner)
         await env.dm(notice_key('publish_uncertain', row['run_id']),
                      f"NailBlog autoflow: bài #{row['topic_id']} (slot {row['slot_at']}) chưa xác định được kết quả đăng. "
@@ -455,6 +527,8 @@ async def _scheduled(env, row):
 HANDLERS = {'new': _new, 'images_send': _images_send, 'images_wait': _images_wait, 'images_retry': _images_retry,
             'saving': _saving, 'draft_send': _draft_send, 'draft_wait': _draft_wait, 'scheduled': _scheduled}
 IMAGE_DEADLINE_STAGES = ('new', 'images_send', 'images_retry')
+# Every stage before the post is scheduled re-checks that its topic is still approved and still owns the slot.
+GUARDED_STAGES = ('new', 'images_send', 'images_wait', 'images_retry', 'saving', 'draft_send', 'draft_wait')
 
 
 async def _advance(env, row):
@@ -463,13 +537,21 @@ async def _advance(env, row):
             return await env.finish(row, 'skipped', 'images_deadline_missed')
         if row['next_attempt_at'] > env.now:
             return
+        if row['stage'] in GUARDED_STAGES and not env.owns_slot(row):
+            # Swapped/dropped topic: nothing paid, saved or approved from here on.
+            env.hold_post(env.post_id(row), 'topic_changed')
+            return await env.finish(row, 'held', 'topic_changed')
         await HANDLERS[row['stage']](env, row)
     except DispatchPaused:
         return                                      # stop/pause before any transport call: no failure, retry next pass
     except UnpricedModel:
         await env.finish(row, 'held', 'unpriced_model')
     except Exception as error:
-        if isinstance(error, BudgetExceeded) or isinstance(error.__cause__, BudgetExceeded):
+        budget = _budget_error(error)
+        if isinstance(budget, RunCeilingExceeded):   # the run's own ceiling, not the daily cap: hold, do not wait a day
+            env.hold_post(env.post_id(row), 'run_ceiling_reached')
+            return await env.finish(row, 'held', 'run_ceiling_reached')
+        if budget is not None:
             return await env.budget(row)
         code = _code(error)
         if code in QUIET_CODES:
@@ -480,8 +562,18 @@ async def _advance(env, row):
 
 
 def _new_runs(env):
-    """Create rows for locked topics whose slot is inside the start window and not yet past its image deadline."""
+    """Returns the approved topics whose window is open but that the daily decision did NOT lock (one DM each)."""
+    # Create rows for topics LOCKED by the daily decision (see daily.locked_topic) whose slot is inside the start
+    # window and not yet past its image deadline, at most one run per slot.
+    from .daily import locked_topic
+    unlocked = []
     config = env.config
+    taken = set()          # one run per slot, ever: a swapped/dropped topic can never start a second paid run
+    for existing in env.runs.rows():
+        try:
+            taken.add(datetime.fromisoformat(existing['slot_at']).timestamp())
+        except ValueError:
+            continue
     for topic in env.state.list_topics(('approved',)):
         if not topic['slot_at'] or env.runs.by_topic(topic['id']) or env.state.posts_for_topic(topic['id']):
             continue
@@ -492,11 +584,20 @@ def _new_runs(env):
                 continue
         except ValueError:
             continue
+        if slot.timestamp() in taken:
+            continue
         start = slot.timestamp() - config.schedule.window_start_hours * 3600
         if not start <= env.now < image_deadline(slot, config.schedule.window_end_hours).timestamp():
             continue
+        if not locked_topic(env.state, topic):
+            local = slot.astimezone(VN_TZ)
+            if env.state.daily_get((local.date() - timedelta(days=1)).isoformat(), 'decide') is not None:
+                unlocked.append((topic, local))     # decided, yet this topic was not chosen: say so, do not skip silently
+            continue
         out_dir = str(Path(config.autoflow.runs_dir) / run_id)
-        env.runs.create(run_id, topic['id'], topic['slot_at'], out_dir, float(config.autoflow.run_usd))
+        if env.runs.create(run_id, topic['id'], topic['slot_at'], out_dir, float(config.autoflow.run_usd)):
+            taken.add(slot.timestamp())
+    return unlocked
 
 
 async def run_due(service, stop, *, onepost, approvals, now):
@@ -504,12 +605,20 @@ async def run_due(service, stop, *, onepost, approvals, now):
     config, state = service.config, service.state
     if isinstance(now, datetime):
         now = now.timestamp()
-    if config.mode != 'live' or not config.autoflow.enabled or state.control()['paused'] or not state.armed_binding():
+    if config.mode != 'live' or not config.autoflow.enabled or state.control()['paused']:
         return
+    armed = state.armed_binding()
+    loaded = getattr(service, 'startup_binding', _NO_BINDING)   # a service without one (test double): non-empty is enough
+    if not armed or (loaded is not _NO_BINDING and armed != loaded):
+        return                                       # armed for another build/config than this process loaded
     env = _Env(service, stop, onepost, approvals, now)
     if env.owner is None:
         return
-    _new_runs(env)
+    for topic, local in _new_runs(env):
+        await env.dm(notice_key('unlocked', f"{topic['id']}|{topic['slot_at']}"),
+                     f"NailBlog autoflow: slot {local:%H:%M} ngày {local:%d/%m} chưa có chủ đề được chốt: chủ đề "
+                     f"#{topic['id']} đã duyệt nhưng bước chốt hằng ngày không chọn nó (ví dụ ngoài nhóm danh mục của "
+                     'slot), nên autoflow không chạy slot này.')
     for row in env.runs.rows(active=True):
         if stop is not None and stop.is_set():
             break

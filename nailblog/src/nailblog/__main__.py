@@ -141,6 +141,23 @@ async def _daily(config, args, runtime, options):
                       'service sẽ gửi khi chạy trong ngày này') + ')')
 
 
+def _autoflow_owned(state, run_id):
+    """True when `run_id` has an `autoflow_runs` row: its approvals belong to the engine and the Owner's `ok`."""
+    with state.connection() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='autoflow_runs'").fetchone() is None:
+            return False
+        return db.execute('SELECT 1 FROM autoflow_runs WHERE run_id=?', (run_id,)).fetchone() is not None
+
+
+def _refuse_dirty_cutover(config, state=None):
+    """Paid start with `budget.ledger_db_path` set while the root's own DB still holds same-day/unsettled spend."""
+    from .paid import local_ledger_problem
+    from .state import State
+    problem = local_ledger_problem(state or State(config.db_path), config, time.time)
+    if problem:
+        raise ImageError(problem)
+
+
 async def execute(command, config, args=None, runtime=None):
     runtime = runtime or Runtime()
     if command == 'pause-install':
@@ -158,12 +175,18 @@ async def execute(command, config, args=None, runtime=None):
     if command == 'one-post':
         from .onepost import OnePost
         from .service import Service
-        workflow = OnePost(Service(config))
+        service = Service(config)
+        workflow = OnePost(service)
+        if args.action in ('accept-images', 'draft', 'approve', 'publish') and _autoflow_owned(service.state, args.run_id):
+            raise ImageError('autoflow_owned_run')   # the engine and the Owner's /nailblog ok own this run's steps
+        if args.action == 'prepare' and args.paid_enabled:
+            _refuse_dirty_cutover(config, service.state)
         if args.action == 'prepare':
             article = json.loads(Path(args.article).read_text(encoding='utf-8')) if args.article else None
             result = await workflow.prepare(args.run_id, args.topic, args.out, article=article,
                                             images_document=args.images_document, free_enabled=args.free_enabled,
                                             paid_enabled=args.paid_enabled,
+                                            **({'subscription_enabled': True} if args.subscription_enabled else {}),
                                             ceiling=args.run_neurons if args.free_enabled else args.run_usd)
         elif args.action == 'accept-images':
             result = workflow.accept_images(args.run_id, args.snapshot)
@@ -184,13 +207,18 @@ async def execute(command, config, args=None, runtime=None):
         if cloudflare!=args.free_enabled:
             raise ImageError('provider_requires_matching_explicit_enable')
         ceiling=args.run_neurons if cloudflare else args.run_usd
+        if args.paid_enabled:
+            _refuse_dirty_cutover(config)
         document = await ImagePipeline(config).run(article,args.out,args.run_id,ceiling,
-                                                  paid_enabled=args.paid_enabled,free_enabled=args.free_enabled)
+                                                  paid_enabled=args.paid_enabled,free_enabled=args.free_enabled,
+                                                  **({'subscription_enabled': True} if args.subscription_enabled else {}))
         print('local images verified: '+str(len(document['image_hashes'])))
         print(str(Path(args.out)/'document.json'))
         return
     if command == 'image-compare':
         from .images.compare import parse_variants, run_compare
+        if args.paid_enabled:
+            _refuse_dirty_cutover(config)
         board = run_compare(config, json.loads(Path(args.article).read_text(encoding='utf-8')), args.out,
                             parse_variants(args.variants), args.max_usd, paid_enabled=args.paid_enabled)
         print('image-compare: total_usd=%.6f ledger_settled_usd=%.6f' % (board['total_usd'], board['ledger_settled_usd']))
@@ -275,6 +303,7 @@ def main(argv=None, *, runtime=None):
     parser.add_argument('--run-usd', type=float, help='images: approved total run ceiling USD, immutable on resume')
     parser.add_argument('--paid-enabled', action='store_true', help='images: explicitly authorize local paid image calls')
     parser.add_argument('--free-enabled',action='store_true',help='images: Cloudflare Workers Free only, no paid fallback')
+    parser.add_argument('--subscription-enabled', action='store_true', help='images: authenticated-user CLI queue only, no API fallback')
     parser.add_argument('--run-neurons',type=float,help='images: immutable Cloudflare run quota estimate, at most 9000')
     parser.add_argument('--variants', help='image-compare: comma list of model@1K|2K|4K')
     parser.add_argument('--max-usd', type=float, help='image-compare: total USD ceiling for the comparison run')
@@ -293,15 +322,17 @@ def main(argv=None, *, runtime=None):
             if not args.topic or not args.out:
                 parser.error('one-post prepare requires --topic and --out')
             if args.images_document:
-                if args.free_enabled or args.paid_enabled or args.run_usd is not None or args.run_neurons is not None:
+                if args.free_enabled or args.paid_enabled or args.subscription_enabled or args.run_usd is not None or args.run_neurons is not None:
                     parser.error('approved images cannot also enable generation')
-            elif args.free_enabled == args.paid_enabled:
+            elif sum((args.free_enabled, args.paid_enabled, args.subscription_enabled)) != 1:
                 parser.error('one-post prepare needs approved images or exactly one generation enable')
             elif args.free_enabled and (args.run_neurons is None or args.run_usd is not None):
                 parser.error('free generation requires only --run-neurons')
             elif args.paid_enabled and (args.run_usd is None or args.run_neurons is not None):
                 parser.error('paid generation requires only --run-usd')
-        elif any((args.topic, args.out, args.article, args.images_document, args.paid_enabled, args.free_enabled,
+            elif args.subscription_enabled and (args.run_usd is not None or args.run_neurons is not None):
+                parser.error('subscription generation must not specify API/quota units')
+        elif any((args.topic, args.out, args.article, args.images_document, args.paid_enabled, args.free_enabled, args.subscription_enabled,
                   args.run_usd is not None, args.run_neurons is not None)):
             parser.error('preparation inputs belong to one-post prepare only')
         if args.action in ('accept-images','approve') and not args.snapshot:
@@ -322,15 +353,17 @@ def main(argv=None, *, runtime=None):
         parser.error('--post and --article belong to save-draft only')
     if args.command == 'images':
         if (not args.article or not args.out or not args.run_id or args.post or args.topic or
-                args.paid_enabled==args.free_enabled):
-            parser.error('images needs --article --out --run-id and exactly one explicit paid/free enable')
+                sum((args.paid_enabled, args.free_enabled, args.subscription_enabled)) != 1):
+            parser.error('images needs --article --out --run-id and exactly one explicit paid/free/subscription enable')
         if args.paid_enabled and (args.run_usd is None or args.run_neurons is not None):
             parser.error('paid images require --run-usd, without --run-neurons')
         if args.free_enabled and (args.run_neurons is None or args.run_usd is not None):
             parser.error('Cloudflare free images require --run-neurons, without --run-usd')
+        if args.subscription_enabled and (args.run_usd is not None or args.run_neurons is not None):
+            parser.error('subscription images must not specify API/quota units')
     if args.command == 'image-compare':
         if (not args.article or not args.out or not args.variants or args.max_usd is None or not args.max_usd > 0 or
-                args.run_id or args.run_usd is not None or args.free_enabled or args.run_neurons is not None or
+                args.run_id or args.run_usd is not None or args.free_enabled or args.subscription_enabled or args.run_neurons is not None or
                 args.post or args.topic):
             parser.error('image-compare needs --article --out --variants and --max-usd > 0')
         if not args.paid_enabled:
@@ -338,7 +371,7 @@ def main(argv=None, *, runtime=None):
     elif args.variants or args.max_usd is not None:
         parser.error('--variants and --max-usd belong to image-compare only')
     if args.command not in ('images','image-compare','one-post') and (args.run_id or args.run_usd is not None or args.paid_enabled or
-                                    args.free_enabled or args.run_neurons is not None):
+                                    args.free_enabled or args.subscription_enabled or args.run_neurons is not None):
         parser.error('image enable and run budget flags belong to images only')
     if args.command not in DRY_RUN_COMMANDS and args.dry_run:
         parser.error('--dry-run belongs to plan-week, trends and daily only')

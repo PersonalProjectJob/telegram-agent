@@ -24,7 +24,7 @@ from .planner import (format_topics_dm, next_week_start, propose, slots_of_confi
 from .quality import gate
 from .schedule import VN_TZ, is_due_for_publish
 from .sources import SourceError, fetch_feeds, fetch_posts
-from .state import State
+from .state import State, startup_binding
 from .text import TextModel, TextModelError
 from .usage import UsageRecorder, text_cost, write_atomic
 from .writer import (annotate_repair_outcome, build_jsonld, editorial_repair_issues, rebalance_paragraphs, han_fields, hold_unexpected_han, placeholder_images, render_html,
@@ -107,8 +107,14 @@ class _Meter:
 
 
 class Service:
-    def __init__(self, config, *, state=None, clock=time.time):
+    def __init__(self, config, *, state=None, clock=time.time, config_path=None):
         self.config = config
+        # The binding this process loaded, computed ONCE at start: `/nailblog resume` arms exactly this value and
+        # refuses (restart_required) when the build/config on disk no longer matches it. None = could not be computed.
+        try:
+            self.startup_binding = startup_binding(config, config_path=config_path)[0]
+        except Exception:
+            self.startup_binding = None
         self.state = state or State(config.db_path, image_mode=config.schedule.image_mode)
         self.clock = clock
         self.usage = UsageRecorder(self.state, config, clock=clock)
@@ -203,7 +209,7 @@ class Service:
         except DispatchPaused as error:
             if paid and not error.dispatched:
                 from .paid import cancel_pending_before_dispatch
-                cancel_pending_before_dispatch(self.state,'paid_intents',intent,self.clock)
+                cancel_pending_before_dispatch(ledger.state,'paid_intents',intent,self.clock)
                 cancelled_before_dispatch = True
             raise
         finally:
@@ -252,7 +258,7 @@ class Service:
             if han_fields(payload) or han_fields(json.loads(row['draft_json'])):
                 raise AdminError('unexpected_han_requires_review')
             store.check_write(post_id)
-            hashes = validate_files(cover_path, image_paths)
+            hashes = validate_files(cover_path, image_paths, config=self.config)
             verify_reviews(json.loads(row['draft_json']), hashes,config=self.config)
             store.claim_create(post_id, payload)
         async with browser as admin:

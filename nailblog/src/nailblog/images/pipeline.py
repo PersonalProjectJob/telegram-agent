@@ -114,7 +114,8 @@ def check_bypass_manifest(manifest,names,hashes_):
     for name,sha in zip(names,hashes_):
         entry=manifest.get('positions',{}).get(name)
         if (not isinstance(entry,dict) or entry.get('status')!='review_bypassed' or entry.get('sha')!=sha or
-                entry.get('scores') is not None or entry.get('review_intent') is not None or not entry.get('intent') or
+                entry.get('scores') is not None or entry.get('review_intent') is not None or
+                not (entry.get('intent') if manifest.get('provider') != 'subscription' else entry.get('subscription_job')) or
                 not isinstance(entry.get('review_bypass'),dict) or entry['review_bypass'].get('config_flag')!=BYPASS_FLAG):
             raise ImageError('review_bypass_audit_invalid')
 
@@ -136,7 +137,12 @@ class ImagePipeline:
                  before_dispatch=None):
         self.config, self.clock = config, clock
         self.state = state or State(config.db_path)
-        if config.image.provider=='cloudflare':
+        self.default_renderer = thumbnail
+        if config.image.provider == 'subscription':
+            from .subscription import SubscriptionImages
+            self.ledger = None
+            self.provider = provider or SubscriptionImages(config, clock=clock)
+        elif config.image.provider=='cloudflare':
             from .cloudflare import CloudflareImages
             from .neurons import NeuronLedger
             self.ledger=NeuronLedger(config,clock)
@@ -169,6 +175,9 @@ class ImagePipeline:
         resume path must select a different, already approved or untried
         candidate and revalidate the complete document before publishing it.
         """
+        if self.config.image.provider == 'subscription':
+            from .subscription_pipeline import reject_selected
+            return reject_selected(self, out, position, expected_sha, reason)
         if (not re.fullmatch(r'cover|body-[1-5]',str(position)) or
                 not isinstance(expected_sha,str) or not re.fullmatch(r'[0-9a-f]{64}',expected_sha) or
                 not isinstance(reason,str) or not 1<=len(reason.strip())<=1000 or not reason.isprintable()):
@@ -326,7 +335,13 @@ class ImagePipeline:
         return result
 
     async def run(self, article, out, run_id, ceiling, *, paid_enabled=False,free_enabled=False,
-                  revision_of=None,revision_parent=None,revision_parent_sha=None):
+                  revision_of=None,revision_parent=None,revision_parent_sha=None,subscription_enabled=False):
+        if self.config.image.provider == 'subscription':
+            from .subscription_pipeline import run
+            if revision_of: raise ImageError('cli_revision_requires_owner_reconciliation')
+            return await run(self, article, out, run_id, enabled=subscription_enabled,
+                             paid_enabled=paid_enabled, free_enabled=free_enabled)
+        if subscription_enabled: raise ImageError('subscription_provider_required')
         is_cloudflare=self.config.image.provider=='cloudflare'
         if is_cloudflare and (not free_enabled or paid_enabled):raise ImageError('explicit_cloudflare_free_enable_required')
         if not is_cloudflare and (not paid_enabled or free_enabled):raise ImageError('explicit_paid_enable_required')
@@ -380,7 +395,7 @@ class ImagePipeline:
                 # Crash recovery before any new reservation: stale pending -> uncertain (still counted); uncertain
                 # older than a day -> settled at the full reserved bound on its original day.
                 now = self.clock()
-                self.ledger.reconcile_stale(now,cfg.timeout_seconds+STALE_MARGIN_S)
+                self.ledger.reconcile_stale(now,cfg.timeout_seconds+STALE_MARGIN_S,run_id=run_id)
                 self.ledger.age_out_uncertain(now)
             params = asdict(cfg);params.pop('key_file')
             # Switch OFF keeps the historical binding digest; ON changes it (resume fails closed both ways).
@@ -389,6 +404,9 @@ class ImagePipeline:
             if cfg.key_source=='file':params.pop('key_source')
             prices = asdict(self.config.budget)
             if not prices['image_unit_prices']:prices.pop('image_unit_prices')
+            # Same for the shared-ledger path: unset keeps the pre-S10a digest; set stays IN the binding (a run must not
+            # silently move between ledgers).
+            if not prices.get('ledger_db_path'):prices.pop('ledger_db_path',None)
             binding = digest({'article':article,'image':params,'prices':prices,
                               'processing':VERSION,'review':REVIEW_VERSION,'directory':str(directory),
                               'template':digest(files('nailblog.images').joinpath('templates/cover.html').read_text(encoding='utf-8')),
@@ -657,14 +675,16 @@ class ImagePipeline:
                     entry = manifest['candidates'][current_name]
                     entry['status'] = 'review_paused' if entry.get('file') else 'paused'
                     entry['dispatch_pause'] = {'at':self.clock(),'request_sent':False}
-                elif isinstance(error,BudgetExceeded) and current_name and not is_cloudflare:
-                    # A budget refusal BEFORE any ledger reservation sent nothing and cost nothing: resumable like a
+                elif isinstance(error,Exception) and current_name and not is_cloudflare:
+                    # A refusal or failure BEFORE any ledger reservation (budget refusal, or the free countTokens
+                    # preflight failing with 429/timeout) sent no generation and cost nothing: resumable like a
                     # dispatch pause. With a reservation on the books the candidate keeps today's reconciliation path.
                     entry = manifest['candidates'][current_name]
                     key = 'review_intent' if entry.get('file') else 'intent'
                     if entry.get('status') == 'pending' and entry.get(key) and not self.ledger.get(entry[key]):
                         entry['status'] = 'review_paused' if entry.get('file') else 'paused'
-                        entry['dispatch_pause'] = {'at':self.clock(),'request_sent':False,'reason':'budget'}
+                        entry['dispatch_pause'] = {'at':self.clock(),'request_sent':False,
+                                                   'reason':'budget' if isinstance(error,BudgetExceeded) else 'predispatch_failure'}
                 manifest.update(status='held',error=str(error) if isinstance(error,ImageError) else type(error).__name__,
                                 usage=self.ledger.report(run_id))
                 write_atomic(manifest_path,manifest)

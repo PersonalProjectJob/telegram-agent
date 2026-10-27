@@ -285,6 +285,8 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
             if params['key_source']=='file':params.pop('key_source')
             prices=asdict(c.budget)
             if not prices['image_unit_prices']:prices.pop('image_unit_prices')
+            # An unset shared ledger preserves the historical binding; configured paths remain bound.
+            if not prices['ledger_db_path']:prices.pop('ledger_db_path')
             return digest({'article':article(),'image':params,'prices':prices,'processing':VERSION,
                            'review':REVIEW_VERSION,'directory':str(Path(directory).absolute()),
                            'template':digest(files('nailblog.images').joinpath('templates/cover.html').read_text(encoding='utf-8')),

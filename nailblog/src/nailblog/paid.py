@@ -11,6 +11,10 @@ class IntentExists(RuntimeError):
     pass
 
 
+class RunCeilingExceeded(BudgetExceeded):
+    """The run's own USD ceiling would be exceeded (not the daily cap)."""
+
+
 def cancel_pending_before_dispatch(state, table, intent, clock):
     """Archive/release an intent proven not dispatched by its owning call boundary.
 
@@ -35,6 +39,37 @@ def cancel_pending_before_dispatch(state, table, intent, clock):
         return True
 
 
+_SHARED_STATES = {}
+
+
+def _shared_state(path):
+    """One State (schema script run once) per shared ledger path for the life of the process."""
+    from .state import State
+    found = _SHARED_STATES.get(path)
+    if found is None:
+        found = _SHARED_STATES[path] = State(path)
+    return found
+
+
+def local_ledger_problem(state, config, clock=time.time):
+    """`local_ledger_not_empty` when `budget.ledger_db_path` is set but the root's OWN database still holds unsettled
+    paid intents or today's (Vietnam day) spend: switching to the shared ledger would silently forget them. Else None.
+    Do the cutover on a fresh Vietnam day or after everything is settled."""
+    shared = getattr(getattr(config, 'budget', None), 'ledger_db_path', '')
+    if not shared or str(shared) == str(state.path):
+        return None
+    start, end = day_bounds(clock())
+    with state.connection() as db:
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'paid_intents' in names and db.execute(
+                "SELECT 1 FROM paid_intents WHERE status!='settled' LIMIT 1").fetchone():
+            return 'local_ledger_not_empty'
+        if 'usage' in names and (db.execute('SELECT COALESCE(SUM(usd),0) FROM usage WHERE at>=? AND at<?',
+                                            (start, end)).fetchone()[0] or 0) > 0:
+            return 'local_ledger_not_empty'
+    return None
+
+
 def micros(value):
     if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value < 0:
         raise ValueError('invalid_cost_bound')
@@ -43,6 +78,11 @@ def micros(value):
 
 class PaidLedger:
     def __init__(self, state, config, clock=time.time):
+        shared = getattr(getattr(config, 'budget', None), 'ledger_db_path', '')
+        if shared:
+            # One daily cap across state roots: every paid reservation/settlement lives in the shared DB, whatever
+            # State the caller passed. Every config that points here must use the same budget.daily_usd.
+            state = _shared_state(shared)
         self.state, self.config, self.clock = state, config, clock
         with state.connection() as db:
             db.executescript('''
@@ -74,6 +114,16 @@ class PaidLedger:
         active = db.execute("SELECT COALESCE(SUM(reserved),0) FROM paid_intents WHERE status!='settled'").fetchone()[0]
         return micros(spent) + active
 
+    def daily_left_usd(self):
+        """USD still available today: cap minus settled spend minus every open reservation (never below 0)."""
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return max(0, micros(self.config.budget.daily_usd) - self._daily(db)) / 1_000_000
+
+    def settled_usd(self, run_id):
+        """USD actually charged by the settled intents of `run_id`."""
+        return sum(row['charged'] for row in self.report(run_id) if row['status'] == 'settled') / 1_000_000
+
     def check(self):
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -93,7 +143,7 @@ class PaidLedger:
                 used = db.execute("SELECT COALESCE(SUM(CASE WHEN status='settled' THEN charged ELSE reserved END),0) "
                                   'FROM paid_intents WHERE run_id=?', (run_id,)).fetchone()[0]
                 if not row or used + amount > row['ceiling']:
-                    raise BudgetExceeded('run USD reservation would exceed ceiling')
+                    raise RunCeilingExceeded('run USD reservation would exceed ceiling')
             db.execute('INSERT INTO paid_intents(id,run_id,provider,model,reserved,status,at) VALUES(?,?,?,?,?,?,?)',
                        (intent,run_id,provider,model,amount,'pending',self.clock()))
 
@@ -101,13 +151,21 @@ class PaidLedger:
         with self.state.connection() as db:
             db.execute("UPDATE paid_intents SET status='uncertain' WHERE id=? AND status='pending'", (intent,))
 
-    def reconcile_stale(self, now, older_than_s):
+    def reconcile_stale(self, now, older_than_s, *, run_id=None, run_prefix=None):
         """A pending intent older than `older_than_s` is presumed crashed mid-call: it becomes uncertain and keeps its
-        full reservation in the daily cap. Returns the number of intents changed."""
+        full reservation in the daily cap. `run_id` / `run_prefix` limit it to the caller's own run(s): on a shared
+        ledger another process's in-flight call must never be touched. No filter = every pending intent (legacy).
+        Returns the number of intents changed."""
+        sql, args = "UPDATE paid_intents SET status='uncertain' WHERE status='pending' AND at<?", [now - older_than_s]
+        if run_id is not None:
+            sql += ' AND run_id=?'
+            args.append(run_id)
+        elif run_prefix is not None:
+            sql += ' AND substr(run_id,1,?)=?'
+            args += [len(run_prefix), run_prefix]
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            return db.execute("UPDATE paid_intents SET status='uncertain' WHERE status='pending' AND at<?",
-                              (now - older_than_s,)).rowcount
+            return db.execute(sql, args).rowcount
 
     def age_out_uncertain(self, now, after_s=86400):
         """An uncertain intent older than `after_s` is settled at its FULL reserved amount, booked to the Vietnam day

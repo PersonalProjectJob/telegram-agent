@@ -60,6 +60,9 @@ timeout_seconds = 15
 
 [budget]
 daily_usd = 3.0
+# ledger_db_path = "/var/lib/agentfleet/nailblog/ledger/nailblog-ledger.sqlite3"  # absolute; ONE paid-spend ledger for every state root.
+# Required when [autoflow] is enabled. Every config that points at it must use the SAME daily_usd (the cap is read from the
+# config of the process that reserves). Unset = the ledger lives in service.db_path as before.
 # Prices are USD per 1M tokens (text) or USD per image. Ollama is free; every other model needs a price.
 # [budget.text_prices."deepseek-chat"]
 # input_per_m = 0.0
@@ -155,7 +158,22 @@ app = "https://nailhub.ai/"           # cta.target = app: get the app
 
 [autoflow]
 # Unattended daily flow. enabled = true needs service.mode = live, image.provider = "gemini", image.key_source = "env"
-# and all four [admin.category_ids].
+# all four [admin.category_ids], contract.environment = "staging", budget.ledger_db_path, and
+# admin.daily_publish_limit >= the number of service.slots.
 enabled = false
 # run_usd = 1.0                       # > 0 and <= budget.daily_usd; required when enabled.
 # runs_dir = "/var/lib/agentfleet/nailblog/runs"   # absolute; required when enabled.
+[subscription]
+# Used only when image.provider = "subscription" (staging + review_bypass + candidates/max_rounds = 1).
+# No API fallback or API key. Native CLI cover1376x768/body1200x675; no upscaling.
+executable = "/snap/bin/agy"
+version = "1.2.11"
+agent_model = "gemini-3.8-flash-medium"
+effort = "medium"
+queue_dir = "/var/lib/nailblog-subscription/queue"
+private_dir = "/home/startechai/snap/antigravity-cli/common/nailblog-worker"
+worker_user = "startechai"
+producer_user = "tgnailblog"
+timeout_seconds = 240
+max_daily_jobs = 24
+max_images_per_run = 12               # <=6 positions + ONE explicit Owner rejection retry; never automatic retry

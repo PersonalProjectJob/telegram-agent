@@ -13,7 +13,8 @@ from datetime import date, datetime, timedelta
 
 from .config import CATEGORIES, DEFAULT_SLOTS, DailyConfig
 from .schedule import MODES, VN_TZ, iso_slot, parse_hhmm, slot_datetime
-from .state import InvalidTransition, SlotTaken, _file_digest, startup_binding
+from .paid import local_ledger_problem
+from .state import InvalidTransition, SlotTaken, State, _file_digest, startup_binding
 from .trends import format_views, parse_views
 from .usage import day_bounds
 
@@ -24,6 +25,7 @@ USAGE = ("Lệnh: /nailblog topics | topics ok <số,số> | topics drop <số> 
          "pick <giờ> <số> | trend add #tag <lượt xem, vd 12M> | ok <id> | reject <id> <lý do> | flow | "
          "pause | resume | status")
 MAX_IDS = 50
+_NO_BINDING = object()
 MAX_TEXT = 300
 NO_ARGS = ("queue", "pause", "resume", "status", "flow")
 
@@ -133,6 +135,44 @@ def _bounded(lines, limit=3500):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+def _autoflow_run_for_topic(state, topic_id):
+    """The autoflow run row of a topic, else None (no table yet means no run)."""
+    with state.connection() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='autoflow_runs'").fetchone() is None:
+            return None
+        row = db.execute("SELECT * FROM autoflow_runs WHERE topic_id=?", (topic_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def _autoflow_run_for_slot(state, slot_at):
+    """Any autoflow run whose slot is `slot_at` (compared as instants), else None."""
+    try:
+        wanted = datetime.fromisoformat(slot_at).timestamp()
+    except ValueError:
+        return None
+    with state.connection() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='autoflow_runs'").fetchone() is None:
+            return None
+        for row in db.execute("SELECT * FROM autoflow_runs"):
+            try:
+                if datetime.fromisoformat(row["slot_at"]).timestamp() == wanted:
+                    return dict(row)
+            except ValueError:
+                continue
+    return None
+
+
+def _post_in_a_run(state, post):
+    """True when the post belongs to a one-post run or an autoflow run (their approvals are snapshot-bound)."""
+    with state.connection() as db:
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "onepost_runs" in names and db.execute("SELECT 1 FROM onepost_runs WHERE post_id=?",
+                                                  (post["id"],)).fetchone():
+            return True
+        return bool("autoflow_runs" in names and post.get("topic_id") is not None
+                    and db.execute("SELECT 1 FROM autoflow_runs WHERE topic_id=?", (post["topic_id"],)).fetchone())
+
+
 def _pick(state, slot, number, now, slots, daily):
     """Choose candidate `number` of tomorrow's slot; allowed until daily.pick_deadline of today, and swappable."""
     moment = datetime.fromtimestamp(now, VN_TZ)
@@ -144,6 +184,8 @@ def _pick(state, slot, number, now, slots, daily):
     target = moment.date() + timedelta(days=1)
     slot_at = iso_slot(slot_datetime(target, slot))
     week = f"daily:{target.isoformat()}"
+    if _autoflow_run_for_slot(state, slot_at) is not None:
+        return [f"Slot {slot[:2]} ngày mai đã có run autoflow (đã trả phí/đang chạy): không đổi chủ đề được."]
     candidates = state.topics_for(week, slot_at)
     if not candidates:
         return [f"Chưa có ứng viên cho slot {slot[:2]} ngày mai (mốc {daily.propose_at} chưa chạy)."]
@@ -290,11 +332,20 @@ async def preflight(service, *, config_path=None):
     failed = []
     if not path or _file_digest(path) == "missing":
         failed.append("config_digest_missing")
+    if local_ledger_problem(service.state, config, service.clock):
+        failed.append("local_ledger_not_empty")   # same-day spend in the root's own DB would be forgotten
     if config.mode == "live":
         failed += await _check_admin(service)
         failed += _check_budget(service)
     if config.autoflow.enabled:
-        failed += await _check_gemini(config)
+        if config.image.provider == 'subscription':
+            try:
+                from .images.subscription import SubscriptionImages
+                SubscriptionImages(config).verify_models()
+            except Exception:
+                failed.append('subscription_queue_unavailable')
+        else:
+            failed += await _check_gemini(config)
         if not set(CATEGORIES) <= set(config.admin.category_ids):
             failed.append("category_ids_incomplete")
     return failed
@@ -302,11 +353,17 @@ async def preflight(service, *, config_path=None):
 
 async def resume(service, *, config_path=None):
     """`/nailblog resume`: preflight, then arm the current binding and unpause. On any failure nothing changes."""
+    loaded = getattr(service, "startup_binding", _NO_BINDING)   # computed once when this process started (None = failed)
     path = config_path if config_path is not None else os.environ.get("NAILBLOG_CONFIG", "")
     failed = await preflight(service, config_path=path)
+    current = startup_binding(service.config, config_path=path)[0]
+    if loaded is None:
+        failed.append("binding_unavailable")   # fail closed: never arm what this process could not bind
+    elif loaded is not _NO_BINDING and loaded != current:
+        failed.append("restart_required")   # build/config/mode on disk differ from what this process loaded
     if failed:
         return ["Chưa chạy lại NailBlog: preflight lỗi (" + ", ".join(failed) + "). Vẫn giữ trạng thái tạm dừng/chưa arm."]
-    service.state.arm(startup_binding(service.config, config_path=path)[0])
+    service.state.arm(current if loaded is _NO_BINDING else loaded)   # arm exactly what this process loaded
     service.state.set_paused(False)
     return ["Đã chạy lại NailBlog (preflight đạt, đã arm)."]
 
@@ -334,6 +391,9 @@ def execute(state, name, args, *, now, config=None):
                       "(/nailblog topics drop <số>) nếu muốn đổi.")
         return [reply]
     if name == "topics_drop":
+        if _autoflow_run_for_topic(state, args[0]) is not None:
+            return [f"Không loại được chủ đề #{args[0]}: slot của nó đã có run autoflow (đã trả phí/đang chạy). "
+                    "Dùng /nailblog flow để xem; run giữ lại hoặc bỏ qua sẽ tự kết thúc."]
         ok = state.set_topic_state(args[0], "dropped", only_from=("proposed", "approved"))
         return [f"Đã loại chủ đề #{args[0]}." if ok else f"Không loại được chủ đề #{args[0]}."]
     if name == "topics_edit":
@@ -346,6 +406,11 @@ def execute(state, name, args, *, now, config=None):
         return [_bounded(["Hàng đợi 2 ngày:"] + [f"#{r['id']} {r['slot_at']} {r['state']}" for r in rows])]
     if name in ("approve", "hold"):
         target = "scheduled" if name == "approve" else "held"
+        if name == "approve":
+            post = state.get_post(args[0])
+            if getattr(getattr(config, "autoflow", None), "enabled", False) or (post and _post_in_a_run(state, post)):
+                return [f"Không duyệt #{args[0]} bằng approve: bài thuộc luồng one-post/autoflow, chỉ duyệt được bằng "
+                        "/nailblog ok <id> theo đúng thẻ Draft (gắn với snapshot)."]
         try:
             if name == "approve" and getattr(config, 'mode', 'preview') == 'live':
                 from .admin_state import AdminStore
@@ -391,7 +456,8 @@ def execute(state, name, args, *, now, config=None):
         return [_bounded([head] + rows)] if rows else [head + " chưa có run nào."]
     if name == "status":
         info = state.status()
-        spent = state.usd_between(*day_bounds(now))
+        shared = getattr(getattr(config, "budget", None), "ledger_db_path", "")
+        spent = (State(shared) if shared else state).usd_between(*day_bounds(now))   # the cap's ledger, not just this root
         limit = getattr(getattr(config, "budget", None), "daily_usd", 3.0)
         posts = ", ".join(f"{k}={v}" for k, v in sorted(info["posts"].items())) or "không có bài"
         return [f"NailBlog: mode={getattr(config, 'mode', 'preview')}, paused={bool(info['paused'])}, "

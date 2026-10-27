@@ -159,9 +159,18 @@ class Fx:
         self.now = at(2, 13)
         self.topic_ids = [self.state.add_topic('w', f'Chu de {n}', category, slot_at=slot_text(day, hour), state='approved')
                           for n, (day, hour, category) in enumerate(topics)]
+        for topic_id in self.topic_ids:
+            self.lock_topic(topic_id)      # S10a: only topics the daily decide step locked get a run
         self.topic = self.topic_ids[0] if self.topic_ids else None
         self.run_id = None
         self.publish_calls = 0
+
+    def lock_topic(self, topic_id):
+        """What the daily `decide` step leaves behind: the `chosen` label and the day-before decide marker."""
+        slot = datetime.fromisoformat(self.state.get_topic(topic_id)['slot_at']).astimezone(VN)
+        self.state.update_topic_meta(topic_id, chosen={'day': slot.date().isoformat(), 'slot': f'{slot:%H:%M}',
+                                                       'origin': 'pick', 'auto': False})
+        self.state.daily_mark((slot.date() - timedelta(days=1)).isoformat(), 'decide', 0.0)
 
     async def media_send(self, owner_id, files, caption):
         self.media.append((owner_id, list(files), caption))
@@ -337,7 +346,7 @@ class HappyPathTests(Base):
         self.assertIn(f"/nailblog ok {request['id']}", card)
         self.assertIn(f"/nailblog reject {request['id']} <lý do>", card)
         self.assertIn('Slot: ' + slot_text(3, 6), card)
-        self.assertIn('Dự báo chi phí ảnh: 0.50 USD', card)
+        self.assertIn('Chi phí ảnh đã chi (quyết toán): 0.00 USD; còn lại hôm nay: 3.00 USD', card)   # S10a m3: ledger, not run_usd
         self.assertIn('ảnh chưa qua model chấm (bypass)', card)
         self.assertEqual(json.loads(fx.approvals.get(request['id'])['message_ids']), [1010, 1011, 1012, 1013])
         stored = request['snapshot']
@@ -441,7 +450,7 @@ class ImageRejectTests(Base):
         row = await fx.tick()
         await fx.ticks(2)
         self.assertEqual((row['stage'], row['terminal_reason'], fx.post()['state'], fx.onepost.n('retry_images'), len(fx.dms)),
-                         ('held', 'owner_images_rejected', 'held', 1, 1))
+                         ('held', 'image_retry_interrupted', 'held', 1, 1))
 
     async def test_any_retry_failure_holds_and_retry_is_never_called_again(self):
         for error in (AdminError('image_retry_not_allowed'), AdminError('image_pipeline_failed'), RuntimeError('boom')):
@@ -460,9 +469,9 @@ class ImageRejectTests(Base):
                 await fx.tick(fx.now + 7200, restart=True)
                 row = fx.row()
                 self.assertEqual((row['stage'], row['terminal_reason'], fx.onepost.n('retry_images'), len(fx.dms)),
-                                 ('held', 'owner_images_rejected', 1, 1))
+                                 ('held', 'image_retry_interrupted', 1, 1))
                 self.assertEqual((fx.post()['state'], fx.post()['reason'], fx.onepost.n('prepare')),
-                                 ('held', 'owner_images_rejected', 1))
+                                 ('held', 'image_retry_interrupted', 1))
 
     async def test_restart_with_a_retry_left_images_pending_holds_without_retrying(self):
         fx = self.fixture()
@@ -727,7 +736,7 @@ class SafetyTests(Base):
         fx.onepost.retry_images = interrupted
         fx.decide('images', 'reject', 'khong dat')
         row = await fx.tick()
-        self.assertEqual((row['stage'], row['terminal_reason'], fx.post()['state']), ('held', 'owner_images_rejected', 'held'))
+        self.assertEqual((row['stage'], row['terminal_reason'], fx.post()['state']), ('held', 'image_retry_interrupted', 'held'))
 
     async def test_uncertain_post_sends_one_dm_keeps_watching_then_publishes(self):
         fx = self.fixture()

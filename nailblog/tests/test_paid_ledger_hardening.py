@@ -141,22 +141,27 @@ class LedgerHardeningTests(unittest.TestCase):
         ledger.uncertain('ancient')
         ledger.run('other', 'x', 1)
         ledger.reserve('fresh', 'gemini', 'image-test', .1, run_id='other')         # reserved at t0 too
+        with self.state.connection() as db:                                          # S10b: recovery is per OWN run
+            db.execute("UPDATE paid_intents SET run_id='r1' WHERE id='stale'")
         provider = CountingProvider(self.c)
         provider.verify_models = lambda: (_ for _ in ()).throw(ImageError('stop_after_recovery'))
         pipeline = ImagePipeline(self.c, state=self.state, provider=provider, clock=clock, cover_renderer=fixture_cover)
         with self.assertRaisesRegex(ImageError, 'stop_after_recovery'):
             asyncio.run(pipeline.run(article(), Path(self.temp.name) / 'out', 'r1', 1, paid_enabled=True))
         # everything is older than a day here, so the stale one is uncertain then aged out in the same call
-        for name in ('stale', 'ancient', 'fresh'):
+        for name in ('stale', 'ancient'):
             row = pipeline.ledger.get(name)
             self.assertEqual((row['status'], row['charged'] == row['reserved']), ('settled', True))
             self.assertEqual(json.loads(row['metadata']), {'assumed_full_bound': True})
-        self.assertAlmostEqual(self.spent(self.t0), .4, places=6)
+        self.assertEqual(pipeline.ledger.get('fresh')['status'], 'pending')          # another run's intent: not touched
+        self.assertAlmostEqual(self.spent(self.t0), .3, places=6)
 
     def test_pipeline_run_start_marks_stale_pending_uncertain_and_keeps_counting(self):
         timeout = self.c.image.timeout_seconds
         now = self.t0 + timeout + STALE_MARGIN_S + 1
         PaidLedger(self.state, self.c, lambda: self.t0).reserve('stale', 'gemini', 'image-test', .6, run_id='run')
+        with self.state.connection() as db:                                          # S10b: recovery is per OWN run
+            db.execute("UPDATE paid_intents SET run_id='r1' WHERE id='stale'")
         PaidLedger(self.state, self.c, lambda: now - 10).reserve('live', 'gemini', 'image-test', .1, run_id='run')
         provider = CountingProvider(self.c)
         provider.verify_models = lambda: (_ for _ in ()).throw(ImageError('stop_after_recovery'))
@@ -354,6 +359,8 @@ class BindingDigestTests(unittest.TestCase):
         prices = asdict(config.budget)
         if not with_new_fields or not prices['image_unit_prices']:
             prices.pop('image_unit_prices')
+        if not prices.get('ledger_db_path'):
+            prices.pop('ledger_db_path', None)   # S10b: unset keeps the 7a27128 digest (see test_s10b_rereview golden)
         return digest({'article': article(), 'image': params, 'prices': prices, 'processing': VERSION,
                        'review': REVIEW_VERSION, 'directory': directory,
                        'template': digest(files('nailblog.images').joinpath('templates/cover.html')

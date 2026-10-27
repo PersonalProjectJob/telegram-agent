@@ -160,6 +160,10 @@ def _forecast(value):
     return DASH
 
 
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _count(value):
     return str(value) if isinstance(value, int) and not isinstance(value, bool) else DASH
 
@@ -169,7 +173,7 @@ def _commands(request_id):
     return f'/nailblog ok {ident}\n/nailblog reject {ident} <lý do>'
 
 
-def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=None):
+def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=None, environment=''):
     """Return (jpeg_bytes_list, text_card, preview_html). Sources on disk are only read, never rewritten.
 
     approval_id/deadline may also come from artifact['approval_id'] / artifact['approval_deadline'];
@@ -193,7 +197,15 @@ def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=Non
         bypass = artifact.get('review_bypass')
         if bypass and (not isinstance(bypass, dict) or bypass.get('enabled', True)):
             lines.append('ảnh chưa qua model chấm (bypass)')
-        lines += [f"Dự báo chi phí ảnh: {_forecast(artifact.get('image_quota_forecast'))}",
+        spend = artifact.get('image_spend')
+        if artifact.get('image_source', {}).get('route') == 'subscription':
+            cost = 'Ảnh qua gói subscription; chi phí gói/quota chưa xác định, không phải hóa đơn API 0 USD'
+        elif isinstance(spend, dict) and all(_is_number(spend.get(k)) for k in ('settled_usd', 'daily_left_usd')):
+            cost = (f"Chi phí ảnh đã chi (quyết toán): {spend['settled_usd']:.2f} USD; "
+                    f"còn lại hôm nay: {spend['daily_left_usd']:.2f} USD")
+        else:
+            cost = f"Dự báo chi phí ảnh: {_forecast(artifact.get('image_quota_forecast'))}"
+        lines += [cost,
                   f"Slot: {_text(artifact.get('slot_at'))}", f'Hạn duyệt: {_when(deadline)}',
                   f"Snapshot: {_head(artifact.get('snapshot'))}", f'Ảnh đính kèm: {len(jpegs)}']
     else:
@@ -202,6 +214,8 @@ def build_preview(kind, artifact, image_paths, *, approval_id=None, deadline=Non
         lines = ['NailBlog duyệt Draft trên admin',
                  f"admin_id: {_text(str(admin_id)) if admin_id not in (None, '') else DASH}",
                  f"Fingerprint Draft: {_head(artifact.get('draft_fingerprint'))}", f'Hạn duyệt: {_when(deadline)}']
+    if environment == 'staging':
+        lines[0] = '[staging] ' + lines[0]
     tail = '\n\n' + _commands(approval_id)
     body = '\n'.join(lines)
     if len(body) + len(tail) > CARD_LIMIT:

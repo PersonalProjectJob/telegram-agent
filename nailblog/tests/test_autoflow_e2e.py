@@ -197,7 +197,7 @@ class Harness:
         self.service = self.new_service()
         self.service.save_cache([], [])
         self.service.state.set_paused(False)
-        self.service.state.arm('e2e-binding')
+        self.service.state.arm(self.service.startup_binding)   # S10b: the engine needs the armed == loaded binding
         self.topic = self.service.state.add_topic(
             'daily:2026-10-25', 'Màu nail merlot', 'nail-salon', SLOT_TEXT, 0.5,
             {'sources': [], 'product_promo': False,
@@ -546,6 +546,7 @@ class ResumeAndGateTests(Base):
         patcher = patch.dict(os.environ, {'NAILBLOG_CONFIG': str(self.config_file)})
         patcher.start()
         self.addCleanup(patcher.stop)
+        h.restart()   # S10a: the process loads its startup binding when it starts, so start it after the config exists
         return h
 
     def gemini_ok(self, h):
@@ -619,7 +620,7 @@ class ResumeAndGateTests(Base):
             config = load(directory)
             state = State(config.db_path)
             self.assertEqual((state.control()['paused'], state.armed_binding()), (1, ''))
-            service = Service(config, state=state)
+            service = Service(config, state=state, config_path=str(path))   # S10a: binding loaded at start
             self.assertIn('đã arm', (await resume(service, config_path=str(path)))[0])   # preview mode: digest only
             self.assertEqual((await gate())[1]['decision'], 'unchanged')
             self.assertEqual(State(config.db_path).control()['paused'], 0)

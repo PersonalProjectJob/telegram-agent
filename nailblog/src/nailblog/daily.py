@@ -325,6 +325,22 @@ def chosen_topic(state, target, hhmm):
     return None
 
 
+def locked_topic(state, topic):
+    """True once the daily `decide` step has LOCKED this approved topic for its slot: decide's marker of the day before
+    the slot's Vietnam day exists and the topic carries decide's `chosen` label for that day and slot. Before that
+    (picks and swaps are still allowed until the pick deadline) no paid run may start."""
+    if topic.get("state") != "approved" or not topic.get("slot_at"):
+        return False
+    try:
+        slot = datetime.fromisoformat(topic["slot_at"]).astimezone(VN_TZ)
+    except ValueError:
+        return False
+    chosen = meta_of(topic).get("chosen") or {}
+    if chosen.get("day") != slot.date().isoformat() or chosen.get("slot") != f"{slot:%H:%M}":
+        return False
+    return state.daily_get((slot.date() - timedelta(days=1)).isoformat(), "decide") is not None
+
+
 def _fresh(row, target):
     """False when the topic's own slot is more than BACKLOG_STALE_DAYS before the day that needs a topic."""
     if not row["slot_at"]:

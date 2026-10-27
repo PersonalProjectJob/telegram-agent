@@ -312,7 +312,7 @@ def verify_reviews(document, hashes, *, config=None):
         raise AdminError('image_review_required')
 
 
-def validate_files(cover_path, image_paths):
+def validate_files(cover_path, image_paths, *, config=None):
     from PIL import Image
     if not 3 <= len(image_paths) <= 5:
         raise AdminError('real_images_required')
@@ -327,7 +327,8 @@ def validate_files(cover_path, image_paths):
                 raise ValueError()
             with Image.open(target) as img:
                 img.load()
-                allowed = ((1600,900),) if index == 0 else ((1200,675),(1080,1350))
+                cli = config is not None and config.image.provider == 'subscription' and config.contract.environment == 'staging'
+                allowed = (((1376,768),) if cli else ((1600,900),)) if index == 0 else ((1200,675),(1080,1350))
                 if img.format != 'WEBP' or img.size not in allowed:
                     raise ValueError()
                 small = img.convert('L').resize((9,8))

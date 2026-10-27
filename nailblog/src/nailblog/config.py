@@ -25,7 +25,7 @@ STAGING_MEDIA_ORIGIN = "https://vlink-storages-test.sgp1.cdn.digitaloceanspaces.
 PRODUCTION_MEDIA_ORIGIN = "https://vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com"
 TEXT_PROVIDERS = ("ollama", "deepseek", "gemini")
 THINKING_LEVELS = ("", "minimal", "low", "medium", "high")
-IMAGE_PROVIDERS = ("gemini", "openai", "cloudflare")
+IMAGE_PROVIDERS = ("gemini", "openai", "cloudflare", "subscription")
 # A name is refused as a secret when it contains one of these parts, is `key`, or ends with `key`
 # (`deepseek_key`, `api_key`); a name ending `_file` is a path to a key file and is allowed.
 SECRET_PARTS = ("token", "secret", "password", "passwd", "authorization", "api_key", "apikey")
@@ -42,8 +42,10 @@ DEFAULT_ANCHORS = ("nail", "nails", "manicure", "pedicure", "mani", "pedi", "nai
 DEFAULT_CONTEXT = ("polish", "gel", "acrylic", "chrome", "french tip", "cat eye", "salon", "beauty", "makeup", "glitter")
 MAX_TERMS = 60
 SECTIONS = ("service", "telegram", "schedule", "text_model", "image", "budget", "contract", "console", "sources",
-            "trends", "daily", "links", "admin", "cloudflare", "autoflow")
+            "trends", "daily", "links", "admin", "cloudflare", "autoflow", "subscription")
 KNOWN_KEYS = {
+    "subscription": ("executable", "version", "agent_model", "effort", "queue_dir", "private_dir",
+                     "worker_user", "producer_user", "timeout_seconds", "max_daily_jobs", "max_images_per_run"),
     "service": ("mode", "db_path", "owner_ids", "owner_username", "timezone", "slots", "late_window_minutes"),
     "telegram": ("session",),
     "schedule": ("image_mode", "fixed_at", "window_start_hours", "window_end_hours", "approve_deadline_hours"),
@@ -52,7 +54,8 @@ KNOWN_KEYS = {
     "image": ("provider", "model_body", "model_cover", "review_model", "key_file", "candidates", "max_rounds",
               "cover_size", "body_size", "input_ceiling", "output_ceiling", "body_output_ceiling", "review_input_ceiling",
               "review_output_ceiling", "timeout_seconds", "review_bypass", "key_source"),
-    "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices", "image_unit_prices"),
+    "budget": ("daily_usd", "text_prices", "image_prices", "image_output_prices", "image_unit_prices",
+               "ledger_db_path"),
     "contract": ("api_origin", "site_origin", "verified", "verification_ref", "environment", "media_origin"),
     "admin": ("credential_file", "profile_path", "timeout_seconds", "headless", "daily_publish_limit",
               "publish_timeout_seconds", "category_ids"),
@@ -117,6 +120,7 @@ class BudgetConfig:
     image_prices: dict = field(default_factory=dict)  # model -> usd per image
     image_output_prices: dict = field(default_factory=dict)  # model -> upper USD/1M output including images/thinking
     image_unit_prices: dict = field(default_factory=dict)  # model -> {"1K": usd, "2K": usd} per generated image
+    ledger_db_path: str = ""   # absolute; when set, EVERY paid ledger (pipeline, compare, one-post, text) uses this DB
 
 
 @dataclass(frozen=True)
@@ -193,6 +197,21 @@ class LinksConfig:
 
 
 @dataclass(frozen=True)
+class SubscriptionConfig:
+    executable: str = "/snap/bin/agy"
+    version: str = "1.2.11"
+    agent_model: str = "gemini-3.8-flash-medium"
+    effort: str = "medium"
+    queue_dir: str = ""
+    private_dir: str = ""
+    worker_user: str = "startechai"
+    producer_user: str = "tgnailblog"
+    timeout_seconds: int = 240
+    max_daily_jobs: int = 24
+    max_images_per_run: int = 12  # at most six positions and ONE explicit Owner rejection retry
+
+
+@dataclass(frozen=True)
 class NailBlogConfig:
     db_path: str
     owner_ids: tuple = ()
@@ -215,6 +234,7 @@ class NailBlogConfig:
     admin: AdminConfig = field(default_factory=AdminConfig)
     cloudflare: CloudflareConfig = field(default_factory=CloudflareConfig)
     autoflow: AutoflowConfig = field(default_factory=AutoflowConfig)
+    subscription: SubscriptionConfig = field(default_factory=SubscriptionConfig)
 
 
 def _fail(message):
@@ -342,14 +362,14 @@ def _image(table, live):
     _only_known(table, "image")
     provider = table.get("provider", "gemini")
     if provider not in IMAGE_PROVIDERS:
-        _fail("image.provider must be gemini, openai or cloudflare")
+        _fail("image.provider must be gemini, openai, cloudflare or subscription")
     models = {name: _string(table.get(name, ""), "image." + name, empty=True)
               for name in ("model_body", "model_cover", "review_model")}
     key_file = _path(table.get("key_file", ""), "image.key_file", empty=True)
     key_source = table.get("key_source", "file")
     if key_source not in KEY_SOURCES:
         _fail("image.key_source must be file or env")
-    if live and (not all(models.values()) or (key_source == "file" and not key_file)):
+    if live and provider != "subscription" and (not all(models.values()) or (key_source == "file" and not key_file)):
         _fail("live mode requires image models and image.key_file" if key_source == "file"
               else "live mode requires image models")
     sizes = [table.get(name, default) for name, default in (("cover_size", "2K"), ("body_size", "1K"))]
@@ -365,6 +385,25 @@ def _image(table, live):
                        _int(table.get("timeout_seconds",180),"image.timeout_seconds",10,600),
                        _int(table.get("body_output_ceiling",1536),"image.body_output_ceiling",256,32768),
                        _bool(table.get("review_bypass", False), "image.review_bypass"), key_source)
+
+
+def _subscription(table):
+    _only_known(table, "subscription")
+    defaults = SubscriptionConfig()
+    values = {name: _string(table.get(name, getattr(defaults, name)), "subscription." + name)
+              for name in ("executable", "version", "agent_model", "effort", "worker_user", "producer_user")}
+    if any(values[k] != getattr(defaults, k) for k in ("executable", "version", "agent_model", "effort")):
+        _fail("subscription requires the reviewed agy 1.2.11 executable, model and effort")
+    if any(not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", values[k]) for k in ("worker_user", "producer_user")):
+        _fail("invalid subscription OS user")
+    if values['worker_user'] == values['producer_user']:
+        _fail("subscription worker and bot users must differ")
+    return SubscriptionConfig(**values,
+        queue_dir=_path(table.get('queue_dir', ''), 'subscription.queue_dir', empty=True),
+        private_dir=_path(table.get('private_dir', ''), 'subscription.private_dir', empty=True),
+        timeout_seconds=_int(table.get('timeout_seconds', 240), 'subscription.timeout_seconds', 30, 600),
+        max_daily_jobs=_int(table.get('max_daily_jobs', 24), 'subscription.max_daily_jobs', 1, 48),
+        max_images_per_run=_int(table.get('max_images_per_run', 12), 'subscription.max_images_per_run', 4, 12))
 
 
 def _budget(table):
@@ -386,7 +425,8 @@ def _budget(table):
         unit_prices[model] = {size: _number(price, f"budget.image_unit_prices.{model}.{size}", 0.000001)
                               for size, price in sizes.items()}
     return BudgetConfig(_number(table.get("daily_usd", 3.0), "budget.daily_usd", 0.0), text_prices, image_prices,
-                        output_prices, unit_prices)
+                        output_prices, unit_prices,
+                        _path(table.get("ledger_db_path", ""), "budget.ledger_db_path", empty=True))
 
 
 def _cloudflare(table):
@@ -603,27 +643,43 @@ def load_config(path):
     _only_known(console, "console")
     image = _image(_table(data, "image"), mode == "live")
     budget = _budget(_table(data, "budget"))
+    subscription = _subscription(_table(data, "subscription"))
+    if image.provider == 'subscription':
+        if contract.environment != 'staging' or not image.review_bypass:
+            _fail('subscription requires staging and the existing Owner review_bypass grant')
+        if not subscription.queue_dir or not subscription.private_dir:
+            _fail('subscription requires queue_dir and private_dir')
+        if image.candidates != 1 or image.max_rounds != 1:
+            _fail('subscription requires candidates = 1 and max_rounds = 1; no automatic retries')
+        if image.key_file or image.key_source != 'file':
+            _fail('subscription must not configure an API key source')
     autoflow = _autoflow(_table(data, "autoflow"))
     if autoflow.run_usd > budget.daily_usd:
         _fail("autoflow.run_usd must be > 0 and <= budget.daily_usd")
     if autoflow.enabled:
         if mode != "live":
             _fail("autoflow.enabled requires service.mode = live")
-        if image.provider != "gemini" or image.key_source != "env":
+        if image.provider != 'subscription' and (image.provider != "gemini" or image.key_source != "env"):
             _fail('autoflow.enabled requires image.provider = "gemini" and image.key_source = "env"')
         if set(admin.category_ids) != set(CATEGORIES):
             _fail("autoflow.enabled requires admin.category_ids for all of " + ", ".join(CATEGORIES))
-        for model, size in ((image.model_cover, image.cover_size), (image.model_body, image.body_size)):
+        for model, size in (() if image.provider == 'subscription' else ((image.model_cover, image.cover_size), (image.model_body, image.body_size))):
             if size not in budget.image_unit_prices.get(model, {}):
                 _fail(f"autoflow.enabled requires a {size} price for {model} in budget.image_unit_prices")
         if not 0 < autoflow.run_usd <= budget.daily_usd:
             _fail("autoflow.run_usd must be > 0 and <= budget.daily_usd")
         if not autoflow.runs_dir:
             _fail("autoflow.enabled requires autoflow.runs_dir")
+        if not budget.ledger_db_path:
+            _fail("autoflow.enabled requires budget.ledger_db_path (one shared daily cap across state roots)")
+        if contract.environment != "staging":
+            _fail("autoflow.enabled requires contract.environment = staging")
+        if admin.daily_publish_limit < len(slots):
+            _fail("autoflow.enabled requires admin.daily_publish_limit >= the number of service.slots")
     return NailBlogConfig(
         db_path, (ids[0],), username, mode, TIMEZONE_NAME, tuple(sorted(slots)), late, session,
         _schedule(_table(data, "schedule")), _text_model(_table(data, "text_model")),
         image, budget, contract,
         str(console.get("revision", "")), _sources(_table(data, "sources")), _trends(_table(data, "trends")),
         _daily(_table(data, "daily"), tuple(sorted(slots))), _links(_table(data, "links"), contract.site_origin), admin,
-        _cloudflare(_table(data,'cloudflare')), autoflow)
+        _cloudflare(_table(data,'cloudflare')), autoflow, subscription)

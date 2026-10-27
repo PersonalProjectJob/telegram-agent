@@ -134,6 +134,10 @@ class OnePost:
     def provenance(document, directory, *, config=None):
         """An imported manual-curation preview is never an automatic quality PASS."""
         manifest = load_json(Path(directory)/'manifest.json')
+        if manifest.get('provider') == 'subscription':
+            from .images.subscription_pipeline import validate_provenance
+            try: return validate_provenance(document, manifest, Path(directory), config)
+            except ImageError as error: raise AdminError(str(error)) from None
         waived=bool(document.get('test_image_waiver'))
         # TEMPORARY Owner decision (nailblog/AGENTS.md): model image review bypass, only while [image] review_bypass is ON.
         bypassed='review_bypass' in document
@@ -191,7 +195,7 @@ class OnePost:
         return digest(manifest)
 
     async def prepare(self, run_id, topic_id, out, *, text=None, article=None, images_document=None,
-                      free_enabled=False, paid_enabled=False, ceiling=None, before_dispatch=None):
+                      free_enabled=False, paid_enabled=False, ceiling=None, before_dispatch=None, subscription_enabled=False):
         self.active()
         if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 160:
             raise AdminError('invalid_run_id')
@@ -212,7 +216,8 @@ class OnePost:
         identity = digest({'environment': binding(self.config), 'topic': topic, 'out': str(directory.resolve()),
                            'article': article, 'image_input': str(image_input) if image_input else None,
                            'image_document_digest': digest(image_data) if image_data else None,
-                           'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling})
+                           'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling,
+                           **({'subscription_enabled': True} if subscription_enabled else {})})
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT * FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
@@ -292,11 +297,13 @@ class OnePost:
         self.verify_article_artifacts(saved)
         if image_data is None:
             # Exact limits of this generation, so a one-time retry can never raise them.
-            saved['image_run'] = {'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling}
+            saved['image_run'] = {'free_enabled': free_enabled, 'paid_enabled': paid_enabled, 'ceiling': ceiling,
+                                  **({'subscription_enabled': True} if subscription_enabled else {})}
         self.store(run_id, 'images_pending', saved)
         if image_data is None:
             image_data = await ImagePipeline(self.config, before_dispatch=self.active).run(article, directory/'images', run_id+'-images', ceiling,
-                                                             free_enabled=free_enabled, paid_enabled=paid_enabled)
+                                                             free_enabled=free_enabled, paid_enabled=paid_enabled,
+                                                             **({'subscription_enabled': True} if subscription_enabled else {}))
             image_base = directory/'images'
         else:
             image_base = image_input.parent
@@ -325,7 +332,7 @@ class OnePost:
         paths = [str(Path(p).resolve()) for p in paths]
         if any(not Path(p).is_relative_to(image_base.resolve()) for p in paths):
             raise AdminError('image_path_outside_document')
-        hashes = validate_files(paths[0], paths[1:])
+        hashes = validate_files(paths[0], paths[1:], config=self.config)
         verify_reviews(image_data, hashes,config=self.config)
         saved.update(cover_path=paths[0], image_paths=paths[1:], image_hashes=hashes,
                      image_reviews=image_data['image_reviews'], image_metadata=image_data['images'],
@@ -335,6 +342,8 @@ class OnePost:
             saved.update(test_image_waiver=image_data['test_image_waiver'],automatic_flow_verdict='HELD',model_quality_verdict='FAIL')
         if 'review_bypass' in image_data:
             saved.update(review_bypass=image_data['review_bypass'])
+        if 'image_source' in image_data:
+            saved['image_source'] = image_data['image_source']
 
     @staticmethod
     def verify_images(document, *, config=None):
@@ -343,7 +352,7 @@ class OnePost:
         if (digest(source) != document['image_document_digest'] or
                 OnePost.provenance(source, Path(document['image_document']).parent,config=config) != document['image_provenance']):
             raise AdminError('image_provenance_changed')
-        hashes = validate_files(document['cover_path'], document['image_paths'])
+        hashes = validate_files(document['cover_path'], document['image_paths'], config=config)
         verify_reviews(document, hashes,config=config)
         return hashes
 
@@ -360,6 +369,8 @@ class OnePost:
             review.update(test_image_waiver=saved['test_image_waiver'],automatic_flow_verdict='HELD',model_quality_verdict='FAIL')
         if saved.get('review_bypass'):
             review.update(review_bypass=saved['review_bypass'],automatic_flow_verdict='REVIEW_BYPASSED')
+        if saved.get('image_source'):
+            review['image_source'] = saved['image_source']
         review.update(facts=saved.get('facts'), words=saved.get('words'), repaired=saved.get('repaired'),
                       writer_audit=saved.get('writer_audit'), text_dispatches=saved.get('text_dispatches'),
                       artifact_status=saved.get('artifact_status'))
@@ -481,7 +492,8 @@ class OnePost:
             pipeline.reject_selected(directory/'images', position, sha, reason)
         image_data = await pipeline.run(saved['article'], directory/'images', run_id+'-images', limits.get('ceiling'),
                                         free_enabled=limits.get('free_enabled', False),
-                                        paid_enabled=limits.get('paid_enabled', False))
+                                        paid_enabled=limits.get('paid_enabled', False),
+                                        **({'subscription_enabled': True} if limits.get('subscription_enabled') else {}))
         self.attach_images(saved, saved['article'], image_data, directory/'images', None)
         self.store(run_id, 'images_ready', saved)
         return self.artifact(run_id)

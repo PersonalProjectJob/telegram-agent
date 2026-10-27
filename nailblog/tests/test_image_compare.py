@@ -173,8 +173,8 @@ class CompareTests(unittest.TestCase):
     def test_stale_pending_and_old_uncertain_are_recovered_before_reserving(self):
         config = self.config()
         old = PaidLedger(State(config.db_path), config, lambda: self.T0 - 5000)
-        old.run('crashed-run', 'binding', 1.0)
-        old.reserve('stale-pending', 'gemini', 'img-a', 0.1, run_id='crashed-run')
+        old.run('compare-crashed-run', 'binding', 1.0)      # S10b: a compare run only recovers compare-* intents
+        old.reserve('stale-pending', 'gemini', 'img-a', 0.1, run_id='compare-crashed-run')
         ancient = PaidLedger(State(config.db_path), config, lambda: self.T0 - 3 * 86400)
         ancient.run('ancient-run', 'binding', 1.0)
         ancient.reserve('ancient-uncertain', 'gemini', 'img-a', 0.1, run_id='ancient-run')

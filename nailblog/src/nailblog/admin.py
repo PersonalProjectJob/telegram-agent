@@ -86,7 +86,8 @@ def public_webp(config, url, *, cover, approved_sha=None):
         if approved_sha is not None and actual_sha != approved_sha:
             raise AdminError('published_image_bytes_changed')
         with Image.open(io.BytesIO(data)) as image:
-            allowed = ((1600, 900),) if cover else ((1200, 675), (1080, 1350))
+            cli = getattr(getattr(config, 'image', None), 'provider', None) == 'subscription'
+            allowed = (((1376, 768),) if cli else ((1600, 900),)) if cover else ((1200, 675), (1080, 1350))
             if image.format != 'WEBP' or image.size not in allowed:
                 raise AdminError('published_image_format_or_dimensions_invalid')
             image.load()
