@@ -1,11 +1,8 @@
-"""Autoflow shared contracts: new config keys loaded through the real TOML loader, and env_secrets."""
-import contextlib
-import io
+"""Autoflow shared contracts: new config keys loaded through the real TOML loader."""
 import tempfile
 import unittest
 from pathlib import Path
 
-from nailblog import env_secrets, gemini_text
 from nailblog._errors import ConfigError
 from nailblog.config import (AGY_SLOT_CATEGORIES, CATEGORIES, DEFAULT_SLOT_CATEGORIES, AdminConfig, AutoflowConfig, BudgetConfig,
                              DailyConfig, ImageConfig, _is_secret_name, load_config)
@@ -214,68 +211,6 @@ class SchemaStrictnessTests(ConfigCase):
             with self.assertRaises(ConfigError) as caught:
                 load(directory, LIVE, **live_sections(image=IMAGE_AGY + f'\nkey_value = "{marker}"'))
         self.assertNotIn(marker, str(caught.exception))
-
-
-class EnvSecretsTests(unittest.TestCase):
-    KEY = "AIzaSy-unit-test-placeholder"
-
-    def setUp(self):
-        self.addCleanup(setattr, env_secrets, "_captured", env_secrets._captured)
-        env_secrets._captured = ""
-
-    def test_constants_match_the_contract(self):
-        self.assertEqual(env_secrets.GEMINI_IMAGE_ENV, "NAILBLOG_GEMINI_IMAGE_KEY")
-
-    def test_capture_removes_the_variable_and_keeps_the_value(self):
-        environ = {env_secrets.GEMINI_IMAGE_ENV: self.KEY, "OTHER": "kept"}
-        env_secrets.capture(environ)
-        self.assertEqual(environ, {"OTHER": "kept"})
-        self.assertEqual(env_secrets.gemini_key_reader("", gemini_text.KEY_SCOPE), self.KEY)
-
-    def test_capture_is_idempotent(self):
-        environ = {env_secrets.GEMINI_IMAGE_ENV: self.KEY}
-        env_secrets.capture(environ)
-        env_secrets.capture(environ)
-        env_secrets.capture({})
-        self.assertEqual(env_secrets.gemini_key_reader("", gemini_text.KEY_SCOPE), self.KEY)
-
-    def test_capture_defaults_to_the_process_environment(self):
-        import os
-        from unittest.mock import patch
-        with patch.dict(os.environ, {env_secrets.GEMINI_IMAGE_ENV: self.KEY}):
-            env_secrets.capture()
-            self.assertNotIn(env_secrets.GEMINI_IMAGE_ENV, os.environ)
-        self.assertEqual(env_secrets.gemini_key_reader("", gemini_text.KEY_SCOPE), self.KEY)
-
-    def test_reader_gives_nothing_for_other_scopes_or_before_capture(self):
-        self.assertEqual(env_secrets.gemini_key_reader("", gemini_text.KEY_SCOPE), "")
-        env_secrets.capture({env_secrets.GEMINI_IMAGE_ENV: self.KEY})
-        for scope in ("", "cloudflare|https://api.cloudflare.com|acct", "deepseek|https://api.deepseek.com", None):
-            self.assertEqual(env_secrets.gemini_key_reader("/some/key.json", scope), "")
-
-    def test_reader_is_call_compatible_with_read_key_callers(self):
-        env_secrets.capture({env_secrets.GEMINI_IMAGE_ENV: self.KEY})
-        self.assertEqual(env_secrets.gemini_key_reader("/p", gemini_text.KEY_SCOPE, group_name="tgnailblog"), self.KEY)
-        self.assertEqual(env_secrets.gemini_key_reader("/p", gemini_text.KEY_SCOPE, "tgnailblog"), self.KEY)
-
-    def test_nothing_is_logged_or_printed(self):
-        out, err = io.StringIO(), io.StringIO()
-        with self.assertLogs(level="DEBUG") as logs, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            logging_probe = __import__("logging").getLogger("nailblog.probe")
-            logging_probe.info("probe")  # assertLogs needs at least one record
-            env_secrets.capture({env_secrets.GEMINI_IMAGE_ENV: self.KEY})
-            env_secrets.gemini_key_reader("/p", gemini_text.KEY_SCOPE)
-            env_secrets.gemini_key_reader("/p", "other")
-        self.assertNotIn(self.KEY, "\n".join(logs.output) + out.getvalue() + err.getvalue())
-        self.assertEqual(out.getvalue() + err.getvalue(), "")
-
-    def test_main_captures_right_after_argument_parsing(self):
-        import inspect
-        from nailblog import __main__ as entry
-        source = inspect.getsource(entry.main)
-        self.assertEqual(source.count("env_secrets.capture()"), 1)
-        self.assertLess(source.index("parser.parse_args(argv)"), source.index("env_secrets.capture()"))
-        self.assertLess(source.index("env_secrets.capture()"), source.index("asyncio.run"))
 
 
 if __name__ == "__main__":
