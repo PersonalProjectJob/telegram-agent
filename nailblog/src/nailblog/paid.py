@@ -24,6 +24,11 @@ class LedgerReadOnly(RuntimeError):
     """The API ledger is retired: every write operation is refused."""
 
 
+class LedgerSnapshotUnstable(RuntimeError):
+    """The ledger kept changing while it was copied; no number is returned (code `ledger_snapshot_unstable`)."""
+    code = 'ledger_snapshot_unstable'
+
+
 class IntentExists(RuntimeError):
     pass
 
@@ -66,6 +71,8 @@ def _snapshot(path):
                 copied_wal.unlink()
             if before == (_stamp(source), _stamp(wal)):   # nobody checkpointed/appended while copying
                 break
+        else:
+            raise LedgerSnapshotUnstable('ledger_snapshot_unstable')
         db = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
         try:
             db.row_factory = sqlite3.Row

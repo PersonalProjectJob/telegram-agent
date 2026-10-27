@@ -416,11 +416,15 @@ def execute(state, name, args, *, now, config=None):
         return [_bounded([head] + rows)] if rows else [head + " chưa có run nào."]
     if name == "status":
         info = state.status()
-        from .paid import report as legacy_report
-        legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))   # read-only snapshot
+        from .paid import LedgerSnapshotUnstable, report as legacy_report
+        try:
+            legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))   # read-only snapshot
+            old_ledger = f"uncertain {legacy['uncertain_usd']:.6f} USD"
+        except LedgerSnapshotUnstable:
+            old_ledger = "không đọc được (đang ghi)"
         posts = ", ".join(f"{k}={v}" for k, v in sorted(info["posts"].items())) or "không có bài"
         return [f"NailBlog: mode={getattr(config, 'mode', 'preview')}, paused={bool(info['paused'])}, "
-                f"ảnh={info['image_mode']}, bài: {posts}, Sổ API cũ: uncertain {legacy['uncertain_usd']:.6f} USD, "
+                f"ảnh={info['image_mode']}, bài: {posts}, Sổ API cũ: {old_ledger}, "
                 f"kết quả cuối: {info['last_result']}"]
     return [USAGE]
 

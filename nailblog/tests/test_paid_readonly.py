@@ -4,11 +4,12 @@ import hashlib
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
 from nailblog import paid
-from nailblog.paid import LedgerReadOnly, PaidLedger
+from nailblog.paid import LedgerReadOnly, LedgerSnapshotUnstable, PaidLedger
 
 UNCERTAIN_MICROS = 124928
 SCHEMA = '''
@@ -100,6 +101,27 @@ class LiveWalLedger(unittest.TestCase):
                 call()
         self.assertEqual(fingerprint(self.db), before)
         self.assertEqual(self.writer.execute("SELECT status FROM paid_intents WHERE id='pending-1'").fetchone()[0], 'pending')
+
+
+class UnstableSnapshot(LiveWalLedger):
+    def test_a_ledger_that_changes_on_every_attempt_raises_instead_of_returning_a_number(self):
+        ticks = iter(range(10 ** 6))
+        with patch.object(paid, '_stamp', side_effect=lambda path: (next(ticks), 0)):
+            with self.assertRaises(LedgerSnapshotUnstable):
+                paid.report(str(self.db))
+            with self.assertRaises(LedgerSnapshotUnstable):
+                paid.usage_rows(str(self.db), 0, 10)
+
+    def test_status_says_the_old_ledger_is_unreadable_while_it_is_written(self):
+        from nailblog.commands import execute
+        from nailblog.state import State
+        config = SimpleNamespace(mode='preview', budget=SimpleNamespace(ledger_db_path=str(self.db)))
+        state = State(str(Path(self.temp.name) / 'state.sqlite3'))
+        ticks = iter(range(10 ** 6))
+        with patch.object(paid, '_stamp', side_effect=lambda path: (next(ticks), 0)):
+            reply = execute(state, 'status', (), now=1000.0, config=config)[0]
+        self.assertIn('Sổ API cũ: không đọc được (đang ghi)', reply)
+        self.assertEqual(execute(state, 'status', (), now=1000.0, config=config)[0].count('uncertain 0.124928 USD'), 1)
 
 
 class IdleLedgerAndMissingData(unittest.TestCase):
