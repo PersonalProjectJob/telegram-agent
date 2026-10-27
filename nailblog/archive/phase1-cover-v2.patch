@@ -1,0 +1,79 @@
+diff --git a/nailblog/src/nailblog/images/post.py b/nailblog/src/nailblog/images/post.py
+index eed576b..b6777ae 100644
+--- a/nailblog/src/nailblog/images/post.py
++++ b/nailblog/src/nailblog/images/post.py
+@@ -1,7 +1,6 @@
+ """Bounded image decoding, no-upscale crop, final WebP and local Vietnamese cover template."""
+ import base64
+ import hashlib
+-import html
+ import io
+ from importlib.resources import files
+ 
+@@ -9,7 +8,7 @@ from PIL import Image, ImageOps
+ 
+ from . import ImageError
+ 
+-VERSION = 'crop-webp-cover-v1'
++VERSION = 'crop-webp-cover-v2-clean-mark'
+ 
+ 
+ def decode(data):
+@@ -53,7 +52,8 @@ async def thumbnail(image, title):
+     from playwright.async_api import async_playwright
+     stream = io.BytesIO();image.save(stream,format='PNG')
+     template = files('nailblog.images').joinpath('templates/cover.html').read_text(encoding='utf-8')
+-    markup = template.replace('{{BACKGROUND}}',base64.b64encode(stream.getvalue()).decode()).replace('{{TITLE}}',html.escape(title))
++    # News-style cover: the page renders the title as text; the image only carries a small brand mark.
++    markup = template.replace('{{BACKGROUND}}',base64.b64encode(stream.getvalue()).decode())
+     async with async_playwright() as manager:
+         browser = await manager.chromium.launch(headless=True)
+         try:
+@@ -62,10 +62,12 @@ async def thumbnail(image, title):
+             page = await context.new_page()
+             await page.set_content(markup,wait_until='load')
+             await page.locator('img').evaluate('(image) => image.decode()')
+-            box = await page.locator('h1').bounding_box()
+-            if (not box or box['height'] > 630 or box['x'] < 200 or box['y'] < 135 or
+-                    box['x']+box['width'] > 1400 or box['y']+box['height'] > 765):
+-                raise ImageError('cover_title_outside_safe_area')
++            if await page.locator('h1').count():
++                raise ImageError('cover_title_must_not_be_rendered')
++            box = await page.locator('.mark').bounding_box()
++            if (not box or box['height'] > 80 or box['x'] < 24 or box['x']+box['width'] > 480 or
++                    box['y'] < 780 or box['y']+box['height'] > 876):
++                raise ImageError('cover_mark_outside_safe_area')
+             return decode(await page.screenshot(type='png'))
+         finally:
+             await browser.close()
+diff --git a/nailblog/src/nailblog/images/prompts.py b/nailblog/src/nailblog/images/prompts.py
+index 0ad6941..af8f4bd 100644
+--- a/nailblog/src/nailblog/images/prompts.py
++++ b/nailblog/src/nailblog/images/prompts.py
+@@ -51,7 +51,11 @@ def generation_prompt(brief,position,subject="nail_editorial"):
+         raise ValueError("bounded_image_brief_required")
+     if subject == "nail_editorial":
+         role="COVER" if position==0 else "BODY"
+-        return (f"IMAGE ROLE: {role}. SUBJECT: NAIL_EDITORIAL. Editorial nail-salon photograph. "
++        # The page shows the title as text; code adds only a small brand mark in the lower-left corner.
++        cover=("COVER LAYOUT: clean news-style photograph only, absolutely no text, letters, numbers, captions, "
++               "title or watermark anywhere; frame the main subject clearly near the centre and keep the "
++               "lower-left corner simple and uncluttered for a small brand mark added later. ") if position==0 else ""
++        return (f"IMAGE ROLE: {role}. SUBJECT: NAIL_EDITORIAL. Editorial nail-salon photograph. "+cover+
+             "Depict ONLY objects/actions requested by the article brief. Preserve exact count, palette, "
+             "finish, material and placement; do not invent cosmetic products, sample sticks or unrelated props. "
+             "Use a clean salon context and plausible nails/hands only if requested. No text, logos or labels. "
+diff --git a/nailblog/src/nailblog/images/templates/cover.html b/nailblog/src/nailblog/images/templates/cover.html
+index dc6f388..85c06a3 100644
+--- a/nailblog/src/nailblog/images/templates/cover.html
++++ b/nailblog/src/nailblog/images/templates/cover.html
+@@ -1,6 +1,5 @@
+ <!doctype html><html lang="vi"><meta charset="utf-8"><style>
+ *{box-sizing:border-box}body{margin:0;width:1600px;height:900px;overflow:hidden;background:#142630}
+-img{width:1600px;height:900px;object-fit:cover}.shade{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.8),rgba(0,0,0,.12))}
+-.title{position:absolute;left:200px;right:200px;top:135px;bottom:135px;display:flex;align-items:center}
+-h1{margin:0;color:white;font:700 64px/1.2 Arial,sans-serif;overflow-wrap:anywhere;text-shadow:0 2px 6px #000}
+-</style><img alt="" src="data:image/png;base64,{{BACKGROUND}}"><div class="shade"></div><div class="title"><h1>{{TITLE}}</h1></div></html>
++img{display:block;width:1600px;height:900px;object-fit:cover}
++.mark{position:absolute;left:48px;bottom:40px;color:white;font:800 34px/1 Arial,sans-serif;letter-spacing:2px;text-transform:uppercase;opacity:.92;text-shadow:0 1px 3px rgba(0,0,0,.75),0 0 12px rgba(0,0,0,.35)}
++</style><img alt="" src="data:image/png;base64,{{BACKGROUND}}"><div class="mark">NailHub</div></html>
