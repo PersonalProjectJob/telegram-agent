@@ -84,3 +84,29 @@ or an unknown record shape cannot be verified, hold rather than guess success.
 Do not call local fixture tests proof of native worker runtime acceptance. Rollout
 must back up existing unit/drop-ins/config and preserve the API uncertain ledger;
 startup-gate remains paused/disarmed. Both Owner snapshot approvals remain required.
+
+## Text jobs (`nailblog-agy-text-v1`)
+
+The same worker also runs `kind=text` jobs, so Agy serves both images and text.
+Install the exact reviewed `nailblog-text-only.md` bytes as
+`/home/startechai/snap/antigravity-cli/common/.gemini/config/agents/<subscription.text_agent>.md`
+(default `nailblog-text-only`; the name must match `^[a-z0-9][a-z0-9-]{0,63}$` and the
+file's `name:` line is generated from it by `text_policy()`), owned by startechai, mode 0640.
+Policy: `tools: []`, `subagent: false`, `commandExecutionPolicy: "off"`; the worker
+passes `--agent <text_agent>` and never accept-edits or any permission bypass. It checks
+the policy SHA before readiness and again under the model lock before dispatch. Text
+jobs run up to `subscription.text_timeout_seconds` (default 600). On timeout the worker
+never dispatches again: it returns `complete_salvaged` only if the new native
+conversation already holds a valid final assistant answer, otherwise `unknown`.
+Identical repeated stdout JSON collapses to one; differing copies or any unknown native
+record hold the job. Text and image jobs share `subscription.max_daily_jobs`.
+The prompt and JSON schema are passed in the agy argv, so they are visible to other
+local users through `ps`/`/proc/<pid>/cmdline` while the job runs; never put secrets
+in a text prompt. Prompt plus schema are capped at 100000 UTF-8 bytes (E2BIG guard),
+checked before the job is created and again before the dispatch marker is written.
+`--print-timeout` is `text_timeout_seconds - 15` so the CLI stops before the hard kill.
+Salvage also applies when the CLI process fails after writing a complete native answer.
+The worker refreshes `worker-ready.json` about every 15s even during a long job and
+records `busy_job`; a dead worker stops refreshing and the producer fails closed.
+Text is advertised in the heartbeat only when the text agent was verified, so a missing
+text policy never blocks image jobs.

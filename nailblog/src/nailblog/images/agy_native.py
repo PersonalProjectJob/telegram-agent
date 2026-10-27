@@ -136,3 +136,116 @@ def native_image(raw, *, conversation, prompt, image_name, brain):
         raise
     except (ValueError, TypeError, UnicodeError, KeyError):
         raise ImageError('cli_native_shape') from None
+
+
+# ---- text jobs (nailblog-agy-text-v1). Pure functions, no I/O, run on any OS. ----
+HELD = 'cli_text_held_'
+ASSISTANT_BODY = ({1, 6, 8, 12, 14}, {1, 3, 6, 8, 11, 12, 14})
+
+
+def _held(why):
+    return ImageError(HELD + why)
+
+
+def collapse_json(text, *, limit=8):
+    """Collapse only byte-identical repeated JSON objects; never choose among alternatives.
+
+    agy may print the same JSON several times. Identical copies are one answer;
+    different copies, trailing garbage or non-objects are a HOLD.
+    """
+    if not isinstance(text, str):
+        raise _held('bad_json')
+    decoder, offset, raws, values = json.JSONDecoder(), 0, [], []
+    while True:
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        if offset >= len(text):
+            break
+        try:
+            value, end = decoder.raw_decode(text, offset)
+        except ValueError:
+            raise _held('bad_json') from None
+        raws.append(text[offset:end]); values.append(value); offset = end
+        if len(values) > limit:
+            break
+    if not 1 <= len(values) <= limit or any(raw != raws[0] for raw in raws):
+        raise _held('nonidentical_json')
+    if not isinstance(values[0], dict):
+        raise _held('object_required')
+    return values[0], len(values)
+
+
+def user_prompt(raw, prompt):
+    """Observed type14 user record; its prompt mirror must equal what was dispatched."""
+    try:
+        root = fields(raw)
+        if set(root) != {1, 4, 5, 19} or one(root, 1) != 14 or one(root, 4) != 3:
+            raise _held('native_user')
+        body = fields(one(root, 19))
+        if set(body) != {2, 3, 4, 12}:
+            raise _held('native_user')
+        mirror = fields(one(body, 3))
+        wanted = prompt.encode()
+        if one(body, 2) != wanted or set(mirror) != {1} or one(mirror, 1) != wanted:
+            raise _held('native_user_prompt')
+        return True
+    except ImageError as error:
+        raise error if str(error).startswith(HELD) else _held('native_wire') from None
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        raise _held('native_user') from None
+
+
+def assistant_text(raw, *, limit=64000):
+    """Observed type15 assistant answer. Any tool-call metadata or unknown field is a HOLD."""
+    try:
+        root = fields(raw)
+        if set(root) != {1, 4, 5, 20} or one(root, 1) != 15 or one(root, 4) != 3:
+            raise _held('native_assistant')
+        if 4 in fields(one(root, 5)):
+            raise _held('tool_call_forbidden')
+        body = fields(one(root, 20))
+        if set(body) not in ASSISTANT_BODY or one(body, 12) != 2:
+            raise _held('native_assistant')
+        text, mirror, marker = one(body, 1), one(body, 8), one(body, 6)
+        if (not isinstance(text, bytes) or not 1 <= len(text) <= limit or text != mirror or
+                not isinstance(marker, bytes) or not marker):
+            raise _held('native_assistant')
+        if 3 in body and not (isinstance(one(body, 3), bytes) and isinstance(one(body, 11), bytes)):
+            raise _held('native_assistant')
+        signature = fields(one(body, 14))
+        if set(signature) != {2} or not isinstance(one(signature, 2), bytes) or not one(signature, 2):
+            raise _held('native_assistant')
+        return text.decode()
+    except ImageError as error:
+        raise error if str(error).startswith(HELD) else _held('native_wire') from None
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        raise _held('native_assistant') from None
+
+
+def native_text(rows, prompt):
+    """Validate a text-only conversation: user prompt first, then assistant turns, nothing else.
+
+    Returns the last assistant text plus the raw records. An unknown step type,
+    status, shape or a trailing non-assistant row raises a HOLD error.
+    """
+    rows = list(rows)
+    if (not 2 <= len(rows) <= 16 or [row[0] for row in rows] != list(range(len(rows))) or
+            any(row[1] not in (14, 15) or (row[2], row[3]) != (3, 0) or row[5] is not None or row[6] is not None
+                for row in rows) or rows[0][1] != 14 or rows[-1][1] != 15):
+        raise _held('native_rows')
+    user_prompt(bytes(rows[0][4]), prompt)
+    final_raw, final = None, None
+    for row in rows[1:]:
+        if row[1] == 14:
+            raise _held('native_rows')
+        final_raw = bytes(row[4]); final = assistant_text(final_raw)
+    return {'final_text': final, 'final_raw': final_raw, 'user_raw': bytes(rows[0][4]),
+            'steps': [row[1] for row in rows]}
+
+
+def salvage_text(rows, prompt):
+    """After a CLI timeout: the finished final assistant answer, or None. Never raises."""
+    try:
+        return native_text(rows, prompt)
+    except (ImageError, TypeError, IndexError, ValueError, UnicodeError):
+        return None
