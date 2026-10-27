@@ -277,7 +277,7 @@ class OverrideCommandTests(unittest.IsolatedAsyncioTestCase):
         from nailblog.approvals import ApprovalStore
         self.store = ApprovalStore(self.state)
         self.held = self.store.request("draft", "run1", "snap", NOW + 3600, NOW, requires_override=True,
-                                       issues=[{"code": "cliche", "message": "sáo rỗng"}])
+                                       issues=[{"code": "cliche", "message": "sáo rỗng", "overridable": True}])
 
     async def say(self, text, sender=OWNER):
         service = SimpleNamespace(state=self.state, clock=lambda: NOW + 1, command=Mock(return_value=["?"]))

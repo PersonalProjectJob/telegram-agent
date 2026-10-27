@@ -639,12 +639,15 @@ def report_footer(service):
         used = None
     jobs = f"Job agy hôm nay: {used if isinstance(used, int) and not isinstance(used, bool) else NONE}" \
            f" / {cap if cap is not None else NONE}"
-    from .paid import LedgerSnapshotUnstable, report as legacy_report
     try:
-        legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))
-        old = f"uncertain {legacy['uncertain_usd']:.6f} USD"
-    except LedgerSnapshotUnstable:
-        old = "không đọc được (đang ghi)"
+        from .paid import LedgerSnapshotUnstable, report as legacy_report
+        try:
+            legacy = legacy_report(getattr(getattr(config, "budget", None), "ledger_db_path", ""))
+            old = f"uncertain {legacy['uncertain_usd']:.6f} USD"
+        except LedgerSnapshotUnstable:
+            old = "không đọc được (đang ghi)"
+    except Exception:   # a broken ledger read must not cost the whole 20:00 DM
+        old = NONE
     return f"{jobs}\nSổ API cũ: {old}"
 
 

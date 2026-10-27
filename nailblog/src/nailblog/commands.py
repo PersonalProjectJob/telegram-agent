@@ -277,6 +277,7 @@ DECISION_TEXT = {
     "owner_unbound": "từ chối: chưa xác minh được Owner",
     "unknown_request": "không có yêu cầu duyệt này",
     "reason_required": "cần lý do (reject: /nailblog reject <id> <lý do>; override: /nailblog ok <id> override <lý do>)",
+    "override_forbidden": "lỗi facts/Han/claim y tế hoặc lỗi không cho phép override: không duyệt được, chỉ có thể reject",
     "override_required": "bài trượt kiểm chất lượng, ok thường không đủ: dùng /nailblog ok <id> override <lý do>",
     "already_decided_differently": "đã được quyết định khác trước đó, không đổi được",
     "superseded": "thẻ này đã bị thay bằng thẻ mới hơn, hãy dùng id trong thẻ mới nhất",
@@ -291,7 +292,7 @@ def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids,
     owner = owner_ids[0] if len(owner_ids) == 1 else None
     result = ApprovalStore(state).decide(request_id, verdict, reason, sender_id, owner, now, override=override)
     text = DECISION_TEXT.get(result["code"], "không xử lý được").replace("<id>", str(request_id))
-    word = "từ chối" if verdict == "reject" else ("OK + override" if override else "OK")
+    word = "từ chối" if verdict == "reject" else ("OK + override" if result["override"] else "OK")
     reply = f"Yêu cầu duyệt #{request_id} ({word}): {text} [{result['code']}]."
     if result["code"] == "recorded":
         reply += " Autoflow sẽ chạy bước tiếp theo ở lượt kiểm tra kế tiếp (khoảng một phút)."

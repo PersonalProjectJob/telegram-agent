@@ -17,6 +17,7 @@ VN_TZ = timezone(timedelta(hours=7))
 DASH = '—'
 MAX_REASON = 500
 MAX_ISSUES = 20
+NEVER_OVERRIDABLE = frozenset({'facts', 'unexpected_han', 'medical_claim'})
 CARD_LIMIT = 4096  # Telegram text message limit
 
 
@@ -32,17 +33,27 @@ def _result(ok, code, row=None):
 
 
 def _issue_list(issues):
-    """Normalize held-card issues (dicts, objects with code/message, or plain strings) to [{'code','message'}]."""
+    """Normalize held-card issues (dicts, objects with code/message/overridable/kind, or plain strings) to
+    [{'code','message','overridable','kind'}]. `overridable` is True only when the source says exactly True."""
     out = []
     for item in list(issues or ())[:MAX_ISSUES]:
         if isinstance(item, dict):
-            code, message = item.get('code'), item.get('message')
+            code, message, overridable, kind = (item.get('code'), item.get('message'), item.get('overridable'),
+                                                item.get('kind'))
         elif isinstance(item, str):
-            code, message = item, ''
+            code, message, overridable, kind = item, '', False, ''
         else:
-            code, message = getattr(item, 'code', None), getattr(item, 'message', None)
-        out.append({'code': str(code or '?')[:60], 'message': ' '.join(str(message or '').split())[:200]})
+            code, message, overridable, kind = (getattr(item, 'code', None), getattr(item, 'message', None),
+                                                getattr(item, 'overridable', None), getattr(item, 'kind', None))
+        out.append({'code': str(code or '?')[:60], 'message': ' '.join(str(message or '').split())[:200],
+                    'overridable': overridable is True, 'kind': str(kind or '')[:20]})
     return out
+
+
+def _blocks_override(issue):
+    """True for an issue the Owner may never override (facts/Han/medical claim, a hold, or not marked overridable)."""
+    return (not isinstance(issue, dict) or issue.get('overridable') is not True
+            or issue.get('code') in NEVER_OVERRIDABLE or issue.get('kind') == 'hold')
 
 
 class ApprovalStore:
@@ -67,20 +78,26 @@ class ApprovalStore:
             raise ApprovalError('invalid_kind')
         if not isinstance(run_id, str) or not run_id or not isinstance(snapshot, str) or not snapshot:
             raise ApprovalError('invalid_request')
+        issue_rows = _issue_list(issues)
+        if any(_blocks_override(issue) for issue in issue_rows):
+            raise ApprovalError('not_overridable')   # layer 1: no row is ever created for these
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            same = db.execute('SELECT id, status FROM approval_requests WHERE run_id=? AND kind=? AND snapshot=?',
-                              (run_id, kind, snapshot)).fetchone()
+            same = db.execute('SELECT id, status, requires_override FROM approval_requests '
+                              'WHERE run_id=? AND kind=? AND snapshot=?', (run_id, kind, snapshot)).fetchone()
             if same:
                 if same['status'] == 'superseded':
                     raise ApprovalError('snapshot_superseded')
+                if same['status'] == 'pending' and requires_override and not same['requires_override']:
+                    db.execute('UPDATE approval_requests SET requires_override=1, issues=? WHERE id=?',
+                               (json.dumps(issue_rows, ensure_ascii=False), same['id']))   # raise only, never lower
                 return same['id']
             db.execute("UPDATE approval_requests SET status='superseded' WHERE run_id=? AND kind=? AND status='pending'",
                        (run_id, kind))
             return db.execute('INSERT INTO approval_requests(run_id,kind,snapshot,status,created_at,deadline,'
                               "requires_override,issues) VALUES(?,?,?,'pending',?,?,?,?)",
                               (run_id, kind, snapshot, now, deadline, 1 if requires_override else 0,
-                               json.dumps(_issue_list(issues), ensure_ascii=False))).lastrowid
+                               json.dumps(issue_rows, ensure_ascii=False))).lastrowid
 
     def decide(self, request_id, verdict, reason, sender_id, owner_id, now, *, override=False):
         """Record only; never publishes. Returns {'ok','code','id','status','reason'}; refusals change nothing
@@ -113,15 +130,23 @@ class ApprovalStore:
                 return _result(False, 'expired', db.execute('SELECT * FROM approval_requests WHERE id=?',
                                                             (request_id,)).fetchone())
             overriding = verdict == 'ok' and bool(override)
+            if overriding:   # layer 2: re-check what is stored, whatever the request() of that day allowed
+                try:
+                    stored = json.loads(row['issues'] or '[]')
+                except ValueError:
+                    stored = [None]
+                if not isinstance(stored, list) or any(_blocks_override(issue) for issue in stored):
+                    return _result(False, 'override_forbidden', row)
             if verdict == 'ok' and row['requires_override']:
                 if not overriding:
                     return _result(False, 'override_required', row)
                 if not reason:
                     return _result(False, 'reason_required', row)
-            keep_reason = verdict == 'reject' or (overriding and bool(reason))
+            flagged = overriding and bool(row['requires_override'])   # a normal request is a plain ok
+            keep_reason = verdict == 'reject' or (flagged and bool(reason))
             db.execute('UPDATE approval_requests SET status=?, reason=?, decided_at=?, decided_by=?, override=? '
                        'WHERE id=?', (want, reason[:MAX_REASON] if keep_reason else None, now, sender_id,
-                                      1 if overriding else 0, request_id))
+                                      1 if flagged else 0, request_id))
             return _result(True, 'recorded', db.execute('SELECT * FROM approval_requests WHERE id=?',
                                                         (request_id,)).fetchone())
 

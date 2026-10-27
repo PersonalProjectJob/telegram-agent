@@ -43,8 +43,11 @@ def random_id_for(key):
     return value or 1
 
 
-def backoff_seconds(attempts):
-    return min(BACKOFF_BASE * 2 ** max(0, attempts - 1), BACKOFF_MAX)
+CARD_BACKOFF_MAX = 300   # approval cards stay retryable every 5 minutes: their deadline is short
+
+
+def backoff_seconds(attempts, cap=BACKOFF_MAX):
+    return min(BACKOFF_BASE * 2 ** max(0, attempts - 1), cap)
 
 
 def message_ids(result):
@@ -130,12 +133,12 @@ class Outbox:
         with self.state.connection() as db:
             db.execute('UPDATE owner_outbox SET attempts=attempts+1 WHERE key=? AND status=?', (key, 'pending'))
 
-    def failed(self, key, now, error, *, album_ids=None):
+    def failed(self, key, now, error, *, album_ids=None, cap=BACKOFF_MAX):
         row = self.get(key)
         with self.state.connection() as db:
             db.execute("UPDATE owner_outbox SET next_attempt_at=?, last_error=?, album_ids=COALESCE(?,album_ids) "
                        "WHERE key=? AND status='pending'",
-                       (now + backoff_seconds(row['attempts'] if row else 1), type(error).__name__,
+                       (now + backoff_seconds(row['attempts'] if row else 1, cap), type(error).__name__,
                         json.dumps(album_ids) if album_ids else None, key))
 
     def sent(self, key, now, ids):
@@ -213,7 +216,8 @@ def outbox_media_sender(state, send, *, clock=time.time):
             ids = await send(owner_id, box.files(key) if not album else [], row['text'],
                              random_id=row['random_id'], skip_files=bool(album))
         except Exception as error:
-            box.failed(key, now, error, album_ids=list(getattr(error, 'sent_ids', None) or []) or None)
+            box.failed(key, now, error, album_ids=list(getattr(error, 'sent_ids', None) or []) or None,
+                       cap=CARD_BACKOFF_MAX)
             raise
         total = album + [i for i in message_ids(ids) if i not in album]
         box.sent(key, now, total)

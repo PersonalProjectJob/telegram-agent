@@ -161,6 +161,35 @@ class SenderTests(Base):
         self.assertEqual((client.albums, len(client.captions)), (1, 2))
 
 
+class CardBackoffTests(Base):
+    async def test_cards_retry_every_300s_while_other_notices_back_off_to_3600s(self):
+        class Client:
+            async def send_file(self, owner, streams):
+                raise ConnectionError('down')
+        clock = [NOW]
+        sender = outbox_media_sender(self.state, make_owner_media_sender(Client(), (OWNER,)), clock=lambda: clock[0])
+        key = None
+        for attempt in range(1, 6):
+            with self.assertRaises(Exception):
+                await sender(OWNER, [b'jpeg'], 'card')
+            row = Outbox(self.state).pending()[0]
+            key = row['key']
+            self.assertEqual(row['next_attempt_at'], clock[0] + 300)       # never grows past 300 for a card
+            clock[0] = row['next_attempt_at']
+        self.assertEqual(Outbox(self.state).get(key)['attempts'], 5)
+
+        async def broken(text, random_id=None):
+            raise ConnectionError('down')
+        text_key = notice_key('t', 1)
+        now, deltas = NOW, []
+        for _ in range(6):
+            await send_once(self.state, broken, text_key, 'x', now=now)
+            due = Outbox(self.state).get(text_key)['next_attempt_at']
+            deltas.append(due - now)
+            now = due
+        self.assertEqual(deltas, [300, 600, 1200, 2400, 3600, 3600])
+
+
 class ReportTests(Base):
     DAY = date(2026, 10, 27)
 
@@ -205,6 +234,18 @@ class ReportTests(Base):
         self.assertIn('Readback: chưa có', third)
         self.assertIn('mime_defect: chưa có', third)
         self.assertIn('Draft: chưa có', third)
+
+    async def test_broken_ledger_or_job_counter_does_not_break_the_dm(self):
+        from unittest.mock import patch
+
+        def boom():
+            raise RuntimeError('counter down')
+        with patch('nailblog.paid.report', side_effect=RuntimeError('ledger down')):
+            text, complete = await daily.preview_dm(self.service(agy_jobs_today=boom), None, self.DAY)
+        self.assertTrue(complete)
+        self.assertIn('Job agy hôm nay: chưa có / 48', text)
+        self.assertIn('Sổ API cũ: chưa có', text)
+        self.assertIn('Slot 06:00', text)
 
     async def test_agy_job_count_is_chua_co_without_a_counter(self):
         text, _ = await daily.preview_dm(self.service(), None, self.DAY)
