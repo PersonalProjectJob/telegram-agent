@@ -72,7 +72,7 @@ KNOWN_KEYS = {
     "sources": ("feeds", "timeout_seconds"),
     "trends": ("rss_url", "poll_hours", "keywords", "anchor_terms", "context_terms", "api_enabled"),
     "daily": ("propose_at", "pick_deadline", "preview_at", "slot_categories"),
-    "autoflow": ("enabled", "runs_dir"),
+    "autoflow": ("enabled", "runs_dir", "owner_approval"),
     "links": ("jobs", "salon_sale", "app"),
 }
 MAX_FEEDS = 30
@@ -158,6 +158,7 @@ class DailyConfig:
 class AutoflowConfig:
     enabled: bool = False
     runs_dir: str = ""     # absolute; required once enabled
+    owner_approval: bool = True   # False (D-034): the machine approves images + Draft itself; staging only
 
 
 @dataclass(frozen=True)
@@ -457,7 +458,8 @@ def _category_ids(value):
 def _autoflow(table):
     _only_known(table, "autoflow")
     return AutoflowConfig(_bool(table.get("enabled", False), "autoflow.enabled"),
-                          runs_dir=_path(table.get("runs_dir", ""), "autoflow.runs_dir", empty=True))
+                          runs_dir=_path(table.get("runs_dir", ""), "autoflow.runs_dir", empty=True),
+                          owner_approval=_bool(table.get("owner_approval", True), "autoflow.owner_approval"))
 
 
 def _links(table, site_origin):
@@ -566,6 +568,8 @@ def load_config(path):
         if image.candidates != 1 or image.max_rounds != 1:
             _fail('subscription requires candidates = 1 and max_rounds = 1; no automatic retries')
     autoflow = _autoflow(_table(data, "autoflow"))
+    if not autoflow.owner_approval and contract.environment != "staging":
+        _fail("autoflow.owner_approval = false requires contract.environment = staging (Owner has not allowed production)")
     if autoflow.enabled:
         if mode != "live":
             _fail("autoflow.enabled requires service.mode = live")

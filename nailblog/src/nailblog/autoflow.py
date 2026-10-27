@@ -19,8 +19,10 @@ from pathlib import Path
 from .approvals import ApprovalError, build_preview
 from .images.pipeline import DispatchPaused
 from .notices import notice_key, send_once
+from .publication import AdminError
 from .schedule import VN_TZ, approve_deadline, image_deadline, slot_datetime
 from .state import InvalidTransition
+from .writer import han_fields
 
 LOG = logging.getLogger(__name__)
 
@@ -176,6 +178,8 @@ class _Env:
         self.owner = self.config.owner_ids[0] if len(self.config.owner_ids) == 1 else None
         self.before_dispatch = (lambda: True) if stop is None else (lambda: not stop.is_set())
         self.tag = '[staging] ' if self.config.contract.environment == 'staging' else ''
+        # D-034: the machine approves (no Owner cards). Anything but an explicit False keeps the Owner flow.
+        self.auto = getattr(self.config.autoflow, 'owner_approval', True) is False
 
     async def dm(self, key, text):
         send = self.service.notice_send
@@ -334,7 +338,9 @@ async def _route(env, row, art):
 
 
 async def _prepare(env, row):
-    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], before_dispatch=env.before_dispatch)
+    extra = {'hold_overridable': True} if env.auto else {}
+    art = await env.onepost.prepare(row['run_id'], row['topic_id'], row['out_dir'], before_dispatch=env.before_dispatch,
+                                    **extra)
     await _route(env, row, art)
 
 
@@ -342,11 +348,64 @@ async def _new(env, row):
     await _prepare(env, row)
 
 
+async def _auto_gate(env, row, art):
+    """D-034: True when the run may be machine-approved. Otherwise the run (and its post) is held `text_quality_held`:
+    only a quality verdict `pass` with no issues, no override request, no ungrounded fact and no test waiver or HELD
+    flow verdict ever qualifies. A fixable issue (cliche) is NOT overridden: the slot is dropped."""
+    quality = art.get('quality') if isinstance(art.get('quality'), dict) else {}
+    ungrounded = (art.get('facts') or {}).get('ungrounded') if isinstance(art.get('facts'), dict) else None
+    if (quality.get('verdict') == 'pass' and not quality.get('issues') and not art.get('requires_override')
+            and not art.get('issues') and ungrounded == [] and not art.get('test_image_waiver')
+            and art.get('automatic_flow_verdict') != 'HELD'):
+        return True
+    env.hold_post(art.get('post_id'), 'text_quality_held')
+    await env.finish(row, 'held', 'text_quality_held')
+    return False
+
+
+async def _auto_approve(env, row, kind, art, deadline):
+    """The auto approval row for `kind` on the snapshot in use, or None when the store refused (run held)."""
+    try:
+        return env.approvals.auto_approve(kind, row['run_id'], art['snapshot'], deadline, env.now,
+                                          quality=art.get('quality'), requires_override=bool(art.get('requires_override')),
+                                          issues=art.get('issues'))
+    except ApprovalError:
+        env.hold_post(art.get('post_id'), 'text_quality_held')
+        await env.finish(row, 'held', 'text_quality_held')
+        return None
+
+
+async def _auto_images(env, row, art, deadline):
+    if not await _auto_gate(env, row, art):
+        return
+    document = json.loads(env.onepost.read(row['run_id'])['document'])
+    if han_fields(document.get('article') or {}):
+        raise AdminError('unexpected_han_requires_review')
+    env.onepost.verify_images(document, config=env.config)     # the deterministic image gate, before any approval row
+    request_id = await _auto_approve(env, row, 'images', art, deadline)
+    if request_id is None:
+        return
+    row = env.move(row, 'images_wait', ctx={'images': {'id': request_id, 'snapshot': art['snapshot']}, 'resend': None})
+    await _images_wait(env, row)
+
+
+async def _auto_draft(env, row, art, deadline):
+    if not await _auto_gate(env, row, art):
+        return
+    request_id = await _auto_approve(env, row, 'draft', art, deadline)
+    if request_id is None:
+        return
+    row = env.move(row, 'draft_wait', ctx={'draft': {'id': request_id, 'snapshot': art['snapshot']}, 'resend': None})
+    await _draft_wait(env, row)
+
+
 async def _images_send(env, row):
     art = env.onepost.artifact(row['run_id'])
     if art['phase'] != 'images_ready':
         return await _route(env, row, art)
     deadline = env.image_ts(row)
+    if env.auto:
+        return await _auto_images(env, row, art, deadline)
     try:
         request_id = env.approvals.request('images', row['run_id'], art['snapshot'], deadline, env.now,
                                            **_override(art))
@@ -466,6 +525,8 @@ async def _draft_send(env, row):
     if env.now >= env.approve_ts(row):
         return await env.finish(row, 'skipped', 'draft_deadline_missed')
     deadline = env.approve_ts(row)
+    if env.auto:
+        return await _auto_draft(env, row, art, deadline)
     try:
         request_id = env.approvals.request('draft', row['run_id'], art['snapshot'], deadline, env.now,
                                            **_override(art))
@@ -510,6 +571,17 @@ async def _draft_wait(env, row):
                 return await env.finish(row, 'held', 'approval_deadline_passed')
             env.onepost.approve(row['run_id'], snapshot, **_override_args(env, ctx, art))
         env.move(row, 'scheduled')
+        if env.auto:
+            await _auto_scheduled_dm(env, row, art)
+
+
+async def _auto_scheduled_dm(env, row, art):
+    """D-034: one short DM per post the machine scheduled (title, slot, admin Draft id when known). Keyed per run."""
+    title = (art.get('article') or {}).get('title') or f"chủ đề #{row['topic_id']}"
+    text = f"NailBlog tự duyệt: đã lên lịch \"{' '.join(str(title).split())[:120]}\", slot {row['slot_at']}."
+    if art.get('admin_id'):
+        text += f" Draft admin: {art['admin_id']}."
+    await env.dm(notice_key('auto_scheduled', row['run_id']), text)
 
 
 async def _scheduled(env, row):
@@ -624,6 +696,8 @@ async def run_due(service, stop, *, onepost, approvals, now):
     env = _Env(service, stop, onepost, approvals, now)
     if env.owner is None:
         return
+    if env.auto and config.contract.environment != 'staging':
+        return                                       # machine approval is staging only (D-034): fail closed
     for topic, local in _new_runs(env):
         await env.dm(notice_key('unlocked', f"{topic['id']}|{topic['slot_at']}"),
                      f"NailBlog autoflow: slot {local:%H:%M} ngày {local:%d/%m} chưa có chủ đề được chốt: chủ đề "

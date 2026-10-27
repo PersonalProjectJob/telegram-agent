@@ -487,7 +487,7 @@ def autoflow_enabled(config):
 def _flow_block(service, target, hhmm, topic):
     """The 20:00 block of a slot while autoflow is on: the stage of its `autoflow_runs` row."""
     from .autoflow import AutoflowRuns
-    from .commands import flow_line
+    from .commands import flow_line, self_approving
     config = service.config
     head = f"Slot {hhmm} ngày {target:%d/%m}"
     if topic is None:
@@ -496,7 +496,7 @@ def _flow_block(service, target, hhmm, topic):
     if run is None:
         return (f"{head}: chủ đề \"{topic['title'][:100]}\" chưa có run autoflow (bắt đầu "
                 f"{config.schedule.window_start_hours} tiếng trước slot).")
-    return f"{head}: {flow_line(run, service.clock())}"
+    return f"{head}: {flow_line(run, service.clock(), auto=self_approving(config))}"
 
 
 def _post_block(service, target, hhmm, topic):
@@ -664,6 +664,9 @@ async def preview_dm(service, text, today, *, opener=None):
         tomorrow = [_flow_block(service, target, hhmm, chosen_topic(state, target, hhmm)) for hhmm in slots_of(config)]
         tail = ("Xem /nailblog flow; duyệt bằng /nailblog ok <id> hoặc /nailblog reject <id> <lý do>. "
                 "Không duyệt đúng hạn thì bài không lên lịch.")
+        if getattr(getattr(config, "autoflow", None), "owner_approval", True) is False:
+            tail = ("Chế độ tự duyệt (D-034): máy tự duyệt ảnh và Draft, bài trượt kiểm chất lượng bị giữ lại. "
+                    "Xem /nailblog flow; chặn một bài bằng /nailblog hold <post_id> <lý do>.")
         return "\n\n".join([head] + blocks + [report_footer(service), f"Ngày mai {target:%d/%m}:"] + tomorrow
                             + [tail]), True
     block = _post_block

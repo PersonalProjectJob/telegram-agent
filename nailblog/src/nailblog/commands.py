@@ -226,7 +226,7 @@ STAGE_TEXT = {
 WAIT_KEY = {"images_wait": "images", "draft_wait": "draft"}
 
 
-def flow_line(row, now=None, approvals=None):
+def flow_line(row, now=None, approvals=None, auto=False):
     """One Vietnamese line for an `autoflow_runs` row: stage and the next step. Only sanitized codes are shown.
     With `approvals` (an ApprovalStore) a waiting row also shows requires_override and the approval deadline."""
     label, step = STAGE_TEXT.get(row["stage"], (row["stage"], "kiểm tra thủ công"))
@@ -244,7 +244,11 @@ def flow_line(row, now=None, approvals=None):
                 step = f"/nailblog ok {ident} override <lý do> hoặc /nailblog reject {ident} <lý do>"
             extra = (f"; requires_override={'có' if found['requires_override'] else 'không'}; hạn duyệt "
                      + datetime.fromtimestamp(found["deadline"], VN_TZ).strftime("%H:%M %d/%m"))
+    if auto and row["stage"] in ("images_send", "images_wait", "draft_send", "draft_wait"):
+        step, extra = "máy tự duyệt, không cần Owner", ""
     line = f"#{row['topic_id']} slot {row['slot_at']} [{row['stage']}] {label}; tiếp theo: {step}{extra}"
+    if auto:
+        line += "; duyệt: tự động"
     if row["terminal_reason"]:
         line += f" (lý do: {row['terminal_reason']})"
     if row["failures"]:
@@ -262,12 +266,17 @@ def _slot_instant(row):
         return 0.0
 
 
-def flow_lines(state, now=None):
+def self_approving(config):
+    """True when `autoflow.owner_approval` is explicitly false (D-034): the machine approves, the Owner does not."""
+    return getattr(getattr(config, "autoflow", None), "owner_approval", True) is False
+
+
+def flow_lines(state, now=None, config=None):
     """One line per run, ordered by slot."""
     from .approvals import ApprovalStore
     from .autoflow import AutoflowRuns
-    store = ApprovalStore(state)
-    return [flow_line(row, now, store) for row in sorted(AutoflowRuns(state).rows(), key=_slot_instant)]
+    store, auto = ApprovalStore(state), self_approving(config)
+    return [flow_line(row, now, store, auto) for row in sorted(AutoflowRuns(state).rows(), key=_slot_instant)]
 
 
 DECISION_TEXT = {
@@ -285,10 +294,13 @@ DECISION_TEXT = {
 }
 
 
-def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids, now, override=False):
+def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids, now, override=False, config=None):
     """`/nailblog ok|reject|ok <id> override <lý do>`: record the Owner's decision only (the engine acts on it at
-    its next pass)."""
+    its next pass). With `autoflow.owner_approval = false` nothing is recorded (D-034)."""
     from .approvals import ApprovalStore
+    if self_approving(config):
+        return ["Chế độ tự duyệt đang bật (autoflow.owner_approval = false): máy tự duyệt, lệnh ok/reject không có tác "
+                "dụng và không đổi gì. Muốn chặn một bài, dùng /nailblog hold <post_id> <lý do>."]
     owner = owner_ids[0] if len(owner_ids) == 1 else None
     store = ApprovalStore(state)
     result = store.decide(request_id, verdict, reason, sender_id, owner, now, override=override)
@@ -481,7 +493,7 @@ def execute(state, name, args, *, now, config=None):
     if name == "resume":
         return ["Resume cần preflight + arm: dùng /nailblog resume qua Telegram."]
     if name == "flow":
-        rows = flow_lines(state, now)
+        rows = flow_lines(state, now, config)
         head = "Autoflow" + ("" if getattr(getattr(config, "autoflow", None), "enabled", False) else " (đang tắt)") + ":"
         return [_bounded([head] + rows)] if rows else [head + " chưa có run nào."]
     if name == "status":
@@ -531,7 +543,7 @@ async def route_command(event, service, owner_ids):
         verdict = "reject" if parsed[0] == "reject" else "ok"
         response = decide_approval(service.state, verdict, parsed[1][0], parsed[1][1] if parsed[0] != "ok" else "",
                                    sender_id=sender, owner_ids=owner_ids, now=service.clock(),
-                                   override=parsed[0] == "ok_override")
+                                   override=parsed[0] == "ok_override", config=getattr(service, "config", None))
     elif parsed[0] == "resume":
         response = await resume(service)
     else:
