@@ -1,3 +1,25 @@
+
+> **Cập nhật đối chiếu v2.0.1 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Theo dõi bổ sung 28/10
+
+- [x] Source thumbnail không chữ/không phủ tối, prompt ảnh sáng theo chủ đề đã commit và push `89a5ac8`.
+- [ ] Kiểm kê ảnh và run cũ trước khi áp dụng build có binding mới.
+- [ ] Triển khai theo quy trình đã kiểm duyệt; xác nhận build thực tế và trạng thái bot.
+- [ ] Tạo ảnh thật và nghiệm thu trực quan; xử lý thumbnail bài đã đăng nếu cần theo quy trình được xác minh.
+- [ ] Ghi bằng chứng QA cho tự duyệt, hết hạn, chống đăng trùng và một ngày đủ bốn slot.
+- [ ] Thiết kế và kiểm thử đường khôi phục run `skipped/images_deadline_missed` nếu Owner muốn tái sử dụng các bài đó; CLI hiện tại không hỗ trợ.
+
+Plan bên dưới ghi thời điểm 27/10 và các câu hỏi lúc đó; không dùng dòng “chờ Owner duyệt” để suy đoán trạng thái hiện tại. [Master](../00-master/nailhub-blog-noissue_master_261014_v1.0.0.md) · [Nghiệp vụ](../01-product/nailhub-blog-noissue_business_261015_v1.0.0.md) · [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v2.0.1 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
 # NailBlog — Gom code về một nhánh, chỉ dùng Agy CLI (v2.0, 27/10/2026)
 
 > **Tạo:** 2026-10-27 · task `.agent-tasks/T-261023-nailblog-full-flow-automation-on-thinkpa` · Route C · GATE 0b · trạng thái: **chờ Owner duyệt**

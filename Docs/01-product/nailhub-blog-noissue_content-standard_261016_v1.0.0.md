@@ -1,3 +1,22 @@
+
+> **Cập nhật đối chiếu v1.0.10 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Ngưỡng và ảnh theo source mới
+
+Các bảng bên dưới phản ánh tiêu chuẩn thiết kế năm 2026-10-16; ngưỡng kiểm thực thi hiện áp dụng cho cả hai chế độ duyệt: mật độ từ khóa 0,3–2,625%; đoạn 35–95 từ, tối đa một đoạn 115 từ; trung bình câu 22 từ, tối đa 36; mở bài 48–94 từ; mỗi takeaway tối đa 21 từ; FAQ 29–63 từ; title/meta title tối đa 94/63 ký tự; summary/meta description 133–168 ký tự. Xem `quality.py` để biết đầy đủ các điều kiện và phân biệt ngưỡng chất lượng với mục tiêu biên tập. Các số lượng nhỏ như số H2, ảnh và hashtag giữ quy tắc trong source.
+
+Ảnh không còn mặc định bị gác để làm placeholder. Yêu cầu thumbnail mới: không chữ, không phủ tối, ảnh bám chủ đề, sáng và sinh động. Source đã commit nhưng chưa xác nhận đã chạy hoặc nghiệm thu trực quan.
+
+[Tài liệu nghiệp vụ](nailhub-blog-noissue_business_261015_v1.0.0.md) · [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v1.0.10 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
 # Chuẩn cấu trúc và nội dung bài blog NailHub
 
 **Phiên bản:** v1.0.1 · 2026-10-16 · Asia/Ho_Chi_Minh\

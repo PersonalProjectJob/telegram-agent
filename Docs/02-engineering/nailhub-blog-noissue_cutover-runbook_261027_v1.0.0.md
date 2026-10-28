@@ -6,6 +6,26 @@ created: 2026-10-27
 status: draft
 ---
 
+> **Cập nhật đối chiếu v2.0.1 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Bổ sung vận hành 28/10
+
+1. Xác định build, cấu hình, trạng thái pause/arm và các run đang hoạt động trước khi đổi gì. Tự duyệt là cấu hình staging, không chứng minh mọi cổng hạn được bỏ.
+2. Với run `skipped/images_deadline_missed`, `/nailblog resume` không phục hồi và CLI `autoflow-requeue` cũng không hỗ trợ. Không SQL UPDATE tay; chưa có quy trình được kiểm chứng để khôi phục chính run này.
+3. CLI `autoflow-requeue` chỉ dành cho `held/text_quality_held`, chưa có post/Create/job ảnh, bot paused và các điều kiện trong mục “Requeue bài held”; chạy `--dry-run` trước. Đây không phải lệnh Telegram.
+4. Trước khi triển khai `89a5ac8`, kiểm kê các run/manifest ảnh cũ và kế hoạch bảo toàn, vì binding xử lý ảnh đã đổi. Không giả định build đang chạy đã có thay đổi. Sau deploy cần ảnh mới thực tế và bằng chứng; bài đã đăng không tự thay thumbnail.
+
+Liên quan: [Nghiệp vụ](../01-product/nailhub-blog-noissue_business_261015_v1.0.0.md) · [Kỹ thuật](nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v2.0.1 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+
 # Runbook cutover NailBlog Agy-only (THINKPAD)
 
 Phiên bản nội dung v1.0.1, 27/10/2026 (giữ đường dẫn đã liên kết). Nguồn: plan `Docs/04-tasks/nailhub-blog-noissue_tasks_261027_v2.0.0.md`, mục "Deploy + nghiệm thu", "Rủi ro GATE 0b", "Rollback".

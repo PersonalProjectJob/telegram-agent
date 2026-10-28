@@ -1,3 +1,16 @@
+
+> **Cập nhật đối chiếu v1.0.1 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+**Tài liệu lịch sử:** các kết quả, cấu hình, nhà cung cấp và hướng dẫn dưới đây phản ánh thời điểm lập tài liệu; không dùng như hướng dẫn runtime hiện tại. Đối chiếu [nghiệp vụ hiện hành](../01-product/nailhub-blog-noissue_business_261015_v1.0.0.md), [kỹ thuật Agy](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) và [runbook](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v1.0.1 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
 # Bàn giao NailBlog Phase 2 — staging / THINKPAD
 
 Version: v1.0.0 · Ngày 2026-10-20 · Harness/data/state owner: **AlexChu** · Runtime bàn giao: Codex.

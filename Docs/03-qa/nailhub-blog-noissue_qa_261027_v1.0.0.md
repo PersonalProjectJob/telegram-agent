@@ -6,6 +6,30 @@ created: 2026-10-27
 status: draft
 ---
 
+> **Cập nhật đối chiếu v2.0.1 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Ca bổ sung và trạng thái bằng chứng 28/10
+
+| Ca | Tiêu chí | Kết quả hiện có |
+|---|---|---|
+| Tự duyệt staging | Bài `pass` không issue và ảnh hợp lệ tạo hai quyết định đúng snapshot; bài không đạt bị giữ. | Cần chạy xác nhận theo build và cấu hình thực. |
+| Hết hạn ảnh | Run được đánh dấu skipped; resume và CLI requeue không tự khôi phục. | Ảnh user cung cấp thể hiện #1, #3, #5 skipped; chưa có kiểm tra runtime độc lập trong lượt tài liệu. |
+| Thumbnail mới | Ảnh tạo thật không có chữ hoặc lớp tối, sáng, sinh động và đúng chủ đề; kiểm ở trang danh sách và bài. | Chưa chạy ảnh thật; chưa nghiệm thu trực quan. |
+| Run cũ khi đổi build | Kiểm kê và xử lý ảnh/manifest cũ theo binding mới; không gây đăng trùng. | Chưa kiểm trước triển khai. |
+| Đăng một bài | Xác nhận bài xuất hiện và readback đúng. | User xác nhận bài đã lên; chưa đối chiếu bằng chứng đọc lại độc lập. |
+| Đủ bốn slot | Bốn bài và trạng thái thực tế, không đăng trùng, kèm chứng cứ. | Chưa đủ bằng chứng, không đánh dấu PASS. |
+
+Kiểm thử offline từng được báo cho commit thumbnail: `Ran 19 tests ... OK (skipped=1)`; không thay thế ảnh thật hay nghiệm thu staging. [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [Vận hành](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md) · [Nghiệp vụ](../01-product/nailhub-blog-noissue_business_261015_v1.0.0.md).
+
+**Lịch sử thay đổi:** v2.0.1 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+
 # QA: NailBlog Agy-only — ca kiểm thật trên staging
 
 Version: v1.0.0 · 2026-10-27 · Căn cứ: [Plan v2.0](../04-tasks/nailhub-blog-noissue_tasks_261027_v2.0.0.md) · [Engineering v1.0.0](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · QA cũ: [qa 261019](nailhub-blog-noissue_qa_261019_v1.0.0.md).

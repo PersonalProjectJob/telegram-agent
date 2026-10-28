@@ -1,3 +1,61 @@
+
+> **Cập nhật đối chiếu v1.0.9 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Nghiệp vụ hiện hành — bản đối chiếu
+
+**Đối tượng:** Owner, vận hành, QA. **Trạng thái:** cập nhật để review; chưa xác nhận triển khai thumbnail mới. Chủ đề được chốt theo slot, bài được viết và kiểm chất lượng, tạo ảnh, lưu Draft và đăng đúng lịch. Owner có thể kiểm tra qua tin nhắn riêng Telegram.
+
+| Bước | Kết quả / điều kiện |
+|---|---|
+| Chủ đề | Một chủ đề đã chốt cho mỗi slot; cấu hình mẫu 06:00, 10:00, 15:00, 19:00 giờ Việt Nam. |
+| Nội dung và ảnh | Agy qua worker xử lý chữ và ảnh; kiểm số liệu, nội dung và ảnh. Việc chấm ảnh bằng model có thể được bypass theo cấu hình Owner; kiểm tra ảnh xác định vẫn áp dụng. |
+| Duyệt | Chế độ mặc định chờ Owner duyệt ảnh rồi Draft. Nếu cấu hình tự duyệt staging bật, bài phải `pass`, không issue hoặc override; không gửi hai thẻ, ghi nhận duyệt tự động theo đúng bản. |
+| Lên lịch và đăng | Kiểm trùng, lưu và đọc lại Draft; chỉ đăng khi điều kiện hợp lệ, trong cửa sổ của slot, tối đa một lần. |
+| Ngoại lệ | Quá hạn có thể bỏ slot; trạng thái chưa rõ phải đối soát, không tự đăng lại. |
+
+```mermaid
+flowchart TD
+ A([Chốt chủ đề]) --> B[Viết bài và tạo ảnh]
+ B --> C{Đạt kiểm tra?}
+ C -- Không --> D([Giữ để xử lý])
+ C -- Có --> E{Chế độ duyệt}
+ E -- Thủ công --> F[Owner duyệt ảnh và Draft]
+ E -- Tự động staging --> G[Ghi nhận tự duyệt]
+ F --> H[Đối soát và lên lịch]
+ G --> H
+ H --> I{Còn trong cửa sổ?}
+ I -- Có --> J([Đăng và kiểm tra])
+ I -- Không --> K([Bỏ slot hoặc giữ])
+```
+
+```mermaid
+stateDiagram-v2
+ [*] --> Đang_xử_lý : Chủ đề đã chốt
+ Đang_xử_lý --> Chờ_duyệt : Ảnh hoặc Draft sẵn sàng
+ Chờ_duyệt --> Lên_lịch : Duyệt hợp lệ
+ Lên_lịch --> Đã_đăng : Đăng và đọc lại thành công
+ Đang_xử_lý --> Bỏ_slot : Hết hạn ảnh
+ Chờ_duyệt --> Bỏ_slot : Hết hạn
+ Đang_xử_lý --> Đang_giữ : Lỗi cần xử lý
+ Lên_lịch --> Chưa_rõ : Kết quả đăng chưa xác định
+```
+
+**Thumbnail:** yêu cầu mới là ảnh sáng, sinh động, bám nội dung, không chữ và không lớp phủ tối. Source `89a5ac8` đã thay đổi luồng tạo ảnh mới; chưa chứng minh deploy, chất lượng ảnh thật hoặc thay thế ảnh của bài đã đăng.
+
+**Vận hành:** `/nailblog flow`, `/nailblog queue`, `/nailblog status` để xem; `/nailblog pause`, `/nailblog resume` để dừng/chạy theo preflight. `autoflow-requeue` là lệnh terminal của operator, chỉ hỗ trợ run `held/text_quality_held` đủ điều kiện; không khôi phục run `skipped/images_deadline_missed`. Không sửa trạng thái trực tiếp trong DB để đăng bù.
+
+**Quan sát đã cung cấp:** ảnh chụp ngày 28/10 cho thấy #1, #3, #5 bị bỏ do hết hạn ảnh, #7 đã lên lịch và người dùng xác nhận bài đã lên. Không suy ra đã nghiệm thu bốn slot.
+
+**Tài liệu liên quan:** [Master](../00-master/nailhub-blog-noissue_master_261014_v1.0.0.md) · [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [Vận hành](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v1.0.9 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
 # Quy trình nghiệp vụ Agent tạo bài blog NailHub
 
 **Phiên bản:** v1.0.1\

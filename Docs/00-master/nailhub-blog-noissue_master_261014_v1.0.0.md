@@ -1,3 +1,22 @@
+
+> **Cập nhật đối chiếu v1.0.9 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+
+**Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
+## Hiện trạng và tài liệu liên quan
+
+NailBlog tự đề xuất/chốt chủ đề, viết bài, tạo ảnh, lưu Draft và đăng theo lịch trên staging. Source hiện dùng Agy qua worker cho cả chữ và ảnh; sổ chi API cũ chỉ đọc. Cấu hình mẫu có bốn slot 06:00, 10:00, 15:00, 19:00 theo giờ Việt Nam; thời gian thực tế do cấu hình quyết định. Mỗi slot tối đa một chủ đề được chốt.
+
+Chế độ duyệt tay vẫn tồn tại. Tự duyệt chỉ được bật trên staging, yêu cầu bài đạt cổng chất lượng và ảnh qua kiểm tra xác định. Hạn xử lý ảnh và Draft vẫn có hiệu lực. Mục tiêu không chữ trên thumbnail đã có trong commit source `89a5ac8`, chưa có bằng chứng triển khai hoặc ảnh thật sau sửa. Không coi nhiệm vụ đã nghiệm thu toàn bộ.
+
+Liên kết: [Nghiệp vụ](../01-product/nailhub-blog-noissue_business_261015_v1.0.0.md) · [Chuẩn nội dung](../01-product/nailhub-blog-noissue_content-standard_261016_v1.0.0.md) · [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [Vận hành](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md) · [Công việc](../04-tasks/nailhub-blog-noissue_tasks_261027_v2.0.0.md).
+
+**Lịch sử thay đổi:** v1.0.9 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
+
+---
+
+> **Nội dung lịch sử bên dưới:** giữ để truy vết; nếu khác với cập nhật phía trên, dùng phần cập nhật và kiểm tra cấu hình thực tế.
+
 # Master Document: NailHub — Flow tạo bài blog tự động
 
 ## Metadata
