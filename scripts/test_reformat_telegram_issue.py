@@ -27,7 +27,9 @@ class ReformatTests(unittest.TestCase):
         self.assertEqual([line for line in issue.body.splitlines() if line.startswith('### ')],
                          ['### 📝 Tóm tắt', '### 🛠 Việc cần làm',
                           '### 🖼 Minh họa / Evidence (đầu vào)', '### 🏁 Xong khi'])
-        self.assertIn(module.format_issue.__globals__['DOD_EVIDENCE_LINE'], issue.body)
+        task_body = module.active().render('task.md', 'body', {'done': [], 'questions': []})
+        dod_line = next(line for line in task_body.splitlines() if line.startswith('- [ ] '))
+        self.assertIn(dod_line, issue.body)
         self.assertIn(fixture()['sources'][0]['text'], issue.body)
         self.assertIn('https://example.invalid/442.jpg', issue.body)
         self.assertIn('xác nhận thủ công', issue.body)

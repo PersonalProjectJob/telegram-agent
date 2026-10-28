@@ -6,6 +6,7 @@ import html
 from dataclasses import dataclass
 
 from .models import Classification, IncomingMessage, TICKET_TYPES, canonical_category, immutable_details
+from .ticket_templates import active
 
 
 MAX_QUOTED_MESSAGES = 10
@@ -224,163 +225,55 @@ def _clean_line(value) -> str:
     return redact(sanitize(value, inline=True)) if isinstance(value, str) else ""
 
 
-# 12.15 / 12.16: all template wording, headings, emoji, HTML tags and automatic questions are
-# code-owned constants; user and model text only ever enters through `sanitize` + `redact`.
-NO_DETAIL_LINE = "(chưa có thông tin)"
-DOD_EVIDENCE_LINE = "- [ ] Đính kèm evidence kết quả (ảnh/link/log) khi đóng issue"
-SUMMARY_HEADING = "### 📝 Tóm tắt"
-BUG_HEADING = "### 🐞 Lỗi"
-EVIDENCE_HEADING = "### 🖼 Minh họa / Evidence"
-FEEDBACK_HEADING = "### 💡 Vấn đề / nhu cầu"
-ACCEPTANCE_HEADING = "### ✅ Tiêu chí chấp nhận (nháp)"
-CONTEXT_HEADING = "### 🧭 Ngữ cảnh"
-TASK_HEADING = "### 🛠 Việc cần làm"
-TASK_EVIDENCE_HEADING = "### 🖼 Minh họa / Evidence (đầu vào)"
-DONE_HEADING = "### 🏁 Xong khi"
-CLARIFY_HEADING = "### ❓ Cần làm rõ"
-LABEL_ENVIRONMENT = "Môi trường"
-LABEL_STEPS = "Các bước tái hiện"
-LABEL_EXPECTED = "Mong đợi"
-LABEL_ACTUAL = "Thực tế"
-LABEL_USER_STORY = "User story"
-LABEL_PROPOSAL = "Đề xuất"
-LABEL_ALTERNATIVES = "Phương án khác"
-LABEL_REASON = "Lý do"
-LABEL_SCOPE = "Phạm vi"
-LABEL_DUE = "Hạn / người được nhắc"
-SCOPE_IN_LINE = "Làm — "
-SCOPE_OUT_LINE = "Không làm — "
-SCOPE_SEPARATOR = " · "
-DOCUMENT_BULLET = "- 📎 "
-DETAILS_OPEN = "<details>"
-DETAILS_CLOSE = "</details>"
-SUMMARY_OPEN = "<summary>"
-SUMMARY_CLOSE = "</summary>"
-SUB_OPEN = "<sub>"
-SUB_CLOSE = "</sub>"
-FOOTER_RULE = "---"
-ORIGINAL_ICON = "💬"
-ORIGINAL_TITLE = "Tin gốc"
-UNKNOWN_SENDER = "(không rõ)"
-IMAGE_ONLY_LINE = "(chỉ có ảnh)"
-DOCUMENT_ONLY_LINE = "(chỉ có tài liệu)"
 TIME_FORMAT = "%d/%m %H:%M"
-BUG_QUESTIONS = (
-    "Lỗi xảy ra trên môi trường nào (app/bản build, thiết bị, trình duyệt)?",
-    "Các bước để tái hiện lỗi là gì?",
-    "Kết quả mong đợi và kết quả thực tế?",
-    "Gửi thêm ảnh/video màn hình lỗi",
-)
-FEEDBACK_QUESTIONS = ("Vấn đề / nhu cầu là gì?",
-                      "Là vai trò nào, bạn muốn hành động gì để có lợi ích gì?")
-TASK_WORK_QUESTION = "Việc cần làm là gì?"
 MAX_DETAIL_CHARS = 500
 MAX_DETAIL_ITEMS = 10
 MAX_DETAIL_ITEM_CHARS = 200
-
-
-def _labelled(label, value):
-    return f"**{label}:** {value}"
-
-
-def _join_lines(parts):
-    """Join (text, is_list) parts. A list sits right under its label; a blank line follows it, so
-    the next label is never swallowed as a lazy continuation of its last item."""
-    out = ""
-    previous_list = False
-    for index, (value, is_list) in enumerate(parts):
-        if index:
-            out += "\n\n" if previous_list else "\n"
-        out += value
-        previous_list = is_list
-    return out
 
 
 def _evidence_text(*parts):
     return "\n\n".join(part for part in parts if part)
 
 
-def _type_sections(category, details, media, notes):
-    """Render only this category's fields; return section strings and missing-field questions.
-
-    `media` is the code-written image/document Markdown (shown inside the evidence/context area);
-    `notes` are code-written attachment failure notes, placed right under it."""
-    values = dict(immutable_details(details))
-
+def _template_values(category, details, media, notes):
+    source = dict(immutable_details(details))
+    template = active()
     def text(key):
-        return line_safe(_clean_line(strip_image_marker(values.get(key)))[:MAX_DETAIL_CHARS])
-
-    def items(key, numbered=False):
-        entries = values.get(key, ())
-        lines = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
-                 for entry in entries[:MAX_DETAIL_ITEMS]]
-        lines = [line_safe(line) for line in lines if line]
-        return "\n".join(f"{index}. {line}" if numbered else f"- [ ] {line}"
-                         for index, line in enumerate(lines, 1))
-
-    sections, questions = [], []
-    notes_text = "\n".join(notes)
-    if category == "bug":
-        environment, steps, expected, actual = (text("environment"), items("steps", numbered=True),
-                                                text("expected"), text("actual"))
-        sections.append(BUG_HEADING + "\n" + _join_lines([
-            (_labelled(LABEL_ENVIRONMENT, environment or NO_DETAIL_LINE), False),
-            (f"**{LABEL_STEPS}:**" + ("" if steps else " " + NO_DETAIL_LINE), False),
-            *(((steps, True),) if steps else ()),
-            (_labelled(LABEL_EXPECTED, expected or NO_DETAIL_LINE), False),
-            (_labelled(LABEL_ACTUAL, actual or NO_DETAIL_LINE), False)]))
-        evidence = _evidence_text(text("error_text"), *media)
-        sections.append(EVIDENCE_HEADING + "\n"
-                        + _evidence_text(evidence or NO_DETAIL_LINE, notes_text))
-        if not environment:
-            questions.append(BUG_QUESTIONS[0])
-        if not steps:
-            questions.append(BUG_QUESTIONS[1])
-        if not expected or not actual:
-            questions.append(BUG_QUESTIONS[2])
-        if not evidence:
-            questions.append(BUG_QUESTIONS[3])
-    elif category == "feedback":
-        problem, user_story = text("problem"), text("user_story")
-        proposal, alternatives = text("proposal"), text("alternatives")
-        sections.append(FEEDBACK_HEADING + "\n" + _join_lines(
-            [(problem or NO_DETAIL_LINE, False)]
-            + [(_labelled(label, value), False) for label, value in
-               ((LABEL_USER_STORY, user_story), (LABEL_PROPOSAL, proposal),
-                (LABEL_ALTERNATIVES, alternatives)) if value]))
-        acceptance = items("acceptance")
-        if acceptance:
-            sections.append(ACCEPTANCE_HEADING + "\n" + acceptance)
-        context = _evidence_text(text("context"), *media, notes_text)
-        if context:
-            sections.append(CONTEXT_HEADING + "\n" + context)
-        questions.extend(question for value, question in
-                         zip((problem, user_story), FEEDBACK_QUESTIONS) if not value)
-    elif category == "task":
-        work = text("work")
-        scope = SCOPE_SEPARATOR.join(label + value for label, value in
-                                     ((SCOPE_IN_LINE, text("scope_in")), (SCOPE_OUT_LINE, text("scope_out")))
-                                     if value)
-        sections.append(TASK_HEADING + "\n" + _join_lines(
-            [(work or NO_DETAIL_LINE, False)]
-            + [(_labelled(label, value), False) for label, value in
-               ((LABEL_REASON, text("reason_context")), (LABEL_SCOPE, scope), (LABEL_DUE, text("due")))
-               if value]))
-        clean_links = [_clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
-                       for entry in values.get("links", ())[:MAX_DETAIL_ITEMS]]
-        links = "\n".join("- " + line_safe(entry) for entry in clean_links if entry)
-        evidence = _evidence_text(*media, notes_text, links)
-        if evidence:
-            sections.append(TASK_EVIDENCE_HEADING + "\n" + evidence)
-        done = items("done")
-        sections.append(DONE_HEADING + "\n" + (done + "\n" if done else "") + DOD_EVIDENCE_LINE)
-        if not work:
-            questions.append(TASK_WORK_QUESTION)
-    return sections, questions
+        return line_safe(_clean_line(strip_image_marker(source.get(key)))[:MAX_DETAIL_CHARS])
+    def items(key):
+        return [line_safe(line) for line in (
+            _clean_line(strip_image_marker(entry))[:MAX_DETAIL_ITEM_CHARS]
+            for entry in source.get(key, ())[:MAX_DETAIL_ITEMS]) if line]
+    def question(name):
+        return template.render(category + '.md', 'question.' + name)
+    questions = []
+    if category == 'bug':
+        values = {key: text(key) for key in ('environment', 'expected', 'actual')}
+        values['steps'] = items('steps')
+        values['evidence'] = _evidence_text(text('error_text'), *media)
+        values['notes'] = notes if '\n'.join(notes) else []
+        if not values['environment']: questions.append(question('environment'))
+        if not values['steps']: questions.append(question('steps'))
+        if not values['expected'] or not values['actual']: questions.append(question('expected_actual'))
+        if not values['evidence']: questions.append(question('evidence'))
+    elif category == 'feedback':
+        values = {key: text(key) for key in ('problem', 'user_story', 'proposal', 'alternatives')}
+        values['acceptance'] = items('acceptance')
+        values['context'] = _evidence_text(text('context'), *media, '\n'.join(notes))
+        if not values['problem']: questions.append(question('problem'))
+        if not values['user_story']: questions.append(question('user_story'))
+    else:
+        values = {key: text(key) for key in ('work', 'scope_in', 'scope_out', 'due')}
+        values['reason'] = text('reason_context')
+        values['done'] = items('done')
+        links = '\n'.join('- ' + line for line in items('links'))
+        values['task_evidence'] = _evidence_text(*media, '\n'.join(notes), links)
+        if not values['work']: questions.append(question('work'))
+    return values, questions
 
 
 def _sender(item) -> str:
-    return _clean_line(item.sender_name) or UNKNOWN_SENDER
+    return _clean_line(item.sender_name) or active().render('_common.md', 'original.unknown_sender')
 
 
 def _time(item) -> str:
@@ -398,9 +291,9 @@ def _sender_list(case_messages) -> str:
 def _original_text(item, limit) -> str:
     if not item.text.strip():
         if item.has_image:
-            return "> " + IMAGE_ONLY_LINE
+            return "> " + active().render('_common.md', 'original.image_only')
         if item.has_document:
-            return "> " + DOCUMENT_ONLY_LINE
+            return "> " + active().render('_common.md', 'original.document_only')
     return _quote(item.text, limit)
 
 
@@ -439,14 +332,14 @@ def format_issue(message: IncomingMessage, classification: Classification | None
         given_summary = _clean_line(strip_image_marker(text[1])) if text else ""
         prefix = f"[{classification.type}] " if typed else "[cần phân loại] "
         title = prefix + (given_title or _first_message_line(fallback_messages) or NO_TITLE_LINE)
-        summary = given_summary or "(agent không chắc chắn, cần người đọc)"
+        summary = given_summary or active().render('_common.md', 'fallback.summary_needs_human')
         labels = ((classification.type, "triage", "needs-human", "source:telegram") if typed
                   else ("needs-human", "source:telegram"))
     else:
         title = f"[{classification.type}] " + (
             _clean_line(strip_image_marker(classification.title))
             or _first_message_line(fallback_messages) or NO_TITLE_LINE)
-        summary = _clean_line(strip_image_marker(classification.summary)) or NO_SUMMARY_LINE
+        summary = _clean_line(strip_image_marker(classification.summary)) or active().render('_common.md', 'fallback.summary')
         labels = (classification.type, "triage", "source:telegram")
     title = title.replace("\n", " ")[:80]
     case_messages = sorted(case_messages or [message],
@@ -464,44 +357,42 @@ def format_issue(message: IncomingMessage, classification: Classification | None
     blocks = []
     for item in shown:
         link = telegram_link(item)
-        link_text = f" · [mở trên Telegram]({link})" if link else ""
-        mark = " · tin chính" if item.message_id in key_ids else ""
+        link_text = f" · [{active().render('_common.md', 'original.open_link')}]({link})" if link else ""
+        mark = " · " + active().render('_common.md', 'original.key_mark') if item.message_id in key_ids else ""
         blocks.append(f"**{_sender(item)} · {_time(item)}**{link_text}{mark}\n"
                       f"{_original_text(item, limit)}")
     if hidden:
-        blocks.append(f"(còn {hidden} tin khác trong case, xem nhóm Telegram)")
+        blocks.append(active().render('_common.md', 'original.hidden', {'count': str(hidden)}))
     if tier == "manual":
-        provenance = "xác nhận thủ công"
+        provenance = active().render('_common.md', 'provenance.manual')
     elif tier == "rule":
-        provenance = "tầng 1 lệnh"
+        provenance = active().render('_common.md', 'provenance.rule')
     else:
         confidence = (f"{classification.confidence:.2f}"
-                      if classification is not None and classification.is_valid() else "không có")
-        provenance = f"tầng 2 {sanitize(model, inline=True)}, confidence {confidence}"
+                      if classification is not None and classification.is_valid() else active().render('_common.md', 'confidence.none'))
+        provenance = active().render('_common.md', 'provenance.model', {'model': sanitize(model, inline=True), 'confidence': confidence})
     if len(case_messages) > 1:
-        provenance += f" · case {len(case_messages)} tin"
+        provenance += " · " + active().render('_common.md', 'provenance.case', {'count': str(len(case_messages))})
 
-    def clarify_section(entries):
-        return CLARIFY_HEADING + "\n" + "\n".join(f"- {line_safe(entry)}" for entry in entries)
-
-    clarify_blocks = []
+    questions = []
     if clarify is not None and (needs_human or clarify):
         questions = [_clean_line(entry)[:MAX_CLARIFY_CHARS] for entry in clarify
                      if isinstance(entry, str) and entry.strip()][:MAX_CLARIFY]
-        clarify_blocks.append(clarify_section(questions or [NEEDS_CLARITY_LINE]))
+        questions = questions or [active().render('_common.md', 'fallback.needs_clarity')]
     media = []
     if images:
         media.append("\n".join(f"![{alt}]({url})" for alt, url in images))
     if documents:
         media.append("\n".join(
-            f"{DOCUMENT_BULLET}[{document_label(name, f'tài liệu {index}')}]({url})"
+            f"- 📎 [{document_label(name, active().render('_common.md', 'document.fallback_label', {'index': str(index)}))}]({url})"
             for index, (name, url) in enumerate(documents, 1)))
     clean_notes = [" ".join(note.split()) for note in notes]
-    type_blocks = []
     category = canonical_category(classification.type) if typed else None
+    template_name = 'needs-human.md'
+    values = {}
     if details is not None and category in ("bug", "feedback", "task"):
-        # Move the existing, code-owned attachment Markdown into the category's evidence area.
-        type_blocks, auto_questions = _type_sections(category, details, media, clean_notes)
+        template_name = category + '.md'
+        values, auto_questions = _template_values(category, details, media, clean_notes)
         media, clean_notes = [], []
         questions = []
         seen = set()
@@ -516,19 +407,14 @@ def format_issue(message: IncomingMessage, classification: Classification | None
                 seen.add(key)
                 questions.append(question)
         questions = questions[:MAX_CLARIFY]
-        clarify_blocks = []
-        if questions or (needs_human and clarify is not None):
-            clarify_blocks.append(clarify_section(questions or [NEEDS_CLARITY_LINE]))
+        if not questions and needs_human and clarify is not None:
+            questions = [active().render('_common.md', 'fallback.needs_clarity')]
     extra_evidence = _evidence_text(*media, "\n".join(clean_notes))
-    if extra_evidence:   # untyped / legacy issue: images, documents and notes under one heading
-        type_blocks = [*type_blocks, EVIDENCE_HEADING + "\n" + extra_evidence]
-    original_title = (f"{ORIGINAL_ICON} {ORIGINAL_TITLE} ({len(case_messages)} tin)"
-                      f" — {_sender_list(case_messages)}, {_time(case_messages[0])}")
-    original = (f"{DETAILS_OPEN}{SUMMARY_OPEN}{original_title}{SUMMARY_CLOSE}\n\n"
-                + "\n\n".join(blocks) + f"\n\n{DETAILS_CLOSE}")
-    sections = [
-        f"<!-- tg:{message.chat_id}:{message.message_id} -->\n{SUMMARY_HEADING}\n{line_safe(summary)}",
-        *type_blocks, *clarify_blocks, original,
-        f"{FOOTER_RULE}\n{SUB_OPEN}Phân loại: {provenance} · tạo tự động bởi tg-triage{SUB_CLOSE}"]
-    body = "\n\n".join(sections)
+    if template_name == 'needs-human.md':
+        values['evidence'] = extra_evidence
+    original = active().render('_common.md', 'original', {'count': str(len(case_messages)),
+        'senders': _sender_list(case_messages), 'time': _time(case_messages[0]), 'messages': '\n\n'.join(blocks)})
+    footer = active().render('_common.md', 'footer', {'provenance': provenance})
+    values.update(summary=line_safe(summary), questions=[line_safe(q) for q in questions], original=original, footer=footer)
+    body = f"<!-- tg:{message.chat_id}:{message.message_id} -->\n" + active().render(template_name, 'body', values)
     return Issue(title, body, labels)

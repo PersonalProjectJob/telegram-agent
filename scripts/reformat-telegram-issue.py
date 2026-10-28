@@ -15,6 +15,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'listener' / 'src'))
 from tg_triage.issue_format import format_issue
 from tg_triage.models import Classification, IncomingMessage
+from tg_triage.ticket_templates import active
 
 
 def render(spec):
@@ -90,7 +91,8 @@ def main():
     parser.add_argument('--expected-body-sha256')
     args = parser.parse_args()
     issue = render(json.loads(args.input.read_text(encoding='utf-8-sig')))
-    payload = dict(title=issue.title, body=issue.body, labels=list(issue.labels))
+    payload = dict(title=issue.title, body=issue.body, labels=list(issue.labels),
+                   templates_fingerprint=active().fingerprint)
     if args.output:
         args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     if args.apply:

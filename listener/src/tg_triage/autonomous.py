@@ -4,9 +4,6 @@ from . import group_notices
 from .models import CaseAnalysis, Decision, TopicGroup
 from .thinking import CURRENT, decision_turn
 
-TECHNICAL_CONTEXT_QUESTION=group_notices.TECHNICAL_CONTEXT_QUESTION
-
-
 def _has_reply_authority(group,sources,candidate):
     """Only this group's actual reply may authorize this historical target."""
     if not candidate or not candidate.get('exact_reply'):
@@ -64,7 +61,7 @@ def _pending(pipeline,messages,candidate,question,reason,*,notice=True,technical
 
 
 def _clarify(pipeline,case_key,source,question,*,notice=True,technical=False):
-    question=group_notices.address_question(question or group_notices.FALLBACK_QUESTION)
+    question=group_notices.address_question(question or group_notices.question('fallback'))
     if not notice or pipeline.config.mode=='dry-run' or pipeline.notice_sender is None:
         return
     try:
@@ -189,14 +186,14 @@ def process(pipeline,message,start):
                         job=dict(pipeline.store.connection.execute('SELECT * FROM followup_jobs WHERE id=?',(job_id,)).fetchone())
                         if job['status']=='queued':
                             pipeline.store.save_followup_plan(job,dict(action='clarify',questions=[
-                                group['question'] or next(iter(analysis.missing_info),group_notices.FALLBACK_QUESTION)],
+                                group['question'] or next(iter(analysis.missing_info),group_notices.question('fallback'))],
                                 context_reason='ingress_scope_clarification'),[])
                     sweep(pipeline)
                     results.append(Decision('followup','model',case_key=target,issue_number=candidate['source']['issue_number']))
                     continue
                 if action=='CLARIFY' or action=='CONTINUE' and (analysis.verdict!='ticket' or not analysis.actionable):
                     batch_anchor=group.get('host_batch_notice_anchor')
-                    question=(TECHNICAL_CONTEXT_QUESTION if batch_anchor is not None else group['question'] or next(iter(analysis.missing_info),''))
+                    question=(group_notices.question('technical_context') if batch_anchor is not None else group['question'] or next(iter(analysis.missing_info),''))
                     results.append(_pending(pipeline,own,candidate,question,reason,
                         notice=batch_anchor is None or own[0].message_id==batch_anchor,technical=batch_anchor is not None))
                     continue
@@ -275,7 +272,7 @@ def resume_case(pipeline,case_key):
     pipeline.store.close_case(case_key,result,0)
     if result.decision=='pending_review' and pipeline.config.mode!='dry-run':
         batch_anchor=cached.get('host_batch_notice_anchor')
-        _clarify(pipeline,case_key,first,TECHNICAL_CONTEXT_QUESTION if batch_anchor is not None else cached['question'] or group_notices.FALLBACK_QUESTION,
+        _clarify(pipeline,case_key,first,group_notices.question('technical_context') if batch_anchor is not None else cached['question'] or group_notices.question('fallback'),
                  notice=batch_anchor is None or first.message_id==batch_anchor,technical=batch_anchor is not None)
     return result
 

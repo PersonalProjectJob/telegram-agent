@@ -20,7 +20,7 @@ Bộ tài liệu dành cho bất kỳ ai nhận lại tính năng: thành viên 
 2. Mỗi kết luận phải dẫn TG-ID hoặc file:dòng. Không có nguồn ⇒ ghi "chưa xác minh".
 3. Không bao giờ tạo issue, gửi Telegram, POST lại, reset reservation, commit, push hay deploy nếu Owner chưa yêu cầu trong phiên.
 
-**Thứ tự ưu tiên khi tài liệu mâu thuẫn:** Business DOCS (TG-01…TG-32) > Rulebook > Overview > `listener/README.md` > comment trong code > tài liệu Fleet cũ (lịch sử). Gặp mâu thuẫn: làm theo nguồn cao hơn và báo lại chỗ lệch.
+**Thứ tự ưu tiên khi tài liệu mâu thuẫn:** Business DOCS (TG-01…TG-33) > Rulebook > Overview > `listener/README.md` > comment trong code > tài liệu Fleet cũ (lịch sử). Gặp mâu thuẫn: làm theo nguồn cao hơn và báo lại chỗ lệch. TG = Telegram triage.
 
 ## 2. Tính năng làm gì
 
@@ -94,7 +94,7 @@ flowchart TD
 
 | File | Vai trò |
 |---|---|
-| [Business DOCS](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) | **Nguồn nghiệp vụ duy nhất**, TG-01…TG-32, trace code/test |
+| [Business DOCS](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md) | **Nguồn nghiệp vụ duy nhất**, TG-01…TG-33, trace code/test |
 | [Rulebook](../01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md) | Rule chi tiết MUST/MUST NOT, bảng quyết định, ví dụ chuẩn |
 | [Engineering THINKING](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) | Thiết kế controller, budget, journal |
 | [QA](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md) | TC-01…TC-13, tiêu chí bằng chứng |

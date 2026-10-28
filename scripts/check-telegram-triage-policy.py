@@ -48,7 +48,7 @@ def check(root, policy=POLICY):
         raise PolicyError('invalid trace JSON') from exc
     if trace.get('schema') != 'telegram-triage-policy/v1' or trace.get('owner') != 'AlexChu':
         raise PolicyError('invalid schema or owner')
-    expected = {f'TG-{n:02}' for n in range(1, 33)}
+    expected = {f'TG-{n:02}' for n in range(1, 34)}
     headings = re.findall(r'^### (TG-\d{2})\b', text, re.M)
     rules = trace.get('rules', [])
     ids = [rule.get('id') for rule in rules]
@@ -77,6 +77,7 @@ def check(root, policy=POLICY):
     inventory = trace.get('runtime_inventory', {})
     actual = {str(p.relative_to(root)).replace('\\', '/') for p in (root/'listener/src/tg_triage').glob('*.py')}
     actual |= {str(p.relative_to(root)).replace('\\', '/') for p in (root/'listener/prompts').glob('*.md')}
+    actual |= {str(p.relative_to(root)).replace('\\', '/') for p in (root/'listener/templates').rglob('*.md')}
     if set(inventory) != actual:
         raise PolicyError('REVIEW_REQUIRED runtime inventory changed')
     for path, digest in inventory.items():

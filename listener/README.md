@@ -2,7 +2,7 @@
 
 **Documentation version**: v1.6.0 · **Updated**: 2026-10-16 15:10 (Asia/Saigon) · **Owner**: AlexChu
 
-Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
+Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-33](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
 Agents taking over triage or GitHub ticket logging start with [AGENTS.md](AGENTS.md).
 
@@ -265,6 +265,8 @@ Technical vision-partition failures can create `context_pending` notice records 
 For the reviewed POS thread and reply photo, use `--case pos_print_context --sources-fixture /path/to/reviewed-sources.json --image-path /path/to/454.jpg`. The smoke uses the daemon startup factory and checks generated environment/error fields, one same-ticket refresh and the exact one-USER image binding. It uses fake tools and never replays historical production ingress.
 
 ## Reformat an existing ticket
+
+Mẫu ticket/comment/notice được đóng gói tại `listener/templates/github-ticket/`. Đổi mẫu: sửa → chạy test → PR → release → chạy `check-config` trên bản cài → so sánh fingerprint với preview reformat. Mẫu lỗi làm `run` và `check-config` thoát mã 2; không có override hoặc fallback. Dùng reformat từ cùng release với daemon.
 
 Use `python scripts/reformat-telegram-issue.py --input /path/to/reviewed-source.json --output /path/to/preview.json`
 from repository root. Input contains `category`, `title`, `summary`, `sources` (IncomingMessage fields with

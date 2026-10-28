@@ -33,6 +33,6 @@ Extract the ZIP into a new folder, open its `agentfleet-console` subfolder and r
 
 ## Telegram triage documentation
 
-[Canonical business rules TG-01..TG-32](Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md) describe the reviewed deployed behavior. [THINKING research](Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) is a proposal; [listener operations](listener/README.md) covers runtime commands.
+[Canonical business rules TG-01..TG-33](Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md) describe the reviewed deployed behavior. [THINKING research](Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) is a proposal; [listener operations](listener/README.md) covers runtime commands.
 
 Documentation update v1.0.0 — 2026-10-15 21:12 (Asia/Saigon), owner AlexChu: add canonical triage entry; no runtime changes.

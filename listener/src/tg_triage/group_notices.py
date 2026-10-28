@@ -6,13 +6,13 @@ import unicodedata
 
 from .issue_format import redact
 from .models import utf8_valid
+from .ticket_templates import active
 
 LOG = logging.getLogger(__name__)
 MAX_QUESTIONS = 3
 MAX_QUESTION_CHARS = 180
 MAX_NOTICE_CHARS = 1100
 TIMEOUT_SECONDS = 15
-FALLBACK_QUESTION = "Anh/Chị muốn team xử lý gì, ở màn hình/chức năng nào và kết quả mong muốn là gì?"
 _REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -29,8 +29,19 @@ def clean_question(value):
     return value[:MAX_QUESTION_CHARS].strip()
 
 
-LEGACY_PENDING_QUESTION="Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?"
-TECHNICAL_CONTEXT_QUESTION="Em chưa phân tích được các tin vừa nhận. Anh/Chị reply tin gốc để chỉ rõ yêu cầu cần xử lý giúp Em nhé."
+def question(name):
+    return active().render('group-replies.md', 'question.' + name)
+
+
+def __getattr__(name):
+    # Compatibility for existing callers while keeping template access lazy.
+    names = {'FALLBACK_QUESTION': 'fallback', 'LEGACY_PENDING_QUESTION': 'legacy_pending',
+             'TECHNICAL_CONTEXT_QUESTION': 'technical_context'}
+    if name in names:
+        return question(names[name])
+    raise AttributeError(name)
+
+
 ADDRESS_DEFAULT="Anh/Chị"
 _PROTECTED=re.compile(r'“[^\n]*”|“[^\n]*$|"[^\n]*"|"[^\n]*$|https?://\S+|^>.*$',re.MULTILINE)
 
@@ -76,34 +87,26 @@ def notice_text(result, missing_info, repo):
     if result.decision == "issue":
         if issue_link is None:
             return None
-        text = f"Em đã ghi nhận nội dung này và tạo ticket: {issue_link} rồi nhé 😊"
+        text = active().render('group-replies.md', 'notice.issue', {'issue_link': issue_link})
     elif result.decision == "needs_human":
-        text = ("Em đã ghi nhận nội dung này rồi nhé. "
-                "Nhờ Anh/Chị hoặc Owner bổ sung/xác nhận thông tin ngay trong group để làm rõ yêu cầu.")
-        if issue_link:
-            text += f"\nEm đã tạo ticket để tiện theo dõi: {issue_link}"
         questions = []
         if isinstance(missing_info, (tuple, list)):
             for value in missing_info[:20]:
                 question = address_question(value)
                 if question:
-                    questions.append("• " + question)
+                    questions.append(question)
                     if len(questions) == MAX_QUESTIONS:
                         break
         if not questions:
-            questions.append("• " + FALLBACK_QUESTION)
-        text += "\nThông tin cần làm rõ:\n" + "\n".join(questions)
+            questions.append(active().render('group-replies.md', 'question.fallback'))
+        text = active().render('group-replies.md', 'notice.needs_human',
+                               {'issue_link': issue_link or '', 'questions': questions})
     elif result.decision == "error":
-        text = ("Chưa xác nhận được kết quả tạo GitHub issue cho nội dung này. "
-                "Nhờ Owner kiểm tra repo và hỗ trợ ngay trong group. "
-                "Issue có thể đã được tạo; kiểm tra repo trước khi thử tạo lại.")
+        text = active().render('group-replies.md', 'notice.error')
     elif result.decision == "rate_limited":
-        text = ("Chưa tạo GitHub issue vì đã đạt giới hạn tạo issue. "
-                "Nhờ Owner kiểm tra và xác nhận cách xử lý ngay trong group.")
+        text = active().render('group-replies.md', 'notice.rate_limited')
     elif result.decision == 'context_pending':
-        text=('Em chưa phân tích được phạm vi tin này lúc này nên chưa gộp vào ticket nào. '
-              'Anh/Chị trả lời tin gốc này hoặc phản hồi này, nêu đầy đủ yêu cầu cần xử lý '
-              '(hoặc xác nhận đây chỉ là trao đổi) giúp Em nhé.')
+        text = active().render('group-replies.md', 'notice.context_pending')
     else:
         return None
     return text[:MAX_NOTICE_CHARS]

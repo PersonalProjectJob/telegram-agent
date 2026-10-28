@@ -32,10 +32,16 @@ from datetime import timezone
 from . import group_notices, reactions, rules
 from .attachments import AttachmentProcessor, AttachmentResult
 from .issue_format import format_issue
+from .ticket_templates import active
 from .models import (CaseAnalysis, Classification, Decision, ISSUE_TYPES, PRIORITIES, TICKET_CATEGORIES,
                      TICKET_TYPES, TopicGroup, VERDICTS, canonical_category)
 
 LOG = logging.getLogger(__name__)
+
+
+def _related_body(body, repo, number):
+    return body+'\n\n'+active().render('comments.md','append.related',{'url':f'https://github.com/{repo}/issues/{number}'})+'\n'
+
 
 CASE_STATUS = {"noise": "noise", "chat": "chat", "pending_review": "pending_review",
                "rate_limited": "error", "error": "error", "case_open": "open", "followup": "done"}
@@ -843,7 +849,7 @@ class Pipeline:
                 documents=found.documents, notes=found.notes, clarify=plan.clarify, text=plan.text,
                 max_quoted=len(plan.messages), details=plan.details if plan.details is not None else {})
             if type(plan.related_issue_number) is int and plan.related_issue_number>0:
-                issue=replace(issue,body=issue.body+f'\n\nTicket liên quan: https://github.com/{self.config.gh_repo}/issues/{plan.related_issue_number}\n')
+                issue=replace(issue,body=_related_body(issue.body,self.config.gh_repo,plan.related_issue_number))
             if not self.store.reserve_github_call(first, self.config.max_issues_per_hour):
                 result = replace(result, decision="rate_limited")
                 LOG.warning("Rate limit chat_id=%s message_id=%s", first.chat_id, first.message_id)
