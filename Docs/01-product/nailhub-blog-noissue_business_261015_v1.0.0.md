@@ -1,5 +1,5 @@
 
-> **Cập nhật đối chiếu v1.0.9 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
+> **Cập nhật đối chiếu v1.0.10 — 2026-10-28 14:17 (Asia/Ho_Chi_Minh).** Tác giả: Codex; trạng thái: chờ review.
 
 **Đối chiếu hiện trạng source:** commit `89a5ac8` trên nhánh `claude/nailblog-automation-review-091e47`. Đây là trạng thái mã nguồn, không khẳng định cấu hình hay phiên bản đang chạy trên THINKPAD. Các mô tả phía dưới có thể thuộc quyết định cũ; khi khác với bản cập nhật này, dùng phần cập nhật và kiểm tra cấu hình thực tế.
 
@@ -46,9 +46,54 @@ stateDiagram-v2
 
 **Vận hành:** `/nailblog flow`, `/nailblog queue`, `/nailblog status` để xem; `/nailblog pause`, `/nailblog resume` để dừng/chạy theo preflight. `autoflow-requeue` là lệnh terminal của operator, chỉ hỗ trợ run `held/text_quality_held` đủ điều kiện; không khôi phục run `skipped/images_deadline_missed`. Không sửa trạng thái trực tiếp trong DB để đăng bù.
 
+## Bộ lệnh Telegram và quy tắc nghiệp vụ
+
+Owner gửi lệnh trong tin nhắn riêng với tài khoản NailBlog đã xác minh. `<id chủ đề>`, `<id bài>` và `<id thẻ duyệt>` là ba loại mã khác nhau: lấy đúng mã trong phản hồi tương ứng, không tự thay thế cho nhau. Giờ dùng múi giờ Việt Nam; `HH` gồm hai chữ số và phải thuộc slot đang cấu hình. Cấu hình, giờ hạn và phiên bản đang chạy cần được kiểm tra thực tế.
+
+### Chủ đề và xu hướng
+
+| Lệnh | Định nghĩa và điều kiện |
+|---|---|
+| `/nailblog topics` | Xem danh sách chủ đề, mã, trạng thái và slot nếu có. |
+| `/nailblog topics ok 12,13` | Duyệt các chủ đề đề xuất theo mã; mỗi slot chỉ có một chủ đề đã duyệt, bot báo mục bị từ chối nếu slot đã có chủ đề. |
+| `/nailblog topics drop 12` | Loại chủ đề đề xuất hoặc đã duyệt; bot từ chối nếu chủ đề đã có run autoflow. |
+| `/nailblog topics edit 12 Tiêu đề mới` | Sửa tiêu đề chủ đề khi trạng thái cho phép; bot phản hồi nếu không sửa được. |
+| `/nailblog pick 10 1` | Chọn ứng viên số 1 cho slot 10:00 của ngày mai. Được đổi lựa chọn trước giờ chốt; mặc định 13:00, thực tế theo cấu hình. Không chọn được sau hạn hoặc khi slot đã có run. |
+| `/nailblog trend add #nails 12M` | Ghi thủ công hashtag TikTok và lượt xem, ví dụ `12M`; dữ liệu được đưa vào điểm trend trong 14 ngày. |
+
+Bot đề xuất tối đa hai ứng viên mỗi slot, hiển thị điểm và nguồn nếu có. Khi hết hạn mà Owner chưa chọn, bot ưu tiên backlog phù hợp đã duyệt, sau đó ứng viên điểm cao; không có cả hai thì slot chưa có chủ đề. Không phải ứng viên nào cũng có nguồn.
+
+### Duyệt và quản lý bài
+
+| Lệnh | Định nghĩa và điều kiện |
+|---|---|
+| `/nailblog ok 12` | Duyệt **thẻ yêu cầu duyệt** mã 12 trong chế độ duyệt tay; phải đúng thẻ ảnh hoặc Draft, đúng bản và còn hiệu lực. |
+| `/nailblog ok 12 override lý do` | Duyệt có giải trình đối với lỗi được phép override; phải có lý do, chỉ dùng khi thẻ yêu cầu override. Luồng bài `fixable` yêu cầu override cả thẻ ảnh lẫn Draft theo đúng bản. Lỗi số liệu không có nguồn, chữ Hán bất thường, claim y tế và lỗi hold không được override. |
+| `/nailblog reject 12 lý do` | Từ chối thẻ ảnh hoặc Draft, bắt buộc có lý do. Ảnh có thể được thử lại tối đa một lần theo điều kiện và hạn; từ chối Draft giữ bài lại. |
+| `/nailblog approve 12` | Duyệt bài theo luồng cũ khi được phép; bị từ chối nếu autoflow đang bật hoặc bài thuộc run one-post/autoflow. Không dùng thay `/nailblog ok <id thẻ>`. |
+| `/nailblog hold 12 lý do` | Giữ **bài** mã 12 trước khi lệnh đăng được gửi; bắt buộc có lý do và trạng thái phải cho phép. Không hoàn tác bài đã đăng hoặc lệnh đăng đã gửi. |
+| `/nailblog move 12 2026-10-29 15` | Dời **bài** mã 12 sang 15:00 ngày 29/10; slot phải thuộc cấu hình, ở tương lai và trạng thái bài cho phép dời. Không coi lệnh này là cách khôi phục run đã skipped. |
+
+Khi tự duyệt được bật trên staging, lệnh `ok`/`reject` không thay quyết định; bot báo chế độ tự duyệt. Hệ thống vẫn kiểm chất lượng, ảnh, thời hạn và điều kiện đăng.
+
+### Theo dõi và vận hành
+
+| Lệnh | Định nghĩa và điều kiện |
+|---|---|
+| `/nailblog flow` | Xem trạng thái từng run autoflow, lý do và bước tiếp theo. |
+| `/nailblog queue` | Xem các bài và slot trong khoảng hai ngày tính từ đầu ngày hiện tại. |
+| `/nailblog status` | Xem chế độ, trạng thái pause, số bài theo trạng thái, outbox và thông tin sổ API cũ chỉ đọc. |
+| `/nailblog pause` | Tạm dừng xử lý; không khôi phục hay hoàn tác thao tác đăng đã gửi. |
+| `/nailblog resume` | Chạy kiểm tra trước khi arm và tiếp tục; có thể từ chối nếu điều kiện hoặc binding không hợp lệ. Không tự mở lại run đã skipped. |
+| `/nailblog mode fixed` / `random` / `adaptive` | Đổi chế độ lập lịch **tạo ảnh** sang cố định, ngẫu nhiên hoặc thích ứng; không phải lệnh đổi giờ đăng. |
+
+`autoflow-requeue` là lệnh terminal cho operator, **không phải lệnh Telegram**. Lệnh chỉ hỗ trợ `held/text_quality_held` đủ điều kiện, khi bot paused và chưa có post/Create/job ảnh; không hỗ trợ `skipped/images_deadline_missed`. Xem [runbook](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md).
+
 **Quan sát đã cung cấp:** ảnh chụp ngày 28/10 cho thấy #1, #3, #5 bị bỏ do hết hạn ảnh, #7 đã lên lịch và người dùng xác nhận bài đã lên. Không suy ra đã nghiệm thu bốn slot.
 
 **Tài liệu liên quan:** [Master](../00-master/nailhub-blog-noissue_master_261014_v1.0.0.md) · [Kỹ thuật](../02-engineering/nailhub-blog-noissue_engineering_261027_v1.0.0.md) · [Vận hành](../02-engineering/nailhub-blog-noissue_cutover-runbook_261027_v1.0.0.md) · [QA](../03-qa/nailhub-blog-noissue_qa_261027_v1.0.0.md).
+
+**Lịch sử thay đổi:** v1.0.10 — 2026-10-28 14:24 — bổ sung bộ lệnh và quy tắc nghiệp vụ Telegram.
 
 **Lịch sử thay đổi:** v1.0.9 — 2026-10-28 14:17 — đối chiếu source, vận hành và bằng chứng; không thay đổi trạng thái phê duyệt cũ.
 
