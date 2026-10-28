@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ._errors import ConfigError
+from .autoflow import RequeueRefused
 from .config import load_config
 from .schedule import VN_TZ, iso_slot, parse_hhmm, slot_datetime
 from .service import CACHE_NAME, PreviewError
@@ -25,7 +26,7 @@ from .text import TextModelError
 from .images import ImageError
 
 PIPELINES = ('plan-week', 'preview', 'trends', 'daily')
-DRY_RUN_COMMANDS = ('plan-week', 'trends', 'daily')
+DRY_RUN_COMMANDS = ('plan-week', 'trends', 'daily', 'autoflow-requeue')
 DAILY_AT = {10: ('propose',), 13: ('decide', 'write'), 20: ('preview',)}
 
 
@@ -139,6 +140,24 @@ async def _daily(config, args, runtime, options):
                       'service sẽ gửi khi chạy trong ngày này') + ')')
 
 
+def _autoflow_requeue(config, args, runtime):
+    """Operator command (R7b): reopen a run held `text_quality_held` on a new slot. Bot must be paused."""
+    from .autoflow import requeue_held_text
+    from .service import Service
+    now = runtime.now if runtime.now is not None else time.time()
+    service = Service(config, clock=lambda: now)
+    report = requeue_held_text(service, args.run, args.slot, now=now, dry_run=args.dry_run)
+    print('autoflow-requeue' + (' --dry-run: không ghi gì' if report['dry_run'] else ': đã ghi'))
+    print(f"run {report['run_id']} (chủ đề #{report['topic_id']}), requeued_by=operator")
+    print(f"slot: {report['old_slot']} -> {report['new_slot']}")
+    for label, key in (('chấm lại trước', 'previous_quality'), ('chấm lại bây giờ', 'rescored_quality')):
+        quality = report[key]
+        print(f"{label}: verdict={quality['verdict']} issues={','.join(quality['issues']) or '-'}")
+    print(('sẽ đổi:' if report['dry_run'] else 'đã đổi:'))
+    for line in report['changes']:
+        print('  ' + line)
+
+
 async def execute(command, config, args=None, runtime=None):
     runtime = runtime or Runtime()
     if command == 'pause-install':
@@ -180,6 +199,9 @@ async def execute(command, config, args=None, runtime=None):
     if command == 'trends':
         await _trends(config, args, runtime)
         return
+    if command == 'autoflow-requeue':
+        _autoflow_requeue(config, args, runtime)
+        return
     from .service import Service
     from .text import TextModel
     options = {'_test_transport': runtime._test_transport} if runtime._test_transport is not None else {}
@@ -212,12 +234,15 @@ def main(argv=None, *, runtime=None):
         sys.stdout.reconfigure(encoding='utf-8')  # the DM and issue lists are Vietnamese
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog='python -m nailblog')
-    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'pause-install', 'startup-gate') + PIPELINES)
+    parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'pause-install', 'startup-gate',
+                                            'autoflow-requeue') + PIPELINES)
     parser.add_argument('--config', default=os.environ.get('NAILBLOG_CONFIG', '/etc/nailblog/nailblog.toml'))
     parser.add_argument('--dry-run', action='store_true',
                         help='plan-week, trends, daily: work on a scratch copy of the state (empty when none exists); nothing is written to the real state directory')
     parser.add_argument('--topic', type=int, help='preview: topic id')
     parser.add_argument('--out', help='preview: output directory; probe: output report JSON and sibling PNG')
+    parser.add_argument('--run', help='autoflow-requeue: run id of the held run (e.g. auto-20261028-0600-t1)')
+    parser.add_argument('--slot', help='autoflow-requeue: new slot, ISO datetime with timezone (e.g. 2026-10-28T14:00:00+07:00)')
     parser.add_argument('--at', type=int, choices=sorted(DAILY_AT), help='daily: milestone hour (10, 13 or 20)')
     parser.add_argument('--date', type=date.fromisoformat, help='daily: the run day, YYYY-MM-DD (default: today in Vietnam)')
     args = parser.parse_args(argv)
@@ -228,7 +253,11 @@ def main(argv=None, *, runtime=None):
     if args.command == 'probe' and (not args.out or args.topic is not None):
         parser.error('probe needs --out <report.json>')
     if args.command not in DRY_RUN_COMMANDS and args.dry_run:
-        parser.error('--dry-run belongs to plan-week, trends and daily only')
+        parser.error('--dry-run belongs to plan-week, trends, daily and autoflow-requeue only')
+    if args.command == 'autoflow-requeue' and (not args.run or not args.slot):
+        parser.error('autoflow-requeue needs --run <run_id> and --slot <ISO datetime with timezone>')
+    if args.command != 'autoflow-requeue' and (args.run or args.slot):
+        parser.error('--run and --slot belong to autoflow-requeue only')
     if args.command == 'daily' and args.at is None:
         parser.error('daily needs --at 10|13|20')
     if args.command != 'daily' and (args.at is not None or args.date is not None):
@@ -242,6 +271,9 @@ def main(argv=None, *, runtime=None):
     except (ConfigError, StateError) as error:
         print(str(error))
         return 2
+    except RequeueRefused as error:
+        print('requeue_refused: ' + error.code + (f' ({error.detail})' if error.detail else ''))
+        return 1
     except (TextModelError, SourceError, PreviewError, ImageError) as error:
         print('NailBlog operation failed: ' + str(error))
         return 1
