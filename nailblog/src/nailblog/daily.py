@@ -263,8 +263,9 @@ def format_propose_dm(today, target, board, rows, notes, config):
                        for index, hhmm in enumerate(slots_of(config)))
     lines += ["", f"Chọn: {picks} (hạn {config.daily.pick_deadline}; chọn lại được "
                   "trước hạn).",
-              "Không chọn: lấy chủ đề đã duyệt trong backlog tuần, hết thì lấy ứng viên điểm cao nhất (bài vẫn phải "
-              "duyệt trước giờ đăng 2 tiếng).",
+              "Không chọn: lấy chủ đề đã duyệt trong backlog tuần, hết thì lấy ứng viên điểm cao nhất " + (
+                  "(chế độ tự duyệt D-034: máy tự duyệt bài, không cần Owner duyệt)."
+                  if _self_approving(config) else "(bài vẫn phải duyệt trước giờ đăng 2 tiếng)."),
               f"TikTok (nhập tay): mở {TIKTOK_URL}, lấy lượt xem hashtag nail rồi gửi /nailblog trend add #tag 12M"]
     lines += [f"Ghi chú: {note}" for note in notes]
     return "\n".join(lines)
@@ -331,10 +332,15 @@ async def propose(service, text, today, *, opener=None, ask=None):
     return format_propose_dm(today, target, board, rows, notes, config), True
 
 
-def _origin_text(meta):
+def _self_approving(config):
+    """D-034: `autoflow.owner_approval` is explicitly false, so the machine (not the Owner) approves posts."""
+    return getattr(getattr(config, "autoflow", None), "owner_approval", True) is False
+
+
+def _origin_text(meta, config=None):
     chosen = meta.get("chosen") or {}
-    return {"pick": "Owner đã chọn", "backlog": "lấy từ backlog tuần",
-            "auto": "tự chọn: auto, điểm cao nhất, vẫn phải duyệt bài"}.get(chosen.get("origin"), "đã chọn")
+    auto = "tự chọn: auto, điểm cao nhất" + ("" if _self_approving(config) else ", vẫn phải duyệt bài")
+    return {"pick": "Owner đã chọn", "backlog": "lấy từ backlog tuần", "auto": auto}.get(chosen.get("origin"), "đã chọn")
 
 
 def chosen_topic(state, target, hhmm):
@@ -433,7 +439,7 @@ async def decide(service, text, today, *, opener=None):
             lines.append(f"{hhmm} — chưa có chủ đề (không có ứng viên, backlog tuần trống)")
         else:
             row = state.get_topic(row["id"])
-            lines.append(f"{hhmm} — {row['title'][:120]} ({_origin_text(meta_of(row))})")
+            lines.append(f"{hhmm} — {row['title'][:120]} ({_origin_text(meta_of(row), config)})")
     lines.append(f"Bài được viết ngay bây giờ; DM xem trước lúc {config.daily.preview_at}.")
     state.set_last_result(f"daily decide {target.isoformat()}")
     return "\n".join(lines), True

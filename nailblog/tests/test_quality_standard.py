@@ -50,14 +50,14 @@ class KeywordPlacementTests(unittest.TestCase):
                 self.assertEqual("kw_slug" not in codes(run(make_article(slug=slug))), ok)
         self.assertEqual(issue_of(run(make_article(slug="nail-mat-meo")), "kw_slug").kind, FIXABLE)
 
-    def test_kw_intro_means_inside_the_first_100_words(self):
+    def test_kw_intro_means_inside_the_first_105_words(self):
         def with_intro(lead):
             article = make_article()
             article["intro"] = [words(lead) + " " + KEYWORD, words(10)]
             return article
-        self.assertNotIn("kw_intro", codes(run(with_intro(97))))     # words 98-100
-        self.assertIn("kw_intro", codes(run(with_intro(98))))        # words 99-101: cut by the 100-word window
-        self.assertEqual(issue_of(run(with_intro(98)), "kw_intro").field, "intro")
+        self.assertNotIn("kw_intro", codes(run(with_intro(102))))    # words 103-105
+        self.assertIn("kw_intro", codes(run(with_intro(103))))       # words 104-106: cut by the 105-word window
+        self.assertEqual(issue_of(run(with_intro(103)), "kw_intro").field, "intro")
 
     def test_kw_h2_accepts_the_primary_or_a_secondary_keyword(self):
         def with_h2(text):
@@ -98,40 +98,40 @@ def spread_keyword(article, total):
 
 
 class KeywordDensityTests(unittest.TestCase):
-    def test_density_is_judged_on_the_900_word_body_with_a_floor_at_half_a_percent(self):
-        for total, ok in ((4, False), (5, True), (13, True), (22, True), (23, False)):
+    def test_density_is_judged_on_the_900_word_body_with_a_floor_at_0_3_percent(self):
+        for total, ok in ((2, False), (3, True), (13, True), (23, True), (24, False)):
             with self.subTest(occurrences=total):
                 result = run(spread_keyword(make_article(), total))
                 self.assertEqual("kw_density" not in codes(result), ok, [i.message for i in result.issues])
 
     def test_density_issue_is_fixable_and_says_what_is_wrong(self):
-        low = issue_of(run(spread_keyword(make_article(), 4)), "kw_density")
-        high = issue_of(run(spread_keyword(make_article(), 23)), "kw_density")
+        low = issue_of(run(spread_keyword(make_article(), 2)), "kw_density")
+        high = issue_of(run(spread_keyword(make_article(), 24)), "kw_density")
         self.assertEqual((low.kind, high.kind), (FIXABLE, FIXABLE))
-        self.assertIn("ít nhất 0.5%", low.message)
+        self.assertIn("ít nhất 0.3%", low.message)
         self.assertIn("nhồi từ khóa", high.message)
 
 
 class IntroAndTakeawaysTests(unittest.TestCase):
-    def test_the_intro_is_two_paragraphs_of_50_to_90_words(self):
+    def test_the_intro_is_two_paragraphs_of_48_to_94_words(self):
         def intro(*sizes):
             article = make_article()
             article["intro"] = [prose(size, 1, KEYWORD) for size in sizes]
             return article
-        for sizes, ok in (((25, 24), False), ((25, 25), True), ((45, 45), True), ((45, 46), False), ((90,), False),
-                          ((25, 25, 10), False)):
+        for sizes, ok in (((24, 23), False), ((24, 24), True), ((47, 47), True), ((47, 48), False), ((94,), False),
+                          ((24, 24, 10), False)):
             with self.subTest(sizes=sizes):
                 result = run(intro(*sizes))
                 self.assertEqual("intro_len" not in codes(result), ok)
-        issue = issue_of(run(intro(25, 24)), "intro_len")
+        issue = issue_of(run(intro(24, 23)), "intro_len")
         self.assertEqual((issue.kind, issue.field), (FIXABLE, "intro"))
 
-    def test_three_to_four_takeaways_of_at_most_20_words(self):
+    def test_three_to_four_takeaways_of_at_most_21_words(self):
         for lines, ok in ((2, False), (3, True), (4, True), (5, False)):
             with self.subTest(lines=lines):
                 article = make_article(key_takeaways=[words(12)] * lines)
                 self.assertEqual("takeaways" not in codes(run(article)), ok)
-        for size, ok in ((20, True), (21, False)):
+        for size, ok in ((21, True), (22, False)):
             with self.subTest(size=size):
                 article = make_article(key_takeaways=[words(12), words(12), words(size)])
                 self.assertEqual("takeaways" not in codes(run(article)), ok)
@@ -143,21 +143,21 @@ class ParagraphTests(unittest.TestCase):
         article["sections"][1]["paragraphs"][1] = text
         return article
 
-    def test_a_paragraph_has_40_to_90_words(self):
-        for size, ok in ((39, False), (40, True), (90, True)):
+    def test_a_paragraph_has_35_to_95_words(self):
+        for size, ok in ((34, False), (35, True), (95, True)):
             with self.subTest(size=size):
                 self.assertEqual("para_len" not in codes(run(self.with_paragraph(prose(size, 5)))), ok)
 
-    def test_one_paragraph_may_reach_110_words_a_second_one_may_not(self):
-        self.assertNotIn("para_len", codes(run(self.with_paragraph(prose(110, 5)))))
-        self.assertNotIn("para_len", codes(run(self.with_paragraph(prose(91, 5)))))
-        self.assertIn("para_len", codes(run(self.with_paragraph(prose(111, 5)))))
+    def test_one_paragraph_may_reach_115_words_a_second_one_may_not(self):
+        self.assertNotIn("para_len", codes(run(self.with_paragraph(prose(115, 5)))))
+        self.assertNotIn("para_len", codes(run(self.with_paragraph(prose(96, 5)))))
+        self.assertIn("para_len", codes(run(self.with_paragraph(prose(116, 5)))))
         article = self.with_paragraph(prose(100, 5))
-        article["sections"][2]["paragraphs"][1] = prose(95, 6)
+        article["sections"][2]["paragraphs"][1] = prose(96, 6)
         self.assertIn("para_len", codes(run(article)))
-        for second, ok in ((90, True), (91, False)):               # one 91-word paragraph is fine, two are not
+        for second, ok in ((95, True), (96, False)):               # one 96-word paragraph is fine, two are not
             with self.subTest(second=second):
-                article = self.with_paragraph(prose(91, 5))
+                article = self.with_paragraph(prose(96, 5))
                 article["sections"][2]["paragraphs"][1] = prose(second, 6)
                 self.assertEqual("para_len" not in codes(run(article)), ok)
 
@@ -181,15 +181,15 @@ class ParagraphTests(unittest.TestCase):
 
 
 class SentenceLengthTests(unittest.TestCase):
-    def test_no_sentence_may_pass_35_words(self):
-        for size, ok in ((35, True), (36, False)):
+    def test_no_sentence_may_pass_36_words(self):
+        for size, ok in ((36, True), (37, False)):
             with self.subTest(size=size):
                 article = make_article()
                 article["sections"][1]["paragraphs"][1] = words(size).capitalize() + ". " + prose(24, 3)
                 self.assertEqual("sentence_len" not in codes(run(article)), ok)
 
-    def test_the_average_may_not_pass_20_words(self):
-        for size, ok in ((20, True), (26, False)):
+    def test_the_average_may_not_pass_22_words(self):
+        for size, ok in ((22, True), (26, False)):
             with self.subTest(size=size):
                 article = make_article()
                 for section in article["sections"]:
@@ -260,12 +260,12 @@ class FaqTests(unittest.TestCase):
             with self.subTest(count=count):
                 self.assertEqual("faq" not in codes(run(make_article(faq=self.faq(count)))), ok)
 
-    def test_each_answer_has_30_to_60_words(self):
-        for size, ok in ((29, False), (30, True), (60, True), (61, False)):
+    def test_each_answer_has_29_to_63_words(self):
+        for size, ok in ((28, False), (29, True), (63, True), (64, False)):
             with self.subTest(size=size):
                 result = run(make_article(faq=self.faq(3, size)))
                 self.assertEqual("faq" not in codes(result), ok)
-        issue = issue_of(run(make_article(faq=self.faq(3, 29))), "faq")
+        issue = issue_of(run(make_article(faq=self.faq(3, 28))), "faq")
         self.assertEqual((issue.kind, issue.field), (FIXABLE, "faq[0].a"))
 
 
@@ -298,10 +298,11 @@ class HeadingTests(unittest.TestCase):
         article["sections"][1]["paragraphs"][1] = "Đoạn có <H1 class=x> trong chữ. " + prose(40, 2)
         self.assertIn("h1_in_content", codes(run(article)))
 
-    def test_title_case_is_caught_from_60_percent_of_capitalised_words(self):
+    def test_title_case_is_caught_from_63_percent_of_capitalised_words(self):
         def with_title(text):
             return make_article(title=text)
-        for text, ok in (("Nail Mắt Mèo Nhung Mùa Đông", False), ("Màu nail Merlot mùa Đông", False),   # 3 of 5 = 60%
+        for text, ok in (("Nail Mắt Mèo Nhung Mùa Đông", False), ("Màu nail Merlot mùa Đông", True),    # 3 of 5 = 60%, below 63%
+                         ("Màu nail Merlot Mùa Đông", False),
                          ("Màu nail Merlot mùa đông", True), ("Tóm Tắt", True), ("Nail mắt mèo nhung mùa đông 2026", True)):
             with self.subTest(text=text):
                 self.assertEqual("title_case" not in codes(run(with_title(text))), ok)

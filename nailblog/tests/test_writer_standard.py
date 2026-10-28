@@ -350,11 +350,11 @@ class OverCeilingRepairTests(unittest.IsolatedAsyncioTestCase):
         draft, calls = await self.draft(reply)
         self.assertEqual(len(calls), 7)                                   # exactly one repair call
         request = calls[-1]["payload"]["messages"][0]["content"]
-        before = int(re.search(r"Độ dài bài: (\d+) từ, cần 600-1000\.", request).group(1))
-        self.assertGreater(before, 1000)
-        self.assertIn("Viết lại mục 1 cho ngắn hơn, tối đa 90 từ cho cả mục", request)
-        self.assertIn("Viết lại mục 2 cho ngắn hơn, tối đa 90 từ cho cả mục", request)
-        self.assertIn("Viết lại mục 4 cho ngắn hơn, tối đa 90 từ cho cả mục", request)
+        before = int(re.search(r"Độ dài bài: (\d+) từ, cần 570-1050.", request).group(1))
+        self.assertGreater(before, 1050)
+        self.assertIn("Viết lại mục 1 cho ngắn hơn, tối đa 97 từ cho cả mục", request)
+        self.assertIn("Viết lại mục 2 cho ngắn hơn, tối đa 98 từ cho cả mục", request)
+        self.assertIn("Viết lại mục 4 cho ngắn hơn, tối đa 106 từ cho cả mục", request)
         self.assertIn("Mục 4 (H2: Mục số D cho tiệm nail", request)
         self.assertEqual(draft.repaired, ["body"])
         section = draft.article["sections"][3]

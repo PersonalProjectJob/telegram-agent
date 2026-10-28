@@ -14,7 +14,7 @@ from tests.helpers import settings
 TODAY = date(2026, 10, 16)
 SLOT = "2026-10-20T19:00+07:00"
 TITLE = "Màu nail merlot mùa đông: hướng dẫn chọn và giữ bền cho thợ nail"
-LONG_SEO = "Màu nail merlot mùa đông: cách chọn và giữ bền cho thợ nail nhé"
+LONG_SEO = "Màu nail merlot mùa đông: cách chọn và giữ bền cho thợ nail nhé nha"
 
 
 def post(title, published="2026-10-01", slug="khac"):
@@ -91,7 +91,7 @@ class DraftRepairTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_fixable_only_article_gets_exactly_one_repair_for_the_named_field(self):
         long_seo = LONG_SEO
-        self.assertGreater(len(long_seo), 60)
+        self.assertGreater(len(long_seo), 63)
         draft, calls = await self.draft(self.reply(title_seo="Màu nail merlot mùa đông: cách chọn giữ bền"),
                                         outline_override={"title_seo": long_seo})
         self.assertEqual(len(calls), 7)

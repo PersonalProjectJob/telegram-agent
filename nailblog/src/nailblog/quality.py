@@ -23,19 +23,24 @@ H2_RANGE = (4, 6)
 IMAGE_SLOTS = (3, 5)
 HASHTAGS = (3, 5)
 ALT_WORDS = (5, 15)
-INTRO_WORDS = (50, 90)
+# D-034 bổ sung 28/10: nới ngưỡng + 5%. Owner: every continuous limit widened by 5% (max x 1.05 rounded down, min x 0.95
+# rounded up) for ALL posts, and the measured limits below set by the Owner. Small counts (H2, slots, hashtags, takeaway
+# lines, FAQ items, 2-4 sentences, 3 paragraphs in a row) are unchanged. Old value -> new value is in the comments.
+INTRO_WORDS = (48, 94)             # was (50, 90)
 TAKEAWAYS = (3, 4)
-TAKEAWAY_MAX_WORDS = 20
-PARAGRAPH_WORDS = (40, 90)
-PARAGRAPH_LONG_MAX = 110          # at most one paragraph per article may be longer than 90, never longer than this
+TAKEAWAY_MAX_WORDS = 21            # was 20
+PARAGRAPH_WORDS = (35, 95)         # was (40, 90)
+PARAGRAPH_LONG_MAX = 115          # was 110: at most one paragraph per article may be longer than the max above
 PARAGRAPH_SENTENCES = (2, 4)
-SENTENCE_AVERAGE, SENTENCE_MAX = 20, 35
+SENTENCE_AVERAGE, SENTENCE_MAX = 22, 36   # was 20, 35
 MAX_PARAGRAPH_RUN = 3
 FAQ_ITEMS = (3, 5)
-FAQ_ANSWER_WORDS = (30, 60)
-DENSITY_LOW, DENSITY_HIGH = 0.5, 2.5   # percent of the words; 0.5-1.5 is the target, above 2.5 is keyword stuffing
-KEYWORD_INTRO_WORDS = 100
-TITLE_CASE_RATIO = 0.6
+FAQ_ANSWER_WORDS = (29, 63)        # was (30, 60)
+DENSITY_LOW, DENSITY_HIGH = 0.3, 2.625   # was 0.5, 2.5 (percent of the words; above DENSITY_HIGH is keyword stuffing)
+KEYWORD_INTRO_WORDS = 105          # was 100
+TITLE_CASE_RATIO = 0.63            # was 0.6
+TITLE_SEO_MAX, TITLE_MAX = 63, 94  # was 60, 90 (characters; meta_title shares TITLE_SEO_MAX)
+META_CHARS = (133, 168)            # was (140, 160): metaDescription and summary
 MAX_INTERNAL_LINKS = 3
 SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 FIXABLE = "fixable"
@@ -157,13 +162,15 @@ def gate(article, *, category, slot_at=None, product_promo=False, existing_slugs
     if category not in CATEGORIES:
         add("category", HOLD, "category", "danh mục không hợp lệ")
     low, high = word_range(category)
+    low, high = -(-low * 95 // 100), high * 105 // 100   # D-034 bổ sung 28/10: -5% / +5% on the body word range
     words = word_count(article)
     if not low <= words <= high:
         add("words", FIXABLE, "content", f"{words} từ, cần {low}-{high}")
     sections = article.get("sections", [])
     if not H2_RANGE[0] <= len(sections) <= H2_RANGE[1]:
         add("h2_count", HOLD, "sections", f"{len(sections)} mục H2, cần {H2_RANGE[0]}-{H2_RANGE[1]}")
-    for field, label, limit in (("title_seo", "title_seo", 60), ("title", "title", 90), ("meta_title", "metaTitle", 60)):
+    for field, label, limit in (("title_seo", "title_seo", TITLE_SEO_MAX), ("title", "title", TITLE_MAX),
+                                 ("meta_title", "metaTitle", TITLE_SEO_MAX)):
         value = str(article.get(field, "")).strip()
         if field == "meta_title" and value == str(article.get("title_seo", "")).strip():
             continue   # a metaTitle copied from title_seo is judged once, as title_seo
@@ -171,8 +178,8 @@ def gate(article, *, category, slot_at=None, product_promo=False, existing_slugs
             add(field, FIXABLE, field, f"{label} {len(value)} ký tự, cần 1-{limit}")
     for field, label in (("meta_description", "metaDescription"), ("summary", "summary")):
         value = str(article.get(field, "")).strip()
-        if not 140 <= len(value) <= 160:
-            add(field, FIXABLE, field, f"{label} {len(value)} ký tự, cần 140-160")
+        if not META_CHARS[0] <= len(value) <= META_CHARS[1]:
+            add(field, FIXABLE, field, f"{label} {len(value)} ký tự, cần {META_CHARS[0]}-{META_CHARS[1]}")
     if posts is not None:
         day = today or datetime.now(VN_TZ).date()
         recent = [title_tokens(post.get("title", "")) for post in recent_posts(posts, day)]
