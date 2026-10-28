@@ -4,6 +4,8 @@
 
 Runtime/operator guide. The single business authority is [Telegram triage TG-01..TG-32](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md); this README does not define a second policy. Historical normalization baseline was `9746ef2`; the subsequent THINKPAD runtime release was `6e2c913`. Autonomous/topic/lifecycle changes below require commit-bound release and enablement evidence, recorded separately from source review. Default source configuration remains dry-run; actual installed mode depends on operator configuration.
 
+Agents taking over triage or GitHub ticket logging start with [AGENTS.md](AGENTS.md).
+
 ## Offline verification (Python >= 3.11)
 
 From `listener/`, PowerShell:

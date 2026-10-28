@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.7.0 · **Updated**: 2026-10-16 15:23 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.7.1 · **Updated**: 2026-10-27 02:01 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -14,6 +14,9 @@ User yêu cầu tài liệu này và sau đó yêu cầu triển khai THINKING. 
 - [THINKING: nghiên cứu và implementation](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md)
 - [QA acceptance](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md)
 - [Hướng dẫn listener](../../listener/README.md)
+- [Hướng dẫn agent tiếp nhận](../../listener/AGENTS.md)
+- [Overview và bàn giao](../00-master/telegram-triage-noissue_overview_261027_v1.0.0.md)
+- [Rulebook — rule chi tiết MUST/MUST NOT](telegram-triage-noissue_rulebook_261027_v1.0.0.md)
 - [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43)
 
 ## Business DOCS — Harness phân loại hội thoại và vòng đời ticket
@@ -1597,7 +1600,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
   ],
   "related_documents": [
     "Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md",
-    "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
+    "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md",
+    "listener/AGENTS.md",
+    "Docs/00-master/telegram-triage-noissue_overview_261027_v1.0.0.md",
+    "Docs/01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
   "runtime_fingerprint": "0fad3b80bf3081101b17978e929e101bcda8aec4785b8d6119cd2c9396deb7c2"
@@ -1608,6 +1614,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.7.1 | 2026-10-27 02:01 | Claude / owner AlexChu | Thêm `listener/AGENTS.md` làm điểm vào cho agent tiếp nhận: trỏ về nguồn này và TG-ID, đánh dấu §12.11 assistant-definition lỗi thời. Thêm Overview bàn giao và Rulebook chi tiết hóa TG-01…TG-32; Business DOCS vẫn là nguồn thắng khi lệch, đổi TG phải cập nhật Rulebook cùng lượt. Không đổi quy tắc nghiệp vụ. |
 | v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Chỉ cập nhật nội dung cũ bằng Reply đã xác minh của chính nhóm; incident nhiều biểu hiện, chống tạo bug từ cảm thán/nhầm ảnh lịch sử, kiểm lại partition rủi ro trước side effect; kiểm thử và rollout phải có bằng chứng riêng. |
 | v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Chat pacing30–60s, context đến muộn, durable chống hỏi lặp và packing ưu tiên đúng nguồn; rollout cần evidence riêng. |
 | v1.5.0 | 2026-10-16 11:20 | Codex / owner AlexChu | Autonomous nhiều chủ đề, context batch, current partition, vòng đời closed/recurrence và debug bền vững; rollout có evidence riêng. |
