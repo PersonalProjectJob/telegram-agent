@@ -19,10 +19,12 @@ from pathlib import Path
 from .approvals import ApprovalError, build_preview
 from .images.pipeline import DispatchPaused
 from .notices import notice_key, send_once
+from .onepost import OnePost, prepare_identity
+from .planner import topic_meta
 from .publication import AdminError
-from .schedule import VN_TZ, approve_deadline, image_deadline, slot_datetime
+from .schedule import VN_TZ, approve_deadline, image_deadline, iso_slot, slot_datetime
 from .state import InvalidTransition
-from .writer import han_fields
+from .writer import _agy_assess, han_fields
 
 LOG = logging.getLogger(__name__)
 
@@ -713,3 +715,175 @@ async def run_due(service, stop, *, onepost, approvals, now):
         notice = _terminal_notice(row)
         if notice:
             await env.dm(*notice)
+
+
+# ---- operator requeue of a run held `text_quality_held` (R7b) ---------------------------------------------------
+
+REQUEUE_MARGIN_SECONDS = 600     # the new slot must clear the image window by this much on top of window_end_hours
+
+
+class RequeueRefused(Exception):
+    """The operator requeue refused: `code` is a stable snake_case reason, `detail` a short human hint (never article
+    text). Nothing was written."""
+
+    def __init__(self, code, detail=''):
+        super().__init__(code)
+        self.code, self.detail = code, detail
+
+
+def _instant(text):
+    try:
+        moment = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return None
+    return moment.timestamp() if moment.tzinfo is not None else None
+
+
+def _table_exists(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def _has_post_or_create(state, topic_id, onepost_row):
+    """True when the topic already has a post, the run is bound to one, or a durable Create op/claim exists."""
+    if state.posts_for_topic(topic_id) or onepost_row['post_id'] is not None:
+        return True
+    with state.connection() as db:
+        if _table_exists(db, 'admin_operations') and db.execute(
+                'SELECT 1 FROM admin_operations WHERE post_id IN (SELECT id FROM posts WHERE topic_id=?)',
+                (topic_id,)).fetchone():
+            return True
+        return _table_exists(db, 'create_reconcile') and bool(db.execute(
+            'SELECT 1 FROM create_reconcile WHERE post_id IN (SELECT id FROM posts WHERE topic_id=?)',
+            (topic_id,)).fetchone())
+
+
+def _image_dispatched(row, document):
+    """True when any image work could have started for this run (ctx, document, images dir or an approval row)."""
+    ctx = _ctx(row)
+    if ctx.get('images') or ctx.get('draft') or ctx.get('retried'):
+        return True
+    if any(document.get(name) for name in ('image_run', 'cover_path', 'image_hashes', 'image_document', 'image_paths')):
+        return True
+    return (Path(row['out_dir']) / 'images').exists()
+
+
+def _quality_codes(quality):
+    return [issue.get('code') for issue in (quality or {}).get('issues', []) if isinstance(issue, dict)]
+
+
+def requeue_held_text(service, run_id, slot_text, *, now, dry_run=False):
+    """Operator command: reopen a run held `text_quality_held` on a NEW slot, keeping the stored article.
+
+    Only while the bot is paused. Every refusal raises RequeueRefused before anything is written. On success the
+    topic and the run move to the new slot, the run goes back to stage `new` and OnePost to `text_ready` (exactly where
+    `prepare` stands after text + gate), and the stored quality becomes the fresh verdict. No Agy call, no shortcut:
+    the engine then runs images -> auto approval -> Draft -> publish_pass on the new slot with every existing check."""
+    config, state = service.config, service.state
+    if not state.control()['paused']:
+        raise RequeueRefused('requeue_requires_pause')
+    runs = AutoflowRuns(state)
+    row = runs.get(run_id)
+    if row is None:
+        raise RequeueRefused('unknown_run')
+    if row['stage'] != 'held' or row['terminal_reason'] != 'text_quality_held':
+        raise RequeueRefused('run_not_text_held', f"stage={row['stage']} reason={row['terminal_reason']}")
+    try:
+        moment = datetime.fromisoformat(slot_text)
+    except (TypeError, ValueError):
+        raise RequeueRefused('slot_invalid') from None
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise RequeueRefused('slot_timezone_required')
+    if moment.second or moment.microsecond:
+        raise RequeueRefused('slot_minute_precision_required')
+    new_slot = iso_slot(moment)
+    target = moment.timestamp()
+    if target <= now:
+        raise RequeueRefused('slot_in_past')
+    window = config.schedule.window_end_hours * 3600 + REQUEUE_MARGIN_SECONDS
+    if target < now + window:
+        raise RequeueRefused('slot_too_close', f'needs at least {window // 60} minutes from now')
+    topic = state.get_topic(row['topic_id'])
+    if not topic or topic['state'] != 'approved':
+        raise RequeueRefused('topic_not_approved')
+    if topic['slot_at'] != row['slot_at']:
+        raise RequeueRefused('topic_slot_mismatch')
+    with state.connection() as db:
+        stored = db.execute('SELECT * FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
+        approvals = _table_exists(db, 'approval_requests') and db.execute(
+            'SELECT COUNT(*) FROM approval_requests WHERE run_id=?', (run_id,)).fetchone()[0]
+    if stored is None:
+        raise RequeueRefused('unknown_onepost_run')
+    document = json.loads(stored['document'])
+    if _has_post_or_create(state, row['topic_id'], stored):
+        raise RequeueRefused('post_or_create_exists')
+    if approvals or _image_dispatched(row, document):
+        raise RequeueRefused('images_dispatched')
+    if stored['phase'] != 'held' or document.get('text_unknown') or document.get('requires_override') \
+            or not isinstance(document.get('article'), dict):
+        raise RequeueRefused('onepost_not_text_held', f"phase={stored['phase']}")
+    try:
+        OnePost.verify_article_artifacts(document)
+    except AdminError as error:
+        raise RequeueRefused('article_artifacts_changed', _code(error)) from None
+    for other in runs.rows():
+        if other['run_id'] != run_id and _instant(other['slot_at']) == target:
+            raise RequeueRefused('slot_taken', f"run {other['run_id']}")
+    for post in state.list_posts():
+        if _instant(post['slot_at']) == target:
+            raise RequeueRefused('slot_taken', f"post #{post['id']}")
+    for other in state.list_topics(('approved',)):
+        if other['id'] != topic['id'] and _instant(other['slot_at']) == target:
+            raise RequeueRefused('slot_taken', f"topic #{other['id']}")
+    cache = service.load_cache()
+    if cache is None:
+        raise RequeueRefused('published_list_required')
+    article = document['article']
+    sources, _promo, _scores = topic_meta(topic)
+    context = {'sources': sources, 'posts': cache['posts'], 'others': service._occupied_slots(),
+               'today': datetime.fromtimestamp(now, VN_TZ).date()}
+    # The very assessment the engine's text step runs (writer._agy_assess: facts + gate + Han + medical), now on the new slot.
+    _images, _content, ungrounded, result = _agy_assess(article, {**topic, 'slot_at': new_slot}, context, config)
+    after = result.as_dict()
+    before = document.get('quality') if isinstance(document.get('quality'), dict) else {}
+    if ungrounded or (document.get('facts') or {}).get('ungrounded') != [] or han_fields(article):
+        raise RequeueRefused('facts_or_han_not_clean')
+    if result.hold:
+        raise RequeueRefused('hold_issue', ','.join(sorted({issue.code for issue in result.hold})))
+    if result.verdict != 'pass' or result.issues:
+        raise RequeueRefused('requeue_quality_not_pass', ','.join(_quality_codes(after)))
+    audit = {'requeued_by': 'operator', 'old_slot': row['slot_at'], 'new_slot': new_slot, 'at': now,
+             'previous_quality': {'verdict': before.get('verdict'), 'issues': _quality_codes(before)},
+             'rescored_quality': {'verdict': after['verdict'], 'issues': _quality_codes(after)}}
+    report = {'run_id': run_id, 'topic_id': topic['id'], 'old_slot': row['slot_at'], 'new_slot': new_slot,
+              'previous_quality': audit['previous_quality'], 'rescored_quality': audit['rescored_quality'],
+              'changes': [f"topics #{topic['id']}.slot_at -> {new_slot}",
+                          f'autoflow_runs {run_id}: stage held -> new, slot_at -> {new_slot}, audit in ctx.requeues',
+                          f"onepost_runs {run_id}: phase held -> text_ready, quality -> {after['verdict']}, rebind"],
+              'dry_run': bool(dry_run)}
+    if dry_run:
+        return report
+    identity = prepare_identity(config, {**topic, 'slot_at': new_slot}, row['out_dir'])
+    document.update(quality=after, slot_at=new_slot, facts={'ungrounded': []})
+    document.pop('text_issues', None)
+    document['requeues'] = [*document.get('requeues', []), audit]
+    ctx = {**_ctx(row), 'requeues': [*_ctx(row).get('requeues', []), audit]}
+    with state.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        run_now = db.execute('SELECT stage,terminal_reason,slot_at FROM autoflow_runs WHERE run_id=?', (run_id,)).fetchone()
+        op_now = db.execute('SELECT phase,post_id FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()
+        topic_now = db.execute('SELECT state,slot_at FROM topics WHERE id=?', (topic['id'],)).fetchone()
+        if (run_now is None or tuple(run_now) != ('held', 'text_quality_held', row['slot_at']) or op_now is None
+                or tuple(op_now) != ('held', None) or topic_now is None
+                or tuple(topic_now) != ('approved', row['slot_at'])
+                or db.execute('SELECT 1 FROM posts WHERE topic_id=?', (topic['id'],)).fetchone()
+                or db.execute("SELECT 1 FROM topics WHERE state='approved' AND slot_at=? AND id<>?",
+                              (new_slot, topic['id'])).fetchone()):
+            raise RequeueRefused('state_changed')
+        db.execute('UPDATE topics SET slot_at=? WHERE id=?', (new_slot, topic['id']))
+        db.execute("UPDATE autoflow_runs SET slot_at=?,stage='new',terminal_reason='',failures=0,next_attempt_at=0,"
+                   'ctx=? WHERE run_id=?', (new_slot, json.dumps(ctx, sort_keys=True), run_id))
+        db.execute("UPDATE onepost_runs SET phase='text_ready',binding=?,document=? WHERE run_id=?",
+                   (identity, json.dumps(document, ensure_ascii=False), run_id))
+    LOG.info('NailBlog autoflow run=%s requeued by operator %s -> %s quality=%s', run_id, row['slot_at'], new_slot,
+             after['verdict'])
+    return report

@@ -24,6 +24,16 @@ from .usage import write_atomic
 from .writer import han_fields, hold_unexpected_han, placeholder_images, render_html, word_count
 
 
+def prepare_identity(config, topic, directory, *, article=None, image_input=None, image_data=None,
+                     subscription_enabled=True):
+    """The binding digest `OnePost.prepare` stores for a run (and compares on every re-entry). One definition, so the
+    operator requeue (autoflow.requeue_held_text) rebinds a run to its new slot with exactly the same formula."""
+    return digest({'environment': binding(config), 'topic': topic, 'out': str(Path(directory).resolve()),
+                   'article': article, 'image_input': str(image_input) if image_input else None,
+                   'image_document_digest': digest(image_data) if image_data else None,
+                   'subscription_enabled': bool(subscription_enabled)})
+
+
 class OnePost:
     def __init__(self, service):
         self.service, self.state, self.config = service, service.state, service.config
@@ -271,10 +281,8 @@ class OnePost:
         if image_data is not None:
             verify_test_operation(image_data,self.config,run_id=run_id,slot_at=topic['slot_at'])
             self.provenance(image_data, image_input.parent,config=self.config)
-        identity = digest({'environment': binding(self.config), 'topic': topic, 'out': str(directory.resolve()),
-                           'article': article, 'image_input': str(image_input) if image_input else None,
-                           'image_document_digest': digest(image_data) if image_data else None,
-                           'subscription_enabled': bool(subscription_enabled)})
+        identity = prepare_identity(self.config, topic, directory, article=article, image_input=image_input,
+                                    image_data=image_data, subscription_enabled=subscription_enabled)
         with self.state.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT * FROM onepost_runs WHERE run_id=?', (run_id,)).fetchone()

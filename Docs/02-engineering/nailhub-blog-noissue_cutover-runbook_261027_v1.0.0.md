@@ -361,6 +361,34 @@ python3 $SRC/deploy/nailblog_cutover_check.py > $CUT/inventory-after.json
 6. `systemd.report_bridge_present=false`, `systemd.legacy_gate.pass=true`, `systemd.failed` rỗng, `env.gemini_image_key_present=false`, category IDs khớp probe xác thực ở bước 6 (UUID pattern không quyết định PASS), `systemctl list-timers --all | grep -i nailblog` rỗng.
 7. Tuỳ chọn, `[DỪNG - OWNER]` cho quyền reboot: một lần `reboot`, sau đó cả hai service tự lên (`systemctl is-active`), bot ở trạng thái paused cho tới khi Owner `resume`.
 
+## Requeue bài held
+
+Dùng khi run autoflow bị `held` `text_quality_held` chỉ vì lỗi văn phong nhẹ (verdict `fixable`: `kw_density`, `para_len`, `sentence_len`) và ngưỡng chung đã được nới (R7) để bài đã viết giờ chấm `pass`. Lệnh giữ nguyên bài, không gọi Agy viết lại, không tạo run mới (run id giữ nguyên); engine tự đi tiếp ảnh, tự duyệt, Draft, `publish_pass` đúng slot mới với mọi kiểm tra cũ. Chỉ chạy được khi bot `paused`; lệnh từ chối (không ghi gì) nếu run không ở `held`/`text_quality_held`, đã có post/Create/job ảnh, chấm lại bằng `quality` hiện hành chưa ra `pass` không issue, có facts chưa có nguồn/Hán/y tế/HOLD, slot không ở tương lai đủ xa, hoặc slot trùng run/post/chủ đề khác. Slot phải cách hiện tại ít nhất `schedule.window_end_hours` + 10 phút (ảnh phải xong trước `slot - window_end_hours`) và Draft phải được duyệt trước `slot - approve_deadline_hours`.
+
+Thứ tự: pause, (đổi window nếu cần), requeue `--dry-run`, requeue, resume. Dùng bash trên host, user bot `tgnailblog`:
+
+```sh
+# 1. Pause: Owner gõ /nailblog pause (hoặc: pause-install, lệnh này còn disarm bot)
+sudo -u tgnailblog env NAILBLOG_CONFIG=/etc/nailblog/nailblog.toml /opt/agentfleet/nailblog/.venv/bin/python -m nailblog status   # phải thấy paused
+
+# 2. (Chỉ khi cần đăng sớm hơn 3 tiếng) Owner/operator hạ trong /etc/nailblog/nailblog.toml, mục [schedule]:
+#      window_end_hours = 1        # cho phép 1..72, mặc định 3
+#      approve_deadline_hours = 1  # cho phép 0..72, mặc định 2; nên <= window_end_hours
+#    rồi restart; bot lên paused + disarmed (build/config mới), vẫn là trạng thái cần cho bước 3-4:
+systemctl restart tg-nailblog
+
+# 3. Xem trước, không ghi gì (slot là ISO có múi giờ, đúng phút, tương lai đủ xa)
+N="sudo -u tgnailblog env NAILBLOG_CONFIG=/etc/nailblog/nailblog.toml /opt/agentfleet/nailblog/.venv/bin/python -m nailblog"
+$N autoflow-requeue --run auto-20261028-0600-t1 --slot 2026-10-28T14:00:00+07:00 --dry-run
+
+# 4. Ghi thật (một lệnh cho mỗi run; slot khác nhau; ghi audit requeued_by=operator vào autoflow_runs.ctx.requeues)
+$N autoflow-requeue --run auto-20261028-0600-t1 --slot 2026-10-28T14:00:00+07:00
+
+# 5. Owner gõ /nailblog resume (preflight rồi arm); engine tự chạy ảnh, duyệt, Draft, đăng đúng slot mới
+```
+
+Kiểm: `/nailblog flow` hiện run ở bước ảnh/Draft; sau giờ slot, post `published` và `autoflow_runs.stage='published'`. Lệnh từ chối in `requeue_refused: <mã>` và thoát mã 1. Không SQL UPDATE tay. Không đổi `window_end_hours`/`approve_deadline_hours` khi bot đang `resume`.
+
 ## Rollback
 
 Chỉ làm khi Owner duyệt. Không xoá intent hay journal ở bất kỳ nhánh nào.
