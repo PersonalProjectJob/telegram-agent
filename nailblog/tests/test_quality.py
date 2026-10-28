@@ -30,7 +30,7 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(word_count(make_article()), 900)
 
     def test_result_is_structured_and_json_serialisable(self):
-        result = run(make_article(title_seo=with_keyword(61), slug="Bad Slug"))
+        result = run(make_article(title_seo=with_keyword(64), slug="Bad Slug"))
         data = json.loads(json.dumps(result.as_dict()))
         self.assertEqual(data["verdict"], "hold")
         self.assertEqual({issue["code"] for issue in data["issues"]}, {"title_seo", "slug"})
@@ -40,21 +40,21 @@ class BaselineTests(unittest.TestCase):
         self.assertIsInstance(result, QualityResult)
 
     def test_fixable_only_gives_the_fixable_verdict(self):
-        result = run(make_article(title_seo=with_keyword(61)))
+        result = run(make_article(title_seo=with_keyword(64)))
         self.assertEqual((result.ok, result.verdict, len(result.hold)), (False, "fixable", 0))
 
 
 class LengthTests(unittest.TestCase):
-    def test_nail_salon_and_nail_job_need_800_to_1200_words(self):
+    def test_nail_salon_and_nail_job_need_760_to_1260_words(self):
         for category in ("nail-salon", "nail-job"):
-            for words, ok in ((799, False), (800, True), (1200, True), (1201, False)):
+            for words, ok in ((759, False), (760, True), (1260, True), (1261, False)):
                 with self.subTest(category=category, words=words):
                     result = run(with_words(make_article(), words), category=category)
                     self.assertEqual("words" not in codes(result), ok)
 
-    def test_hot_trend_and_did_you_know_need_600_to_1000_words(self):
+    def test_hot_trend_and_did_you_know_need_570_to_1050_words(self):
         for category in ("hot-trend", "did-you-know"):
-            for words, ok in ((599, False), (600, True), (700, True), (1000, True), (1001, False)):
+            for words, ok in ((569, False), (570, True), (700, True), (1050, True), (1051, False)):
                 with self.subTest(category=category, words=words):
                     self.assertEqual("words" not in codes(run(with_words(make_article(), words), category=category)), ok)
         self.assertIn("words", codes(run(with_words(make_article(), 700))))       # 700 is short for nail-salon
@@ -62,9 +62,9 @@ class LengthTests(unittest.TestCase):
 
     def test_length_issues_are_fixable_and_say_the_range(self):
         issue = next(i for i in run(with_words(make_article(), 700)).issues if i.code == "words")
-        self.assertEqual((issue.kind, issue.message), (FIXABLE, "700 từ, cần 800-1200"))
+        self.assertEqual((issue.kind, issue.message), (FIXABLE, "700 từ, cần 760-1260"))
         issue = next(i for i in run(with_words(make_article(), 1100), category="hot-trend").issues if i.code == "words")
-        self.assertEqual(issue.message, "1100 từ, cần 600-1000")
+        self.assertEqual(issue.message, "1100 từ, cần 570-1050")
 
 
 class StructureTests(unittest.TestCase):
@@ -110,31 +110,31 @@ class SeoFieldTests(unittest.TestCase):
         result = run(make_article(**{field: value}))
         return [issue.code for issue in result.issues if issue.kind == FIXABLE]
 
-    def test_title_seo_at_most_60(self):
-        self.assertEqual(self.fixable("title_seo", with_keyword(60)), [])
-        self.assertEqual(self.fixable("title_seo", with_keyword(61)), ["title_seo"])
+    def test_title_seo_at_most_63(self):
+        self.assertEqual(self.fixable("title_seo", with_keyword(63)), [])
+        self.assertEqual(self.fixable("title_seo", with_keyword(64)), ["title_seo"])
         self.assertEqual(sorted(self.fixable("title_seo", "")), ["kw_title", "title_seo"])
         self.assertEqual(sorted(self.fixable("title_seo", "   ")), ["kw_title", "title_seo"])
 
-    def test_title_at_most_90(self):
-        self.assertEqual(self.fixable("title", "x" * 90), [])
-        self.assertEqual(self.fixable("title", "x" * 91), ["title"])
+    def test_title_at_most_94(self):
+        self.assertEqual(self.fixable("title", "x" * 94), [])
+        self.assertEqual(self.fixable("title", "x" * 95), ["title"])
 
-    def test_summary_between_140_and_160(self):
-        for length, ok in ((139, False), (140, True), (160, True), (161, False)):
+    def test_summary_between_133_and_168(self):
+        for length, ok in ((132, False), (133, True), (168, True), (169, False)):
             with self.subTest(length=length):
                 self.assertEqual(self.fixable("summary", "s" * length), [] if ok else ["summary"])
 
     def test_meta_title_and_description_limits(self):
-        self.assertEqual(self.fixable("meta_title", "m" * 60), [])
-        self.assertEqual(self.fixable("meta_title", "m" * 61), ["meta_title"])
-        for length, ok in ((139, False), (140, True), (160, True), (161, False)):
+        self.assertEqual(self.fixable("meta_title", "m" * 63), [])
+        self.assertEqual(self.fixable("meta_title", "m" * 64), ["meta_title"])
+        for length, ok in ((132, False), (133, True), (168, True), (169, False)):
             with self.subTest(length=length):
                 self.assertEqual(self.fixable("meta_description", with_keyword(length)), [] if ok else ["meta_description"])
         self.assertEqual(sorted(self.fixable("meta_description", "")), ["kw_meta", "meta_description"])
 
     def test_a_meta_title_copied_from_title_seo_is_judged_once(self):
-        result = run(make_article(title_seo=with_keyword(61), meta_title=with_keyword(61)))
+        result = run(make_article(title_seo=with_keyword(64), meta_title=with_keyword(64)))
         self.assertEqual([i.code for i in result.issues], ["title_seo"])
 
 
