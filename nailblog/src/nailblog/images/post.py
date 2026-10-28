@@ -72,24 +72,7 @@ async def thumbnail(image, title):
 
 
 async def thumbnail_cli(image, title):
-    """Owner approved native CLI cover; no source or finished-cover upscaling."""
-    from playwright.async_api import async_playwright
+    """Keep the native CLI cover free of text and overlays."""
     if image.size != (1376, 768): raise ImageError('cli_cover_dimensions_changed')
-    stream = io.BytesIO(); image.save(stream, format='PNG')
-    template = files('nailblog.images').joinpath('templates/cover-cli.html').read_text(encoding='utf-8')
-    markup = template.replace('{{BACKGROUND}}', base64.b64encode(stream.getvalue()).decode()).replace('{{TITLE}}', html.escape(title))
-    async with async_playwright() as manager:
-        browser = await manager.chromium.launch(headless=True)
-        try:
-            context = await browser.new_context(viewport={'width': 1376, 'height': 768}, service_workers='block')
-            await context.route('**/*', lambda route: route.abort())
-            page = await context.new_page()
-            await page.set_content(markup, wait_until='load')
-            await page.locator('img').evaluate('(image) => image.decode()')
-            box = await page.locator('h1').bounding_box()
-            if (not box or box['x'] < 172 or box['y'] < 115 or box['x'] + box['width'] > 1204 or box['y'] + box['height'] > 653):
-                raise ImageError('cover_title_outside_safe_area')
-            return decode(await page.screenshot(type='png'))
-        finally:
-            await browser.close()
+    return image
 

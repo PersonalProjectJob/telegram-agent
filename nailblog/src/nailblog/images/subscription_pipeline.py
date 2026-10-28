@@ -5,7 +5,6 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
-from importlib.resources import files
 
 from .._runtime import ProcessLock
 from ..admin_images import validate_files, verify_reviews
@@ -16,7 +15,7 @@ from .post import crop, decode, hashes, webp, thumbnail_cli
 from .prompts import generation_prompt, feasible_brief, VERSION as PROMPT_VERSION
 from .subscription import SubscriptionImages, verify_receipt, PROTOCOL
 
-CLI_PROCESSING = 'subscription-native-cover1376x768-body1200x675-v1'
+CLI_PROCESSING = 'subscription-native-cover1376x768-body1200x675-v2-no-overlay'
 
 
 def validate_provenance(document, manifest, directory, config):
@@ -96,7 +95,6 @@ async def run(pipeline, article, out, run_id, *, enabled, paid_enabled, free_ena
     directory = safe_directory(out)
     binding = digest({'article': article, 'provider': 'subscription', 'subscription': asdict(config.subscription),
                       'image': asdict(config.image), 'processing': CLI_PROCESSING, 'prompt_version': PROMPT_VERSION,
-                      'template': digest(files('nailblog.images').joinpath('templates/cover-cli.html').read_text(encoding='utf-8')),
                       'directory': str(directory)})
     provider = pipeline.provider
     with ProcessLock(directory):
