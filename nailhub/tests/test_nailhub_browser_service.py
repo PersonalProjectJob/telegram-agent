@@ -9,19 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from nailhub.browser import Browser, canonical_text, matches_expected, posting_from_data, prepare_save_payload, same_form_value
 from nailhub.service import Service, model_call
-from nailhub.validation import NeedsHuman, proposal
+from nailhub.validation import NeedsHuman, fill_phone_placeholders, proposal
 from nailhub.publication import publication_expected
 from tests.nailhub_fixtures import FakeBrowser, POST_ID, extracted, raw_post, settings
 
 class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
-    async def test_owner_publisher_branding_edits_only_fallback_ai_text_in_form(self):
-        class Response:
-            async def __aenter__(self):
-                self.value = asyncio.get_running_loop().create_future()
-                self.value.set_result(object())
-                return self
-            async def __aexit__(self, *args):
-                pass
+    async def test_edit_keeps_source_body_and_fills_phone_and_publisher_label(self):
         class Editor:
             def __init__(self, text):
                 self.text = text
@@ -31,48 +24,59 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
             async def fill(self, value):
                 self.text = value
                 self.fills.append(value)
-        with tempfile.TemporaryDirectory() as directory:
-            post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
-                businessName='BaoNail.com', priceType='Negotiable', price=0))
-            editor = Editor('Tiệm Nailhub.ai cần thợ nail. Call 4045550100.')
-            page = SimpleNamespace(expect_response=lambda *args, **kwargs: Response())
+        def browser_for(directory, post, editor):
             browser = Browser(settings(directory, mode='live', verified=True,
-                verification_ref='offline fake'), page=page)
+                verification_ref='offline fake'), page=Mock())
             browser.verify_listing_age = AsyncMock()
             browser._open_edit = AsyncMock()
             browser.select_category = AsyncMock()
             browser._apply_changes = AsyncMock()
             browser.action_click = AsyncMock()
-            browser._json = AsyncMock()
             browser._field = AsyncMock(return_value=SimpleNamespace(
                 input_value=AsyncMock(return_value=post.fields['title'])))
             async def control(name):
-                return editor if name == 'editor' else SimpleNamespace(
-                    wait_for=AsyncMock(), is_enabled=AsyncMock(return_value=True))
+                return editor
             browser.control = control
-            title, body = await browser.edit_and_rewrite(post, {'salon': 'nailhub.ai'})
-            self.assertEqual(title, post.fields['title'])
-            self.assertEqual(body,
-                'Nailhub.ai đăng bài tuyển dụng cần thợ nail. Call 4045550100.')
-            self.assertEqual(editor.fills, [body])
-            for current in ('Unknown', 'N/A', 'nailhub.ai'):
+            return browser
+        with tempfile.TemporaryDirectory() as directory:
+            for current in ('BaoNail.com', 'Unknown', 'N/A', 'nailhub.ai'):
                 with self.subTest(current=current):
-                    placeholder_post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
+                    post = posting_from_data(raw_post('Cần thợ nail. Call Phone ☎.',
                         businessName=current, priceType='Negotiable', price=0))
-                    editor.text = 'Tiệm Nailhub.ai cần thợ nail. Call 4045550100.'
-                    editor.fills.clear()
-                    _, branded = await browser.edit_and_rewrite(placeholder_post,
-                        {'salon': 'nailhub.ai'})
-                    self.assertEqual(branded,
-                        'Nailhub.ai đăng bài tuyển dụng cần thợ nail. Call 4045550100.')
-                    self.assertEqual(editor.fills, [branded])
-            editor.text = 'Real Nails tuyển dụng. Call 4045550100.'
-            editor.fills.clear()
-            real_post = posting_from_data(raw_post('Cần thợ nail. Call 4045550100.',
+                    editor = Editor(post.content)
+                    browser = browser_for(directory, post, editor)
+                    title, body = await browser.edit_and_rewrite(post, {'salon': 'nailhub.ai'})
+                    self.assertEqual(title, post.fields['title'])
+                    self.assertEqual(body, 'Nailhub.ai đăng bài tuyển dụng\n'
+                        'Cần thợ nail. Call ' + post.fields['phone_primary'] + '.')
+                    self.assertEqual(editor.fills, [body])
+                    browser.action_click.assert_not_awaited()
+            real_post = posting_from_data(raw_post('Real Nails tuyển dụng. Call 4045550100.',
                 businessName='Real Nails', priceType='Negotiable', price=0))
-            _, unchanged = await browser.edit_and_rewrite(real_post, {})
-            self.assertEqual(unchanged, editor.text)
+            editor = Editor(real_post.content)
+            _, unchanged = await browser_for(directory, real_post, editor).edit_and_rewrite(real_post, {})
+            self.assertEqual(unchanged, real_post.content)
             self.assertEqual(editor.fills, [])
+            editor = Editor('AI text differs')
+            with self.assertRaises(NeedsHuman):
+                await browser_for(directory, real_post, editor).edit_and_rewrite(real_post, {})
+            self.assertEqual(editor.fills, [])
+
+    def test_phone_placeholder_uses_both_distinct_numbers_once_each(self):
+        body = 'Mọi chi tiết xin liên lạc Phone ☎ gặp Jack.\nTEXT Phone☎ or phone: 📞 (Kim).'
+        self.assertEqual(fill_phone_placeholders(body, '4045550100', '(404) 555-0101'),
+            'Mọi chi tiết xin liên lạc 4045550100 / (404) 555-0101 gặp Jack.\n'
+            'TEXT 4045550100 / (404) 555-0101 or 4045550100 / (404) 555-0101 (Kim).')
+        for other in ('', '404-555-0100', '+1 (404) 555-0100'):
+            with self.subTest(other=other):
+                self.assertEqual(fill_phone_placeholders('Liên lạc Phone ☎.', '4045550100', other),
+                                 'Liên lạc 4045550100.')
+        self.assertEqual(fill_phone_placeholders('Liên lạc Phone ☎.', '', '4045550101'),
+                         'Liên lạc 4045550101.')
+        self.assertEqual(fill_phone_placeholders('Smartphone ok. Call 4045550100', '4045550100', ''),
+                         'Smartphone ok. Call 4045550100')
+        with self.assertRaises(NeedsHuman):
+            fill_phone_placeholders('Liên lạc Phone ☎.', '', '')
 
     def test_form_phone_formatting_preserves_number_extension_and_multiplicity(self):
         for key in ('phone_primary', 'phone_other'):
@@ -121,7 +125,7 @@ class BrowserContractTests(unittest.IsolatedAsyncioTestCase):
                         is_enabled=AsyncMock(return_value=True),inner_text=AsyncMock(return_value=post.content.replace('\n','\n\n')+'\n')))
                     if allowed:
                         self.assertEqual(await browser.edit_and_rewrite(post,{}),(post.fields['title'],post.content))
-                        browser.action_click.assert_any_await('ai')
+                        self.assertEqual(browser.action_click.await_args_list,[unittest.mock.call('edit')])
                     else:
                         with self.assertRaises(NeedsHuman):await browser.edit_and_rewrite(post,{})
                         self.assertEqual(browser.action_click.await_args_list,[unittest.mock.call('edit')])

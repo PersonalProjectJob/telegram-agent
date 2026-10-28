@@ -17,7 +17,7 @@ from urllib.parse import urlencode, urlparse
 
 from .credentials import load_credentials
 from .validation import (NeedsHuman, Posting, PHONE, SENTINEL_START_DATE, phone_key,
-                         processing_start_date, publisher_branding_rewrite, unknown_business_name)
+                         fill_phone_placeholders, processing_start_date, publisher_branding_rewrite, unknown_business_name)
 from .categories import (SUPPORTED_CATEGORIES, CATEGORY_LABELS, category_change_valid,
                          category_repair_valid)
 from .publication import eligible, rewrite_valid, publication_valid, approval_readback, unchanged_valid_date
@@ -742,28 +742,29 @@ class Browser:
         await self._open_edit(post)
         await self.select_category(post, changes.get('category', post.category))
         await self._apply_changes(post, changes)
-        async with self.page.expect_response(lambda r: self._response(r, AI_PATH, 'POST'), timeout=self.config.timeout_seconds * 1000) as response:
-            await self.action_click('ai')
-        await self._json(await response.value)
-        await (await self.control('ai')).wait_for(state='visible')
-        if not await (await self.control('ai')).is_enabled():
-            raise NeedsHuman('AI completion unverified')
+        # Owner 2026-10-28: Viết bằng AI is no longer clicked. The source body is kept;
+        # only 'Phone ☎' placeholders and the D027 publisher label are edited.
         title = await (await self._field('title')).input_value()
         editor = await self.control('editor')
-        content = await editor.inner_text()
+        content = canonical_text(await editor.inner_text())
+        if content != post.content:
+            raise NeedsHuman('edit editor differs from fresh content')
+        edited = content
         current_salon = post.fields.get('salon', '').strip()
         if ((not current_salon or unknown_business_name(current_salon))
                 and changes.get('salon', '').strip().casefold() == 'nailhub.ai'):
-            branded = publisher_branding_rewrite(
-                post.fields.get('title', '') + '\n' + post.content, content,
+            edited = publisher_branding_rewrite(
+                post.fields.get('title', '') + '\n' + post.content, edited,
                 changes.get('category', post.category))
-            if branded != content:
-                self.check_action()
-                await editor.fill(branded)
-                if canonical_text(await editor.inner_text()) != canonical_text(branded):
-                    raise NeedsHuman('publisher branding edit was not retained by the AI editor')
-                content = branded
-        return title, canonical_text(content)
+        contact = {**post.fields, **changes}
+        edited = fill_phone_placeholders(edited, contact.get('phone_primary', ''),
+                                         contact.get('phone_other', ''))
+        if edited != content:
+            self.check_action()
+            await editor.fill(edited)
+            if canonical_text(await editor.inner_text()) != canonical_text(edited):
+                raise NeedsHuman('contact/branding edit was not retained by the editor')
+        return title, canonical_text(edited)
 
     async def assert_fresh(self, post):
         """Read via a second UI page, preserving the unsaved editor. Backend has no proven CAS."""

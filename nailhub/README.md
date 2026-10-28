@@ -75,9 +75,11 @@ Owner amendment 2026-10-13: explicitly labelled customer service-price lists (e.
 Source-proven contact/location corrections apply to missing AND incorrect populated fields. Unique bounded context quotes may contain repeated values. City/state must form an explicit source pair. State changes select the exact inspected option, always reselect dependent city and verify both retained values before AI.
 Address/ZIP only uses exact original spans or retained fields. No unsupported public lookup fallback.
 US phone normalization removes duplicate +1 variants while retaining distinct extensions/numbers.
-AI updates title AND content. The latest Owner override delegates content quality to the site AI
-flow: automation accepts its returned title/body without deterministic rewrite checks or a semantic
-model call. Original-source extraction/proposal checks remain required. Entire model JSON/request failure permits source-only absent/unclear-pay negotiated fallback only with valid required contact and no unresolved explicit address, city/state pair, named salon, new phone or email correction. Other failures hold as automation errors; they do not prove posting data is wrong.
+Owner override 2026-10-28: Viết bằng AI is no longer clicked during review. The source title and
+body are kept; the editor body must equal the fresh source, then only each masked `Phone ☎`
+placeholder is replaced with the stored contact number(s) (two distinct numbers both written,
+identical numbers written once) plus the D027 publisher label, and the result is Save/readback
+verified. A placeholder with no stored number holds. No semantic model call runs on the body. Original-source extraction/proposal checks remain required. Entire model JSON/request failure permits source-only absent/unclear-pay negotiated fallback only with valid required contact and no unresolved explicit address, city/state pair, named salon, new phone or email correction. Other failures hold as automation errors; they do not prove posting data is wrong.
 NailHub qwen3.5:9b uses think=false; reasoning is never stored. Generation is bounded by model.num_predict (default 2048),
 context 8192, input 12000 characters and a 600-second HTTP budget; truncation/invalid JSON holds.
 Empty location suggestions leave existing fields intact; nonempty unchanged suggestions are
@@ -92,8 +94,7 @@ Period-plus-qualification tails additionally require the entire excerpt to be li
 qualification and conflicting money/period checks remain unchanged.
 Validated salon/location sentences are reduced to every exact recognized current or source-proven
 proposed entity they contain. Unrecognized entity spans receive evidence correction or hold. This
-validates original extraction entities. The completed site AI rewrite is accepted directly;
-no extra instruction prefix, cleanup or content verification is applied.
+validates original extraction entities. No other body cleanup or content rewrite is applied.
 Before any Edit/AI operation, salon, street address, city, state, ZIP and main phone must be
 complete and valid under the inspected form limits/US syntax. Missing or incorrect populated values may be corrected only
 from validated original evidence; otherwise the post needs human review. No lookup is guessed.
