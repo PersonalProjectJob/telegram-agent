@@ -21,6 +21,8 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 - Reserve trước POST. `reserved`/`ambiguous` không tự retry, nhờ Owner kiểm repo; notice không tự resend (TG-24, TG-26).
 - Phản hồi theo mẫu TG-11, xưng hô theo TG-28/TG-29; không đoán giới tính từ tên/ảnh.
 
+- Soạn ticket/comment thủ công: theo đúng khuôn trong [Template log ticket](../Docs/templates/github-ticket/README.md); không tự chế heading, nhãn hay thứ tự mục.
+
 ## Khi sửa ticket đã log hoặc debug
 
 - Chuẩn hóa lại nội dung ticket chỉ qua `scripts/reformat-telegram-issue.py`: preview → đối chiếu source marker + body SHA → `--apply` → đọc lại. Không viết body tay, không tạo ticket mới để chữa ticket cũ (TG-27).

@@ -1,6 +1,6 @@
 # Telegram triage → GitHub ticket — Overview và bàn giao
 
-**Version**: v1.0.0 · **Updated**: 2026-10-27 02:30 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
+**Version**: v1.0.1 · **Updated**: 2026-10-28 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
 
 **Status**: Tài liệu bàn giao. Không thay thế nguồn nghiệp vụ. Mọi quy tắc ở đây trỏ về TG-ID trong [Business DOCS](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md); quy tắc chi tiết dạng MUST/MUST NOT nằm ở [Rulebook](../01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md).
 
@@ -100,6 +100,7 @@ flowchart TD
 | [QA](../03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md) | TC-01…TC-13, tiêu chí bằng chứng |
 | [listener/README.md](../../listener/README.md) | Vận hành, cấu hình, drift check, reformat |
 | [listener/AGENTS.md](../../listener/AGENTS.md) | Điểm vào cho Agent |
+| [Template log ticket](../templates/github-ticket/README.md) | Khuôn `.md` cho issue, comment, câu trả lời group; có test chống lệch với code |
 | `worker-agent-fleet-1_*` | Lịch sử. §12.11 "phải tag" **đã lỗi thời** |
 
 ### Code (`listener/src/tg_triage/`)
@@ -218,7 +219,7 @@ Các mục dưới đây **chưa được Owner chốt**. Không tự sửa; ghi
 
 | ID | Vấn đề | Hiện trạng | Cần quyết định |
 |---|---|---|---|
-| G-01 | `VISION_NOTE` ([pipeline.py:45](../../listener/src/tg_triage/pipeline.py)) xưng "Bạn" | Lệch TG-28 (phải "Anh/Chị") | Sửa thành Anh/Chị? |
+| G-01 | Một số câu hỏi trong code viết "Bạn" (`VISION_NOTE` ở [pipeline.py](../../listener/src/tg_triage/pipeline.py), `FEEDBACK_QUESTIONS`, nhiều câu trong `followups.py`) | Tin gửi vào group **đã đúng**: `address_question` trong [group_notices.py](../../listener/src/tg_triage/group_notices.py) đổi "Bạn" thành "Anh/Chị". Chỉ bản sao câu hỏi trong body issue GitHub (mục "Cần làm rõ") còn chữ "Bạn" | Có cần thống nhất cả trong body issue? |
 | G-02 | Ảnh upload nguyên vẹn, không che dữ liệu nhạy cảm | TG-31 chỉ redact text | Có cần rule che/không upload ảnh chứa mật khẩu, SĐT? |
 | G-03 | Không có danh mục module (booking, POS, login…) | Topic chỉ theo vụ việc; nhãn chỉ có loại | Có thêm nhãn `area:*` / TG-33? |
 | G-04 | Comment code còn ghi "12.11/12.12/12.13" | Hành vi đúng TG, comment trỏ tài liệu cũ | Đổi comment sang TG-ID? |
@@ -231,4 +232,5 @@ Các mục dưới đây **chưa được Owner chốt**. Không tự sửa; ghi
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.0.1 | 2026-10-28 | Claude / owner AlexChu | Thêm link thư mục template log ticket. Sửa G-01: tin trong group đã được đổi "Bạn" → "Anh/Chị" khi gửi; chỉ body issue còn "Bạn". |
 | v1.0.0 | 2026-10-27 02:30 | Claude / owner AlexChu | Tạo overview bàn giao: phạm vi, kiến trúc, hai đường xử lý, thuật ngữ, bản đồ tài liệu/code, cấu hình, vai trò, quy trình A–E, điểm dừng, quyết định còn mở. |

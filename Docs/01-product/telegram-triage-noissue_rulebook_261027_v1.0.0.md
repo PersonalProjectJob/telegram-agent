@@ -1,6 +1,6 @@
 # Telegram triage → GitHub ticket — Rulebook
 
-**Version**: v1.0.0 · **Updated**: 2026-10-27 02:45 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
+**Version**: v1.0.1 · **Updated**: 2026-10-28 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
 
 **Status**: Bản chi tiết hóa, dạng kiểm được, của [Business DOCS](telegram-triage-noissue_business_261015_v1.0.0.md) v1.7.1. Không thêm quy tắc mới. Nếu một dòng ở đây khác Business DOCS, **Business DOCS thắng**; báo lại chỗ lệch. Bối cảnh, thuật ngữ và quy trình bàn giao: [Overview](../00-master/telegram-triage-noissue_overview_261027_v1.0.0.md).
 
@@ -243,6 +243,8 @@ Code áp theo **đúng thứ tự** sau, bước đầu tiên khớp thì dừng
 
 Sửa lại body ticket hiện có MUST dùng `format_issue` qua `scripts/reformat-telegram-issue.py` (TG-27), không viết Markdown tay.
 
+Soạn ticket hoặc comment thủ công (người hoặc Agent) MUST theo đúng khuôn trong [Template log ticket](../templates/github-ticket/README.md): bug, task, feedback, needs-human, comments, group-replies. Test `listener/tests/test_ticket_md_templates.py` giữ các khuôn này khớp với renderer; đổi wording trong code thì sửa template cùng lượt.
+
 ## 10. Phản hồi trong Telegram (TG-11, TG-13, TG-26, TG-28, TG-29)
 
 | ID | Rule | Thực thi |
@@ -354,4 +356,5 @@ ID tin là giả lập.
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.0.1 | 2026-10-28 | Claude / owner AlexChu | §9.1: bắt buộc dùng thư mục template log ticket khi soạn tay; test chống lệch template với renderer. |
 | v1.0.0 | 2026-10-27 02:45 | Claude / owner AlexChu | Chi tiết hóa TG-01…TG-32 thành điều khoản MUST/MUST NOT có nơi thực thi, thứ tự quyết định `_safety`, định dạng issue, bảng quyết định tổng hợp, 13 ví dụ chuẩn, danh sách cấm và tự kiểm. |
