@@ -1296,6 +1296,32 @@ def dedup_phones(primary, other):
     return '; '.join(kept)
 
 
+PHONE_PLACEHOLDER = re.compile(r'(?<!\w)phone\s*:?\s*(?:☎|📞)️?', re.I)
+
+
+def fill_phone_placeholders(content, primary, other):
+    """Owner 2026-10-28: the crawler masks contact numbers as 'Phone ☎'.
+
+    Each placeholder becomes the stored contact number(s): two distinct numbers
+    are both written, an identical second number is written once.
+    """
+    if not PHONE_PLACEHOLDER.search(content):
+        return content
+    numbers, seen = [], set()
+    for value in (primary, other):
+        for match in PHONE.finditer(value or ''):
+            key = phone_key(match.group())
+            if key not in seen:
+                seen.add(key)
+                numbers.append(match.group().strip())
+    if not numbers:
+        raise NeedsHuman('phone placeholder has no stored contact number',
+            details={'kind': 'data', 'field': 'phone_primary', 'current': primary,
+                     'source': PHONE_PLACEHOLDER.search(content).group(),
+                     'action': 'Bổ sung số điện thoại liên lạc trước khi thay "Phone ☎" trong nội dung.'})
+    return PHONE_PLACEHOLDER.sub(lambda _: ' / '.join(numbers), content)
+
+
 FACT_KINDS = ('salon', 'contact', 'location', 'salary', 'schedule', 'benefits', 'requirements')
 LOCATION_FIELDS = ('salon', 'address', 'city', 'state', 'zip', 'email', 'phone_primary', 'phone_other')
 STATE_FULLNAME_EQUIVALENTS = {
