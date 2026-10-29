@@ -145,7 +145,10 @@ class WholeCaseTests(unittest.TestCase):
         self.assertNotIn("<img", body)
         self.assertNotIn("@user", body)
         self.assertNotIn("@boss", body)
-        self.assertNotIn("://evil", body)
+        quote = body.split('<details>', 1)[1]
+        self.assertNotIn("://evil", quote)
+        self.assertEqual(body.count("://evil"), 1)
+        self.assertIn('- 🔗 [evil.invalid](https://evil.invalid)', body.splitlines())
         self.assertEqual(body.count("--&gt;"), 7)  # text + sender, three messages, + sender in <summary>
         self.assertEqual(body.count("&lt;img"), 3)
 

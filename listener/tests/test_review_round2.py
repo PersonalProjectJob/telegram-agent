@@ -73,7 +73,10 @@ class RoundTwoTests(unittest.TestCase):
         attack = "GH-77 gh-88 https://github.com/o/r/issues/1"
         issue = format_issue(message(text=attack, sender_name=attack),
                              classification(title=attack, summary=attack), "model", False, model=attack)
-        for field in (issue.title, issue.body):
+        link_lines = [line for line in issue.body.split('\n') if line.startswith('- 🔗 ')]
+        self.assertEqual(link_lines, ['- 🔗 [github\u200b.com/o/r/issues/1](https://github.com/o/r/issues/1)'])
+        body_without_source_links = '\n'.join(line for line in issue.body.split('\n') if line not in link_lines)
+        for field in (issue.title, body_without_source_links):
             self.assertNotRegex(field, r"(?i)gh-\d|github\.com/")
             self.assertIn("GH-\u200b77", field)
             self.assertIn("github\u200b.com/", field)
@@ -90,7 +93,10 @@ class RoundTwoTests(unittest.TestCase):
         issue = format_issue(message(text=attack, sender_name=attack),
                              classification(title=attack, summary=attack), "model", False, model=attack)
         self.assertIn("[mở trên Telegram](https://t.me/c/1234567890/1)", issue.body)
-        self.assertEqual(issue.body.count("://"), 1)
+        link_lines = [line for line in issue.body.split('\n') if line.startswith('- 🔗 ')]
+        self.assertEqual(link_lines, ['- 🔗 [evil](https://evil)', '- 🔗 [x](http://x)'])
+        body_without_source_links = '\n'.join(line for line in issue.body.split('\n') if line not in link_lines)
+        self.assertEqual(body_without_source_links.count("://"), 1)
         self.assertNotIn("://", issue.title)
         self.assertNotRegex(issue.title + issue.body, r"(?i)www\.")
         self.assertIn("> \\[x\\]", issue.body)

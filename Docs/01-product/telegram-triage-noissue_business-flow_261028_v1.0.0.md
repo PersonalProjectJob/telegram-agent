@@ -1,6 +1,6 @@
 ## Telegram Triage → GitHub Ticket (sau PR #81: ticket theo template)
 
-**Last Updated:** 2026-10-28
+**Last Updated:** 2026-10-29
 **Audience:** Owner, team dev/QA, operator, Agent tiếp nhận
 **Status:** Review
 
@@ -333,6 +333,7 @@ stateDiagram-v2
 
 - **Template quyết định:** thứ tự mục, thêm/bỏ mục tùy chọn, heading, emoji, tên trường, dòng tĩnh, câu hỏi tự động, câu comment, câu trả lời group (TG-33).
 - **Code giữ cố định:** marker nguồn `<!-- tg:… -->`, title (tối đa 80 ký tự), nhãn GitHub, mọi link và ảnh, sanitize/redact, trích dẫn tin gốc, logic chọn template và giới hạn. Lý do: bước cập nhật ticket đối chiếu theo marker/title, và link/mention là kênh chèn nội dung.
+- **Link trong tin nguồn:** code kiểm tra http/https, host IDNA, không userinfo, tối đa 2000 ký tự; loại trùng tối đa 10 và dựng link có thể click trong evidence. Link chứa email/phone vẫn đầy đủ; link GitHub có thể tạo cross-reference theo ngoại lệ Owner ngày 2026-10-29. Display được sanitize, quote vẫn redact email/phone và vô hiệu hóa link/reference; link cũng tính là evidence bug (TG-31).
 - **Chỉ bản đóng gói:** không có thư mục override, không reload nóng; đổi template = PR + release + restart.
 - **Template hỏng = không khởi động:** bot dừng với mã thoát 2, không âm thầm dùng form khác.
 - **Nội dung người dùng không bao giờ là lệnh template:** chuỗi như `{{summary}}` trong tin nhắn được in nguyên văn (TG-31).
@@ -348,6 +349,7 @@ stateDiagram-v2
 
 | Scenario | What Happens | Who Resolves It |
 | :--- | :--- | :--- |
+| Tin có link http/https | Link hợp lệ kể cả chứa email/phone hoặc dẫn đến GitHub được đưa đầy đủ vào evidence; userinfo và link không hợp lệ bị bỏ qua. Quote vẫn sanitize/redact; link GitHub có thể tạo cross-reference. | Bot |
 | Template sai cú pháp / thiếu slot bắt buộc / slot lạ | Bot không khởi động, báo `file:dòng` | Team dev sửa qua PR |
 | Template chứa `@mention`, link, HTML lạ | Bị chặn lúc nạp, exit 2 | Team dev |
 | Tin người dùng chứa `{{…}}` | In nguyên văn, không thực thi | Auto |

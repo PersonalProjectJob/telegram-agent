@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.8.0 · **Updated**: 2026-10-28 11:15 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.8.2 · **Updated**: 2026-10-29 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -317,7 +317,9 @@ Khi THINKING bật, một lượt dùng chung tối đa hai model attempts thự
 
 ### TG-31 — Quyền write và sanitization
 
-Repo API/nhãn do config/code cố định. Redact email/phone và sanitize source/model để tránh mention/link/reference/Markdown injection. Model/user không thể tự chọn permission, repo hay executable action. Original Telegram source link do code tạo có thể click.
+Repo API/nhãn do config/code cố định. Redact email/phone và sanitize source/model để tránh mention/link/reference/Markdown injection, trừ ngoại lệ link nguồn do code dựng dưới đây. Model/user không thể tự chọn permission, repo hay executable action. Original Telegram source link do code tạo có thể click.
+
+Theo quyết định Owner ngày 2026-10-29, code trích xuất link nguồn http/https, kiểm tra host IDNA, tối đa 2000 ký tự, từ chối userinfo, loại trùng tối đa 10 và dựng link có thể click trong evidence; link chứa email/số điện thoại được hiển thị đầy đủ và giữ đầy đủ trong đích, text hiển thị vẫn được sanitize. Link github.com được phép click, kể cả khi có thể tạo cross-reference “mentioned this” trên đối tượng đích: đây là ngoại lệ của guard chống reference injection chỉ dành cho dòng link nguồn do code dựng. Quote gốc vẫn redact email/số điện thoại và vô hiệu hóa link/reference. Link nguồn được tính là evidence của bug, nên nếu chỉ có link thì câu hỏi evidence tự động không được thêm.
 
 Template là nội dung tin cậy được phát hành, không phải kênh chứa nội dung do user hay model cung cấp; các giá trị vẫn phải qua các biện pháp bảo vệ của code.
 
@@ -331,7 +333,7 @@ Quota issue tính create attempts kể cả sibling/unknown outcome; comment kh�
 
 Layout và wording ticket, comment và phản hồi group lấy từ bộ Markdown đóng gói tại `listener/templates/github-ticket/`; thay đổi bằng PR và release, không có thư mục override hoặc hot reload. Validator kiểm tra tập tệp, block, slot, cú pháp và nội dung tĩnh trước khi chạy; template hỏng làm `run` và `check-config` thoát mã 2. Fingerprint SHA-256 xác định bộ template và được ghi lúc chạy, xuất qua `check-config` và preview reformat.
 
-Code giữ marker nguồn, title, nhãn, sanitize/redact, liên kết do code dựng, quote, logic chọn template, điều kiện thiếu và giới hạn; template điều khiển thứ tự, heading, nhãn, câu chữ và các phần tùy chọn. Giá trị từ user/model chỉ là dữ liệu đã xử lý, không được diễn giải thành directive của template (TG-31).
+Code giữ marker nguồn, title, nhãn, sanitize/redact, liên kết do code dựng, link nguồn, quote, logic chọn template, điều kiện thiếu và giới hạn; template điều khiển thứ tự, heading, nhãn, câu chữ và các phần tùy chọn. Giá trị từ user/model chỉ là dữ liệu đã xử lý, không được diễn giải thành directive của template (TG-31).
 
 ## Ví dụ đa lượt và giới hạn
 
@@ -1475,9 +1477,45 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/issue_format.py",
           "symbol": "sanitize"
+        },
+        {
+          "path": "listener/src/tg_triage/issue_format.py",
+          "symbol": "source_links"
         }
       ],
       "tests": [
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_issue_82"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_trim_deduplicate_cap_and_time_order"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_validation_and_redaction"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_phone_email_and_github_source_links"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_display_order_port_idna_and_backslash"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_encoding_truncation_and_sanitized_display"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_all_evidence_sections_and_bug_question"
+        },
+        {
+          "path": "listener/tests/test_source_links.py",
+          "symbol": "SourceLinksTests.test_no_url_matches_prechange_golden_for_each_type"
+        },
         {
           "path": "listener/tests/test_followups.py",
           "symbol": "FollowupBoundaryTests.test_comment_transport_targets_fixed_repo_no_retry"
@@ -1608,7 +1646,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
     "listener/src/tg_triage/group_notices.py": "22f437ff95afe56bc95ae397cab5cd318f3ca710f70b850e00f559cbe14d6b43",
     "listener/src/tg_triage/ingress_model.py": "15368c1c94839f782424df2281e552e3a574151fec648ca4e4e46773cc819634",
-    "listener/src/tg_triage/issue_format.py": "3d01ddb0606285a60f913abbb42c738891a54f1a83ecd56586f51daf0728e3de",
+    "listener/src/tg_triage/issue_format.py": "3bb1650a10b4983dca11efaed9d3f15d9363e9824adfb31a156ed7bf57631f6a",
     "listener/src/tg_triage/lifecycle.py": "e39f3e70ab2a9e9c774d9419636b23ae31f09b53b2be6daf919774bfcd319a85",
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
@@ -1661,6 +1699,8 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.8.2 | 2026-10-29 | Codex / owner AlexChu | Cho phép link nguồn GitHub và link chứa email/phone theo quyết định Owner; giữ chặn userinfo. |
+| v1.8.1 | 2026-10-29 | Codex / owner AlexChu | Trích xuất, kiểm tra và hiển thị link nguồn trong evidence theo TG-31. |
 | v1.8.0 | 2026-10-28 11:15 | Codex / owner AlexChu | Thêm TG-33 cho template đóng gói, validate fail-closed và fingerprint; bổ sung ranh giới TG-27/TG-31. |
 | v1.7.1 | 2026-10-27 02:01 | Claude / owner AlexChu | Thêm `listener/AGENTS.md` làm điểm vào cho agent tiếp nhận: trỏ về nguồn này và TG-ID, đánh dấu §12.11 assistant-definition lỗi thời. Thêm Overview bàn giao và Rulebook chi tiết hóa TG-01…TG-32; Business DOCS vẫn là nguồn thắng khi lệch, đổi TG phải cập nhật Rulebook cùng lượt. Thêm thư mục `Docs/templates/github-ticket/` (khuôn issue, comment, câu trả lời group) và test chống lệch với renderer. Không đổi quy tắc nghiệp vụ. |
 | v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Chỉ cập nhật nội dung cũ bằng Reply đã xác minh của chính nhóm; incident nhiều biểu hiện, chống tạo bug từ cảm thán/nhầm ảnh lịch sử, kiểm lại partition rủi ro trước side effect; kiểm thử và rollout phải có bằng chứng riêng. |

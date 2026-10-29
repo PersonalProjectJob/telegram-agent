@@ -4,6 +4,7 @@ import re
 import unicodedata
 import html
 from dataclasses import dataclass
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from .models import Classification, IncomingMessage, TICKET_TYPES, canonical_category, immutable_details
 from .ticket_templates import active
@@ -136,6 +137,55 @@ def line_safe(value: str) -> str:
     return "\n".join(lines)
 
 
+def source_links(case_messages) -> list[str]:
+    """Render validated links from source messages in time order."""
+    lines, seen = [], set()
+    for item in sorted(case_messages, key=lambda msg: (msg.received_at, msg.message_id)):
+        for match in re.finditer(r"https?://[^\s<>\"'`]+", item.text or "", re.IGNORECASE):
+            url = match.group()
+            while url:
+                if url[-1] in ".,;:!?":
+                    url = url[:-1]
+                elif url[-1] in _CLOSERS and url.count(url[-1]) > url.count(_CLOSERS[url[-1]]):
+                    url = url[:-1]
+                else:
+                    break
+            try:
+                parts = urlsplit(url)
+                host = parts.hostname
+                if (len(url) > 2000 or parts.scheme.lower() not in ("http", "https")
+                        or not host or parts.username is not None or parts.password is not None):
+                    continue
+                host = host.encode('idna').decode('ascii')
+                authority = parts.netloc
+                if not parts.hostname.isascii():
+                    suffix = authority[authority.rfind(':'):] if ':' in authority else ''
+                    authority = host + suffix
+                    url_target = urlunsplit((parts.scheme, authority, parts.path, parts.query, parts.fragment))
+                else:
+                    url_target = url
+                target = quote(url_target, safe="!#$%&*+,-./:;=?@^_{|}~")
+            except (ValueError, UnicodeError):
+                continue
+            key = (parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment)
+            if key in seen:
+                continue
+            seen.add(key)
+            authority = parts.netloc
+            if authority.startswith('['):
+                display_host = '[' + host + ']' + authority.partition(']')[2]
+            else:
+                display_host = host + (':' + authority.rpartition(':')[2] if ':' in authority else '')
+            display = display_host + parts.path + ("?" + parts.query if parts.query else "") + ("#" + parts.fragment if parts.fragment else "")
+            if len(display) > 80:
+                display = display[:79] + "…"
+            display = line_safe(sanitize(display, inline=True))
+            lines.append(f"- 🔗 [{display}]({target})")
+            if len(lines) == 10:
+                return lines
+    return lines
+
+
 def _quote(text: str, limit: int) -> str:
     clean = redact(sanitize(text))   # before the cut, so a cut cannot leave half an address
     quoted = "\n".join("> " + line_safe(line) for line in clean[:limit].split("\n"))
@@ -235,7 +285,7 @@ def _evidence_text(*parts):
     return "\n\n".join(part for part in parts if part)
 
 
-def _template_values(category, details, media, notes):
+def _template_values(category, details, media, notes, links_from_source):
     source = dict(immutable_details(details))
     template = active()
     def text(key):
@@ -250,7 +300,7 @@ def _template_values(category, details, media, notes):
     if category == 'bug':
         values = {key: text(key) for key in ('environment', 'expected', 'actual')}
         values['steps'] = items('steps')
-        values['evidence'] = _evidence_text(text('error_text'), *media)
+        values['evidence'] = _evidence_text(text('error_text'), *media, links_from_source)
         values['notes'] = notes if '\n'.join(notes) else []
         if not values['environment']: questions.append(question('environment'))
         if not values['steps']: questions.append(question('steps'))
@@ -259,7 +309,7 @@ def _template_values(category, details, media, notes):
     elif category == 'feedback':
         values = {key: text(key) for key in ('problem', 'user_story', 'proposal', 'alternatives')}
         values['acceptance'] = items('acceptance')
-        values['context'] = _evidence_text(text('context'), *media, '\n'.join(notes))
+        values['context'] = _evidence_text(text('context'), *media, '\n'.join(notes), links_from_source)
         if not values['problem']: questions.append(question('problem'))
         if not values['user_story']: questions.append(question('user_story'))
     else:
@@ -267,7 +317,7 @@ def _template_values(category, details, media, notes):
         values['reason'] = text('reason_context')
         values['done'] = items('done')
         links = '\n'.join('- ' + line for line in items('links'))
-        values['task_evidence'] = _evidence_text(*media, '\n'.join(notes), links)
+        values['task_evidence'] = _evidence_text(*media, '\n'.join(notes), links, links_from_source)
         if not values['work']: questions.append(question('work'))
     return values, questions
 
@@ -387,12 +437,13 @@ def format_issue(message: IncomingMessage, classification: Classification | None
             f"- 📎 [{document_label(name, active().render('_common.md', 'document.fallback_label', {'index': str(index)}))}]({url})"
             for index, (name, url) in enumerate(documents, 1)))
     clean_notes = [" ".join(note.split()) for note in notes]
+    links_from_source = "\n".join(source_links(case_messages))
     category = canonical_category(classification.type) if typed else None
     template_name = 'needs-human.md'
     values = {}
     if details is not None and category in ("bug", "feedback", "task"):
         template_name = category + '.md'
-        values, auto_questions = _template_values(category, details, media, clean_notes)
+        values, auto_questions = _template_values(category, details, media, clean_notes, links_from_source)
         media, clean_notes = [], []
         questions = []
         seen = set()
@@ -409,7 +460,7 @@ def format_issue(message: IncomingMessage, classification: Classification | None
         questions = questions[:MAX_CLARIFY]
         if not questions and needs_human and clarify is not None:
             questions = [active().render('_common.md', 'fallback.needs_clarity')]
-    extra_evidence = _evidence_text(*media, "\n".join(clean_notes))
+    extra_evidence = _evidence_text(*media, "\n".join(clean_notes), links_from_source)
     if template_name == 'needs-human.md':
         values['evidence'] = extra_evidence
     original = active().render('_common.md', 'original', {'count': str(len(case_messages)),
