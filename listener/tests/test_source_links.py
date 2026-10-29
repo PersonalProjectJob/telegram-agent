@@ -8,6 +8,15 @@ from tests.test_template_golden import outputs
 
 
 class SourceLinksTests(unittest.TestCase):
+    def test_ipv6_brackets_only_remain_in_authority(self):
+        lines = source_links([message(text='https://[::1]:8080/p[x]?q=[y]#f[z]')])
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].endswith('(https://[::1]:8080/p%5Bx%5D?q=%5By%5D#f%5Bz%5D)'))
+
+    def test_idna_and_punycode_hosts_deduplicate(self):
+        lines = source_links([message(text='https://bücher.example/p https://xn--bcher-kva.example/p')])
+        self.assertEqual(lines, ['- 🔗 [xn--bcher-kva.example/p](https://xn--bcher-kva.example/p)'])
+
     def test_issue_82(self):
         first = message(843, text='https://bitcoinnailbar.com/#gallery @SotaThao  sao những hình Nail trước đó em không mang qua bên nầy', chat_id=-5264814171)
         second = message(844, text='Đã nhận', chat_id=-5264814171)

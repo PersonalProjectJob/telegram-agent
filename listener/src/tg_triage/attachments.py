@@ -5,7 +5,7 @@ the file is never opened, unpacked or executed, and its content never decides an
 
 Images are downloaded through an injected `downloader`, validated, uploaded to a
 per-case GitHub release through an injected `uploader`, and embedded by code as
-Markdown. Nothing here imports Telethon. Log lines carry counts and exception class
+Markdown. Nothing here imports Telethon. Log lines carry counts, message IDs and exception class
 names only: never file names, URLs, message text or tokens.
 """
 
@@ -179,6 +179,8 @@ class AttachmentResult:
     attempted: int = 0                           # images found on candidate messages
     documents: list = field(default_factory=list)  # [(sender's file name or None, url)] (12.14)
     documents_dry_run: int = 0                   # documents that passed validation in dry-run
+    image_skips: list = field(default_factory=list)  # (chat_id, message_id, reason)
+    image_failures: list = field(default_factory=list)  # (chat_id, message_id, exception class)
 
 
 class AttachmentProcessor:
@@ -208,9 +210,11 @@ class AttachmentProcessor:
             if prepared is None:
                 accepted = self._download(case_key, candidates, directory, result) if candidates else []
             else:
-                ids = {m.message_id for m in candidates}
-                accepted = [(m, p) for m, p in prepared.accepted if m.message_id in ids]
-                result.notes.extend(prepared.result.notes)
+                ids = {(m.chat_id, m.message_id) for m in candidates}
+                accepted = [(m, p) for m, p in prepared.accepted if (m.chat_id, m.message_id) in ids]
+                result.image_skips = [item for item in prepared.result.image_skips if item[:2] in ids]
+                result.image_failures = [item for item in prepared.result.image_failures if item[:2] in ids]
+                result.notes.extend(self._image_notes(result.image_skips, result.image_failures))
             accepted_documents = (self._download_documents(documents, directory, result)
                                   if documents else [])
             if not live:
@@ -232,16 +236,19 @@ class AttachmentProcessor:
         limits = self.settings
         skipped = {"vượt giới hạn số ảnh": 0, "quá dung lượng cho phép": 0,
                    "sai định dạng (chỉ nhận JPG, PNG, WEBP)": 0, "không tải được": 0}
-        accepted, failure = [], None
+        accepted = []
         for message in candidates:
             if len(accepted) >= limits.max_per_case:
                 skipped["vượt giới hạn số ảnh"] += 1
+                result.image_skips.append((message.chat_id, message.message_id, "vượt giới hạn số ảnh"))
                 continue
             if message.image_size is not None and message.image_size > limits.max_bytes:
                 skipped["quá dung lượng cho phép"] += 1
+                result.image_skips.append((message.chat_id, message.message_id, "quá dung lượng cho phép"))
                 continue
             if message.image_mime is not None and message.image_mime not in ALLOWED_MIME:
                 skipped["sai định dạng (chỉ nhận JPG, PNG, WEBP)"] += 1
+                result.image_skips.append((message.chat_id, message.message_id, "sai định dạng (chỉ nhận JPG, PNG, WEBP)"))
                 continue
             try:
                 if self.downloader is None:
@@ -251,6 +258,7 @@ class AttachmentProcessor:
                 downloaded = self.downloader(message.chat_id, message.message_id, workdir)
                 if downloaded is None:
                     skipped["không tải được"] += 1
+                    result.image_skips.append((message.chat_id, message.message_id, "không tải được"))
                     continue
                 downloaded = Path(downloaded)
                 resolved = downloaded.resolve()
@@ -259,26 +267,47 @@ class AttachmentProcessor:
                     raise AttachmentError("downloaded image outside work directory")
                 if downloaded.stat().st_size > limits.max_bytes:
                     skipped["quá dung lượng cho phép"] += 1
+                    result.image_skips.append((message.chat_id, message.message_id, "quá dung lượng cho phép"))
                     continue
                 extension = sniff_extension(downloaded)
                 if extension is None:
                     skipped["sai định dạng (chỉ nhận JPG, PNG, WEBP)"] += 1
+                    result.image_skips.append((message.chat_id, message.message_id, "sai định dạng (chỉ nhận JPG, PNG, WEBP)"))
                     continue
                 final = directory / asset_name(message.message_id, len(accepted) + 1, extension)
                 os.replace(downloaded, final)
             except Exception as error:
-                failure = failure or type(error).__name__
+                result.image_failures.append((message.chat_id, message.message_id, type(error).__name__))
                 LOG.warning("Attachment download failed message_id=%s exception=%s",
                             message.message_id, type(error).__name__)
                 skipped["không tải được"] += 1
+                result.image_skips.append((message.chat_id, message.message_id, "không tải được"))
                 continue
             accepted.append((message, final))
-        if failure:
-            result.notes.append(f"Ảnh đính kèm không tải được: {failure}")
-        for reason, count in skipped.items():
-            if count and not (reason == "không tải được" and failure):
-                result.notes.append(f"Ảnh bị bỏ qua ({count} ảnh): {reason}")
+        def ids(items):
+            return ",".join(f"{chat}:{message}" for chat, message in items[:20])
+
+        LOG.info("Images found=%s accepted=%s skipped_limit=%s skipped_size=%s skipped_type=%s "
+                 "failed=%s accepted_ids=%s skipped_ids=%s", len(candidates), len(accepted),
+                 skipped["vượt giới hạn số ảnh"], skipped["quá dung lượng cho phép"],
+                 skipped["sai định dạng (chỉ nhận JPG, PNG, WEBP)"], skipped["không tải được"],
+                 ids([(m.chat_id, m.message_id) for m, _ in accepted]),
+                 ids([(chat, message) for chat, message, _ in result.image_skips]))
+        result.notes.extend(self._image_notes(result.image_skips, result.image_failures))
         return accepted
+
+    @staticmethod
+    def _image_notes(skips, failures):
+        reasons = ("vượt giới hạn số ảnh", "quá dung lượng cho phép",
+                   "sai định dạng (chỉ nhận JPG, PNG, WEBP)", "không tải được")
+        notes = []
+        if failures:
+            notes.append(f"Ảnh đính kèm không tải được: {failures[0][2]}")
+        for reason in reasons:
+            count = sum(item[2] == reason for item in skips)
+            if count and not (reason == "không tải được" and failures):
+                notes.append(f"Ảnh bị bỏ qua ({count} ảnh): {reason}")
+        return notes
 
     def _upload(self, case_key, accepted, result, state=None):
         tag = release_tag(case_key)
