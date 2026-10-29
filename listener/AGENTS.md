@@ -2,6 +2,18 @@
 
 Owner quy trình/data/state: **AlexChu**. Executor (Codex, Gemini/Antigravity, Claude…) chỉ là runtime tạm thời. File này chỉ dẫn đường cho việc đọc/sửa listener và log GitHub ticket; không phải nguồn quy tắc thứ hai, không thay quyền hoặc quy trình harness của repo. Runtime không load file này.
 
+## Nguyên tắc nền (Owner, 2026-10-29)
+
+Mọi quyết định của bot phải dựa trên **file markdown cụ thể với trạng thái liệt kê cụ thể**, không dựa hoàn toàn vào model. Model chỉ trích dữ kiện; code áp quy tắc. Ba lớp file, mỗi lớp một việc:
+
+| Thư mục | Quyết định gì | Bot đọc lúc chạy? |
+|---|---|---|
+| [`rules/`](rules/README.md) | **Làm gì**: tạo ticket / hỏi / bỏ qua (bắt đầu từ README: quy tắc nạp rules vào bot và model) | Sẽ đọc khi file chuyển ACTIVE (hiện DRAFT) |
+| `templates/github-ticket/` ([hướng dẫn](../Docs/templates/github-ticket/README.md)) | **Nói gì, trình bày ra sao**: form ticket, comment, câu reply (TG-33) | Có |
+| `prompts/` (vd [autonomous.md](prompts/autonomous.md)) | **Model trích dữ kiện thế nào** | Có |
+
+Khi sửa hành vi: tìm đúng file quy tắc/template trước; không thêm quyết định mới vào prompt hay vào code nếu nó thuộc về `rules/`. Thiết kế đích và thứ tự làm: [Kế hoạch](../Docs/04-tasks/telegram-triage-noissue_tasks_261029_v1.0.0.md) §0; sequence: [tài liệu luồng](../Docs/01-product/telegram-triage-noissue_business-flow_261028_v1.0.0.md).
+
 ## Đọc trước khi xử lý
 
 0. [Overview và bàn giao](../Docs/00-master/telegram-triage-noissue_overview_261027_v1.0.0.md) (phạm vi, thuật ngữ, quy trình theo loại việc) và [Rulebook](../Docs/01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md) (rule MUST/MUST NOT, bảng quyết định, ví dụ chuẩn). Agent yếu: chỉ làm điều Rulebook cho phép rõ ràng, còn lại dừng và hỏi Owner.
@@ -13,8 +25,12 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 
 ## Khi phân loại và log ticket
 
-- Chỉ log bug/task/feedback đủ rõ, không cần tag; `feature` gộp vào feedback (TG-07, TG-08). Chat, cảm ơn, câu hỏi thông tin, `/question` không log (TG-09).
-- Thiếu đối tượng/hành vi/ý định thật sự: giữ pending, hỏi đúng điểm thiếu, không hỏi lại dữ kiện đã có trong ảnh/caption. Thiếu device/log/bước tái hiện không chặn việc log; không bịa môi trường hay nguyên nhân (TG-08, TG-12).
+- **"Đủ rõ" — tạo ticket hay hỏi** (TG-07, TG-08, TG-09, TG-12): tra bảng, không tự suy diễn.
+  - Trạng thái được phép: [`rules/states.md`](rules/states.md) (`READY`, `NEED_INFO`, `MEDIA_ONLY`, `CHAT`).
+  - Dữ kiện cần có và khi nào một trường được tính là CÓ: [`rules/facts.md`](rules/facts.md).
+  - Quyết định: bảng R1–R8 và danh sách thứ không bao giờ chặn việc tạo ticket trong [`rules/readiness.md`](rules/readiness.md).
+  - Hỏi gì khi thiếu, theo thứ tự nào: [`rules/questions.md`](rules/questions.md). Ca mẫu đối chiếu: [`rules/examples.md`](rules/examples.md).
+  - Khi các file `rules/` còn `DRAFT`, bot chạy thật vẫn theo hành vi hiện tại (model trả `actionable`/`confidence`); bảng trong `rules/` là đích đã duyệt hướng, dùng để đánh giá và soạn ticket tay.
 - Gom/tách theo ngữ nghĩa và Reply thật; không gộp vì cùng sender, thời gian hay từ khóa. Ảnh, caption, reply phân tích chung một gói (TG-05, TG-06, TG-15).
 - Ticket đã có: open thì bổ sung; closed thì theo bảng **Vòng đời ticket** và **Ticket đã đóng**. Không tự reopen/đóng, không tạo trùng.
 - Repo, URL, nhãn, permission do config/code quyết định; model hoặc agent không tự chọn (TG-17, TG-31).
@@ -34,6 +50,7 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 
 - Đổi semantics phải cập nhật Business DOCS cùng lượt. Chạy `python scripts/check-telegram-triage-policy.py` và `python scripts/test_telegram_triage_policy.py` từ repo root; hash khớp không chứng minh đúng nghĩa.
 - Mẫu ticket/notice đóng gói trong `listener/templates/github-ticket/`; sửa qua PR và release, chạy test, `check-config` và so sánh fingerprint (TG-33).
+- **Đổi quy tắc quyết định** (`rules/`): theo [`rules/README.md`](rules/README.md) §8 — tăng `version` trong header, thêm/sửa ví dụ trong `examples.md` cho mọi luật bị đổi, chạy test + tự kiểm, cập nhật Business DOCS; chỉ chuyển `DRAFT → ACTIVE` khi Owner duyệt và không còn bảng **CHỜ OWNER CHỐT**. Không đưa quyết định vào prompt hay code nếu nó thuộc về `rules/`; model chỉ nhận phần §5 của `rules/README.md`.
 - Không replay tin cũ, không tạo issue/notice thật để kiểm thử: dùng dry-run, fake tools và smoke script trong README (TG-32).
 - Offline PASS không chứng minh installed/live PASS; deploy THINKPAD cần evidence release, installed tests và service readback riêng.
 
