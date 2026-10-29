@@ -1,8 +1,8 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.7.1 · **Updated**: 2026-10-16 16:22 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.12.0 · **Updated**: 2026-10-21 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
-**Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
+**Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ. Chỉ tạo ticket thật trong kiểm thử khi user đã yêu cầu rõ, như luồng đọc hai file và tạo ticket; không tự tạo việc giả.
 
 ## Quyền và cách sử dụng
 
@@ -48,7 +48,7 @@ Một đợt gom có thể chứa nhiều chủ đề. Nhiều pending case đ�
 
 Ví dụ: “Login đúng pass mà không login được” rồi bổ sung ảnh màn hình Sign in có lỗi “Invalid username or password” phải giữ chung context login, ghi nhận hành vi bị từ chối; không suy rằng đã xác minh mật khẩu hoặc nguyên nhân lỗi. Câu “Sao tính tiền” xen giữa cần suy luận riêng, không tự gộp vào login chỉ vì cùng tác giả/thời gian. Không hỏi lại đối tượng/hành vi đã có trong ảnh/caption. Ảnh ví dụ có thông tin đăng nhập thật không được dùng làm fixture hoặc gửi cloud để test; dùng dữ liệu giả.
 
-Khi provider/schema/packet thất bại, chỉ một thông báo kỹ thuật ở source đầu của chu kỳ lỗi theo chat; các batch đến muộn/restart trong cùng chu kỳ không gửi lại. Một lượt phân loại mới đã được host validate đóng chu kỳ, lần lỗi sau có thể báo chu kỳ mới. Cache replay không tự chứng minh phục hồi. Trong batch, giữ riêng kế toán từng nguồn/case chưa phân loại, không giả lập một topic chung và không hỏi chung cho từng ảnh/tin. Reservation câu hỏi được lưu trước gửi; reserved/failed/unknown outcome không tự resend. Đã có câu hỏi cùng pending topic thì không lặp vì chỉ có thêm thời gian hoặc ảnh.
+Khi provider/schema/packet thất bại, mỗi batch mới có tối đa một thông báo kỹ thuật tại `host_batch_notice_anchor` bền vững do host chọn. Chu kỳ lỗi theo chat còn mở không được chặn phản hồi của batch mới; `autonomous_outages` vẫn chỉ là telemetry, không phải quan hệ topic hay quyền nhập lại các pending case. Cùng anchor gặp duplicate/restart hoặc reserved/failed/unknown delivery không tự gửi lại. Trong batch, giữ riêng kế toán từng nguồn/case chưa phân loại, không giả lập một topic chung và không hỏi riêng từng ảnh/tin. Thông báo kỹ thuật chỉ xác nhận đã lưu tin và chưa tạo được ticket vì lỗi phân tích; không yêu cầu mô tả lại/chọn số hay hứa retry nền chưa có. Một lượt phân loại mới đã được host validate đóng chu kỳ; cache replay không tự chứng minh phục hồi. Reservation câu hỏi được lưu trước gửi. Câu hỏi ngữ nghĩa của cùng pending topic vẫn không lặp vì chỉ có thêm thời gian hoặc ảnh.
 
 ### Ngân sách context và truy vết
 
@@ -80,6 +80,7 @@ Context có giới hạn để kiểm soát latency/chi phí. Khi chưa tìm đ�
 | Reply ticket mở cùng phạm vi | Bổ sung bằng chứng; cập nhật canonical body khi guard hợp lệ | Link ticket hiện có, không tạo trùng |
 | Reply ticket cũ nhưng yêu cầu mới khác phạm vi | Tạo ticket riêng khi đủ rõ, gắn liên quan target đã chứng minh | Reply nguồn yêu cầu mới |
 | Không chắc thuộc chủ đề nào | Hỏi ánh xạ source/phạm vi | Không gộp theo adjacency/sender |
+| Yêu cầu phân tích/liệt kê vấn đề từ context | ANALYZE | Trả nhận định có bằng chứng và giới hạn; không tạo/sửa issue |
 | Thông tin/cảm ơn/chào hỏi | CHAT | Không tạo issue |
 
 ### Vòng đời ticket
@@ -179,9 +180,9 @@ Case user xác nhận ngày 2026-10-16: ảnh `COMMON_VALIDATION_ERROR` + “Ki�
 
 ### TG-06 — Đóng và chia topic
 
-Ở đường legacy, đóng theo thời gian idle, command hoặc đầy case. Ở đường autonomous, model trả partition NEW/CONTINUE/CLARIFY/CHAT cùng readiness và canonical draft trong lượt ingress; khi ảnh mới không reply bị đề xuất chia nhiều nhóm, phải có bước kiểm lại ngữ nghĩa kể cả không có candidate lịch sử trước khi lưu plan hoặc tạo issue. Bước kiểm nằm trong cùng ngân sách tối đa hai model calls/40s, vẫn kiểm schema/partition/candidate; thất bại giữ pending và thông báo technical một lần, không dùng plan chưa kiểm để ghi. Host kiểm opaque candidate, quyền Reply của chính nhóm, confidence, repository và partition; cached plan/recovery cũng phải kiểm lại quyền Reply, không dùng plan cũ để vượt quy tắc mới; mỗi source ID phải được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
+Ở đường legacy, đóng theo thời gian idle, command hoặc đầy case. Ở đường autonomous, model trả partition NEW/CONTINUE/CLARIFY/CHAT/ANALYZE cùng readiness và canonical draft trong lượt ingress; khi ảnh mới không reply bị đề xuất chia nhiều nhóm, phải kiểm lại ngữ nghĩa kể cả không có candidate lịch sử trước khi lưu plan hoặc tạo issue. Host kiểm nguồn/target của bản đầu trước bước kiểm này. Model kiểm định nhận đủ bản nháp canonical không đáng tin cùng nguồn/pixel hiện tại, chỉ trả `reviews[{group_index,verdict}]` với từng index đúng một lần và verdict `approve/context/reject`. `approve` giữ nguyên bản nháp, nguồn, task và quyền đã được kiểm; `context` chỉ hạ toàn nhóm thành CHAT trung tính, không gửi lời hỏi hay giữ nội dung lỗi suy diễn của bản nháp. Một `reject`, đầu ra sai/thiếu coverage hoặc packet bắt buộc không vừa budget làm toàn batch pending, không ghi một phần các nhóm được chấp thuận. Bước kiểm không viết lại nội dung, thêm nguồn/target, nâng quyền hoặc gộp nhóm; phân nhóm đầu sai phải bị từ chối thay vì sửa ngầm. Luồng thường/tài liệu ngắn giữ hai model calls/40s; tiền xử lý tài liệu dài dùng ngân sách hữu hạn do host tính ở TG-14, không cấp thêm retry/fallback ngoài ngân sách chung. Thất bại báo technical một lần theo batch, không dùng plan chưa kiểm để ghi. Host kiểm lại toàn bộ kết quả trước lưu plan/POST, gồm opaque candidate, quyền Reply của chính nhóm, confidence, repository và partition; cached plan/recovery cũng kiểm lại quyền Reply, không dùng plan cũ để vượt quy tắc mới; mỗi source ID được hạch toán đúng một lần. Không coi một case luôn bằng một issue.
 
-Default THINKING dùng projection gọn và packing byte-aware: giữ mọi ID, reply edge, sender/media/pixel flags; chia đều ngân sách cho trích đoạn text, đánh dấu `text_truncated`. Full source vẫn ở SQLite và quote issue theo source scope. Model không được coi excerpt là toàn bộ phạm vi. Nếu mandatory metadata/schema không vừa, báo technical budget failure; không tự gộp thành topic thật. Custom prompt/legacy renderer được giữ.
+Default THINKING dùng projection gọn và packing byte-aware: giữ mọi ID, reply edge, sender/media/pixel flags; ưu tiên text hiện tại đến trần700 ký tự trước context lịch sử tùy chọn ở mọi lượt gọi, gồm lượt kiểm lại partition và sửa schema, sau đó mới giảm trích đoạn nếu phần bắt buộc vẫn không vừa ngân sách hiện hữu. Đánh dấu `text_truncated`; full source vẫn ở SQLite và quote issue theo source scope. Model không được coi excerpt là toàn bộ phạm vi. Nếu mandatory metadata/schema không vừa, báo technical budget failure; không tự gộp thành topic thật. Custom prompt/legacy renderer được giữ.
 
 Default THINKING gửi một USER context packet duy nhất: text JSON chứa caption, mọi source/reply và `images_order` ánh xạ index ảnh bắt đầu từ0 tới source ID; cùng USER chứa pixel được phép gửi của nguồn mới và candidate exact-reply cần thiết. Pixel mới được ưu tiên tải trước; candidate lịch sử không có Reply xác minh không được đưa vào packet có quyền cập nhật. Vẫn giữ source/ledger lịch sử trong database để debug; với nguồn giữ lại trong packet, bảo toàn text/ID/provenance và đánh dấu pixel không được cung cấp để model không suy diễn ảnh cũ thành ảnh mới. Cloud dùng text + image_url parts trong một USER; local dùng content + images trong một USER. Retry/fallback giữ cùng gói, không phân tích ảnh bằng call riêng rồi ghép kết quả.
 
@@ -191,15 +192,35 @@ Model đề xuất bug/task/feedback/chat; feature được chuẩn hóa thành 
 
 ### TG-08 — Yêu cầu không cần tag
 
-Công việc đủ rõ/actionable và confidence đạt ngưỡng tạo issue dù không tag. Yêu cầu thiếu/không chắc hoặc output không dùng được: autonomous giữ pending và hỏi trong group, không tạo issue đoán phạm vi; legacy chuyển needs_human, tạo ticket theo dõi và hỏi. Chat vẫn là chat; ngoại lệ ảnh đơn lẻ xem TG-15.
+Công việc đủ rõ/actionable và confidence đạt ngưỡng tạo issue dù không tag. Yêu cầu thiếu essential thật sự: autonomous giữ pending và hỏi một câu trọng tâm trong group, không tạo issue đoán phạm vi. Output kỹ thuật không dùng được: giữ pending và báo ngắn theo batch ở TG-12, không bắt người dùng mô tả lại. Legacy chuyển needs_human, tạo ticket theo dõi và hỏi. Chat vẫn là chat; ngoại lệ ảnh đơn lẻ xem TG-15.
 
 Ghi nhận bug không cần specification/debug report hoàn chỉnh. Module/control/setting đã xác định, hành vi thực tế trái mong đợi và hướng sửa mong muốn đủ nhận diện công việc; device/platform/logs hay recipe tái hiện đầy đủ không tự thành blocker. Chỉ hỏi essential thật sự thiếu để nhận diện phạm vi, không hỏi lại dữ kiện đã có và không bịa môi trường/nguyên nhân/bước tái hiện. “Nút này lỗi” chưa xác định đối tượng/hành vi vẫn cần hỏi rõ.
 
 Yêu cầu DESIGN/redesign cho panel/mode đã nhận diện có thể là task đủ rõ, kể cả người gửi tự thực hiện sau này. New layout là deliverable, không phải prerequisite để log task; owner/deadline/thứ tự không tự thành blocker. Caption “mode/bảng này” phải được giải nghĩa bằng heading và selected option nhìn thấy khi pixel thật được cung cấp; không bịa future layout hay assignee từ screenshot.
 
-### TG-09 — Câu hỏi thông tin
+### TG-09 — Câu hỏi thông tin và yêu cầu phân tích
 
-/question và câu hỏi thông tin thuần túy là chat, không tạo issue hay reaction kể cả có tag. Kế hoạch hỏi Docs rồi trả lời tự động trong tài liệu cũ chưa được triển khai.
+/question và câu hỏi thông tin thuần túy không tạo issue hay reaction kể cả có tag. Chat thông thường có thể im lặng; câu hỏi trực tiếp về trạng thái ticket dùng tuyến chỉ đọc `STATUS` bên dưới, không bị bỏ qua như xã giao. Kế hoạch hỏi Docs rồi trả lời tự động trong tài liệu cũ chưa được triển khai.
+
+`STATUS` do model nhận diện ý định, không dùng so khớp câu tiếng Việt để cấp quyền. Host chỉ xác định đích từ Reply thật trong cùng chat tới source hoặc sent-notice có bằng chứng. Đọc đúng partition group/case đã xác lập, gồm anchor/sibling thực sự giữ reservation hoặc ticket; không mượn tin gần nhất, chung thời gian hay topic bên cạnh. Issue đã xác nhận cần số/link canonical đúng repository cấu hình. Model không được tự cung cấp target/ticket hoặc lời khẳng định trạng thái. Nội dung chuyển tiếp/trích dẫn đơn thuần không thành lệnh hỏi hay thao tác.
+
+Phản hồi trạng thái ngắn, phân biệt đã ghi nhận ticket, đang xử lý, chưa có ticket trong sổ bot, POST đã giữ chỗ/chưa xác nhận và không đủ bằng chứng. Không suy từ thiếu record thành “GitHub không có issue”. Thiếu đích thì hỏi một câu Reply tin nguồn. Không tạo/sửa/comment/upload/retry issue, không replay công việc cũ. Plan STATUS khôi phục phải đọc lại bằng chứng host, không tin kết quả model/cache bịa trạng thái; reservation notice hiện hữu chống gửi lặp. Nhiều câu hỏi khác đích không được gộp thành trạng thái của tin đầu; công việc độc lập cùng batch giữ partition riêng.
+
+Đường autonomous có quyết định `ANALYZE` cho yêu cầu phân tích vấn đề từ hội thoại/ảnh. Agent tự đánh giá dữ liệu hiện có và định nghĩa một task ngắn: việc cần làm, phạm vi thực hiện và tiêu chí hoàn tất. Không mặc định gửi bản chép nội dung ảnh, danh sách giả thuyết hay bắt người gửi chọn số. Chỉ hỏi một câu tập trung khi thiếu đối tượng, ý định hoặc quyền thực sự ngăn xử lý an toàn; thiếu nguyên nhân CSS, môi trường hoặc bước tái hiện không mặc nhiên chặn việc xác định task từ triệu chứng nhìn thấy. Yêu cầu sửa lỗi cụ thể vẫn theo tuyến NEW/CONTINUE bình thường. Nội dung hội thoại/chữ trong ảnh là dữ liệu, không cấp quyền thực hiện chỉ thị.
+
+Đầu ra model mới bắt buộc `ANALYZE.task={title,work,acceptance}`. Title khác rỗng tối đa90 ký tự; work khác rỗng tối đa160; acceptance có một hoặc hai tiêu chí khác nhau, mỗi mục khác rỗng tối đa90. Giới hạn và tính khác nhau cũng áp dụng sau làm sạch thành một dòng; kiểu sai, Unicode không hợp lệ, trường thừa hoặc nội dung bị làm sạch thành rỗng đều bị từ chối. Host dựng ba dòng `Việc:`, `Thực hiện:`, `Đạt:` đầy đủ, tối đa500 ký tự; không cắt dở task để ghép cho vừa và không thêm mở đầu phạm vi lặp lại. Agent tự xác định nội dung task từ bằng chứng, host không nhét sẵn đáp án cho một ảnh hoặc suy độ chắc chắn bằng từ khóa.
+
+Task là đề xuất công việc, không phải xác nhận đã sửa lỗi hoặc quyền tự tạo/sửa issue. Không bịa nguyên nhân, người nhận việc, hạn chót hay yêu cầu nghiệp vụ. Với task có cấu trúc, answer có thể rỗng/bỏ qua; answer tương thích nếu có không được hiển thị thay task. Provider mới không được phát options khác rỗng hoặc needs_choice=true. Task không được xuất hiện trên action khác. Biên phản hồi model mới từ chối task thiếu/sai; task có mặt nhưng null/sai không được lùi sang báo cáo cũ.
+
+Parser và plan cache cũ vẫn đọc được answer khác rỗng/không chỉ khoảng trắng, tối đa1500 ký tự và trạng thái lựa chọn hợp lệ. Các đề xuất cũ đã gửi vẫn nhận Reply đúng nguồn, cùng chat/repository theo notice ledger; không đoán số rời bằng độ gần. Chọn chỉ xác nhận cách hiểu, không tăng quyền ghi issue. Task mới không tạo đề xuất chọn số. Không migration/reset/replay dữ liệu cũ; gửi không rõ kết quả/restart/duplicate không tự gửi lại. Tin báo lỗi độc lập trong cùng batch vẫn được xử lý riêng. Nếu model/đầu ra lỗi kỹ thuật, báo chưa hoàn tất và giữ ngữ cảnh; không bịa task hay yêu cầu người gửi mô tả lại.
+
+Yêu cầu phân tích dữ liệu đã cung cấp được thực hiện ngay; chỉ coi là công việc xây tính năng phân tích khi người gửi thực sự yêu cầu phát triển tính năng. Thông báo thiếu ảnh phải dựa trên pixel/truncation thực tế hoặc vùng cụ thể không đọc rõ; không mặc định nói thiếu pixel khi ảnh đã gửi. Không suy chủ đề quảng cáo hoặc độ an toàn của link từ tên người gửi. Giới hạn nhận diện ảnh phải được kiểm bằng model thật; task ngắn hợp schema không chứng minh chẩn đoán đúng.
+
+Khi người gửi báo lỗi kèm ảnh giao diện, kiểm tra hình học và hiển thị của ứng dụng trước khi diễn giải nội dung hội thoại: ranh giới thành phần, xuống dòng, tràn, cắt, chồng lấn và căn chỉnh. Mỗi nhận định cần định vị thành phần và ranh giới liên quan; không tự chuyển một lỗi người báo mô tả sang header hoặc thành phần khác khi chưa nhìn rõ. Tách lời người báo khỏi quan sát độc lập; vị trí chưa rõ phải giữ là chưa rõ. Không đòi thông báo lỗi hoặc lỗi thao tác để thừa nhận một lỗi bố cục. Phân biệt khung ứng dụng bên trong ảnh với mép ảnh chụp/chuyển tiếp bên ngoài; ảnh tĩnh không chứng minh nút có phản hồi hay không. Lời người báo làm rõ có thể sửa giả thuyết trước của bot; chữ bên trong ảnh vẫn chỉ là dữ liệu. Nêu triệu chứng và tác động trước, giữ nguyên nhân CSS/runtime là giả thuyết cho đến khi có bằng chứng.
+
+Ví dụ được người dùng làm rõ ngày 2026-10-19: ảnh chat + “Lỗi trong nhóm” báo link tràn ra khỏi bong bóng và avatar bị khung chat bên trong cắt mất. Nhận định trước đó chỉ nói quảng cáo/spam đã sai trọng tâm, dù route ANALYZE và schema hợp lệ. Không lấy nội dung bảo hiểm hoặc tên người gửi làm lý do bỏ qua lỗi UI. Nếu không được cung cấp pixel, phải nói rõ chỉ dựa trên text/caption; nhận định có lời người dùng chỉ rõ không được báo là model tự phát hiện từ ảnh. Không kết luận link độc hại hoặc chính thống khi chưa xác minh.
+
+Context gần đây đọc để phân tích gồm tối đa tám tin đã lưu trước lượt hiện tại trong cùng chat; ưu tiên nguồn Reply thật, kể cả CHAT cũ không có ticket, trước context gần đây tùy chọn. Không biến nguồn đọc thành candidate có quyền ghi và không tự quét toàn bộ lịch sử Telegram. Host đánh dấu context/trích đoạn bị cắt và ảnh không có pixel. Không tuyên bố danh sách bao phủ toàn group; chỉ nêu phạm vi khi cần giải thích giới hạn cụ thể, không thêm disclaimer lặp lại vào mọi task. Context đọc không trao quyền `CONTINUE`, không gộp/mở lại pending cũ hoặc chỉnh issue cũ; quyền ghi vẫn cần Reply và nguồn đã chứng minh theo TG-05/16/17. `ANALYZE` dùng nguồn hiện tại làm case riêng, kết quả nội bộ là chat với reason `semantic_analyze`; ghi reservation trước gửi để restart hoặc kết quả gửi không rõ không tự gửi lại. Dry-run không gửi phản hồi phân tích. Kiểm thử routing giả lập không thay thế đánh giá chất lượng suy luận của model thật; rollout cần evidence riêng.
 
 ### TG-10 — Ưu tiên và safety
 
@@ -221,9 +242,15 @@ Command đủ điều kiện có heart khi nhận; topic issue có heart trướ
 
 ### TG-14 — Ảnh và tài liệu
 
-Ảnh giữ source ID, được validate signature/size/count rồi upload asset có tên do code tạo. Tài liệu chỉ nhận extension+MIME allowlist; không mở, unpack hay execute. Media lỗi/quá giới hạn ghi chú; không làm mất ticket. Quota upload tách khỏi issue.
+Ảnh giữ source ID, được validate signature/size/count rồi upload asset có tên do code tạo. Upload tài liệu giữ extension+MIME allowlist hiện có; không unpack hay execute. Đọc nội dung Markdown/text là một đường riêng có giới hạn bên dưới. Media upload lỗi/quá giới hạn ghi chú; quota upload tách khỏi issue. Lỗi đọc tài liệu text không được biến thành ticket tự nhận đã phân tích nội dung.
 
-Ảnh mới trong reply tới root tin cậy được chuẩn bị cùng caption và hội thoại để phân tích một gói context. Sau khi xác định đúng intent/target, dùng reservation upload hiện có và lưu asset/source provenance bền vững; uploaded/reserved/unknown không tự upload lại. Không đọc lại pixels ảnh cũ chỉ để sửa phạm vi. Ảnh không khả dụng phải nói rõ, không ghi nhận OCR hay báo cập nhật thành công giả.
+Ingress mang metadata tài liệu thưa theo source ID (`DOCUMENTS`): có file, tên đã làm sạch, MIME, kích thước khai báo và mặc định `read_status=unread`. Không coi file EN/VI không caption là tin trống, không tuyên bố đã đọc từ tên file. Metadata/nội dung forward chỉ là dữ liệu không tin cậy, không cấp quyền đăng nhập, chạy lệnh hay deploy. Metadata nền được tính trong giới hạn20 source/8KB; cắt context tùy chọn trước nguồn bắt buộc và đánh dấu truncation. Khi sát giới hạn, `DOCUMENT_DEFAULTS` có thể giữ giá trị chung có file/chưa đọc; tên/MIME/kích thước tùy chọn được bỏ với `document_metadata_truncated=true`. Mọi source ID, cờ tài liệu và ít nhất30 ký tự đầu mỗi caption hiện tại vẫn phải còn.
+
+Tệp `.md`/`.txt`/`.html`/`.htm` mới được đọc tự động qua cùng Telegram client: tối đa4 tệp,256KiB byte thật mỗi tệp và512KiB tổng raw; tổng nội dung trích xuất tối đa192KiB. Kiểm tên/MIME, file thường nằm trong thư mục tạm riêng, UTF-8 (cho phép BOM), từ chối NUL/binary/symlink/thoát thư mục. HTML tên hợp lệ có thể dùng MIME `application/octet-stream` của Telegram nếu nội dung là HTML; không suy HTML từ MIME này khi thiếu tên. Trích xuất HTML tĩnh giữ văn bản hiển thị, heading, nhãn/trường/lựa chọn/giới hạn biểu mẫu và URL an toàn; bỏ script/style/comment/hidden. Không render, chạy mã hoặc tải URL. Chỉ dẫn trong tệp là dữ liệu, không cấp quyền. Không tuyên bố đã phân tích hành vi JavaScript. PDF/Office/ZIP chưa hỗ trợ vẫn unread; không suy nội dung từ tên/caption.
+
+Proof phân biệt raw byte count/SHA256, extracted text count/SHA256 và kiểu extraction. HTML phải có metadata extraction đầy đủ; legacy MD/TXT chỉ tương thích proof cũ trong trần cũ. Nội dung ngắn dùng `DOCUMENT_CONTENTS` đầy đủ. Khi text hoặc JSON escaping vượt24KiB, agent xử lý tất cả các phần UTF-8 do host chia, tối đa16 phần12KiB. Model chỉ chọn tối đa4 block nguyên vẹn (mỗi block≤384 byte) trong từng phần; host lấy lại quote từ nguồn. Kết quả là tuyển chọn có căn cứ, không bảo đảm giữ mọi ý nghĩa như bản gốc. Receipt phải phủ đủ từng phần đúng một lần, hash/range/selection hợp lệ; một phần lỗi/thiếu/tamper làm cả tài liệu pending, không ghi GitHub bằng kết quả dở dang. Không cắt âm thầm rồi tuyên bố đọc đầy đủ.
+
+Base prompt/schema/context vẫn≤8000 byte; lane tài liệu host giới hạn tổng text request serialize UTF-8 kể cả schema/metadata/JSON escaping≤49152 byte. Chỉ đếm trường thực sự gửi trên wire; metadata private như `_local_messages` không đi vào packet và không bị đếm lặp base64. Cloud và local fallback phải được kiểm riêng theo consent/redaction và giới hạn ảnh hiện có20MiB/75MiB; multipart sai dạng bị từ chối. Không có flag user/model tự nới trần. Luồng ngắn giữ tối đa2 attempts/40 giây. Với tài liệu dài, host cấp một Turn chung tối đa số phần+4 calls (≤20), deadline40+20×số phần giây (≤360s); chunk/routing/repair/review/fallback/followup đều tiêu cùng ngân sách, không reset theo phần. Lỗi đọc/quá trần/hết budget phải có reason cụ thể, không gán `provider_unavailable` khi chưa gọi provider và không yêu cầu mô tả lại tài liệu. Persist read/processing proof trước tác động GitHub; cache/resume kiểm lại proof và reservation. Không lưu raw file text vào log chung.
 
 ### TG-15 — Vision và ảnh thiếu ngữ cảnh
 
@@ -243,7 +270,7 @@ Trước model và trước resume write, issue URL gốc phải canonical khớ
 
 ### TG-18 — Bổ sung và intent
 
-Intent được kiểm tra là update/split/clarify/chat. Update thông thường append comment đã sanitize vào issue/ordinal tin cậy. Update kèm case_analysis hợp lệ có thể dựng lại cùng ticket bằng `format_issue` khi chỉ có một target/root không tách và có managed snapshot do lần tạo thành công hoặc recovery đã đối chiếu ghi nhận. Nội dung mới giữ facts đã cung cấp và media/source đã chứng minh, cho phép sửa giả thuyết cũ; model không chọn repo/issue/URL hay cấp quyền nguồn. Role IDs của enrichment chỉ thuộc đúng packet đã cung cấp, gồm reply hiện tại; quyền split vẫn giới hạn originals/bindings đã kiểm. Chat/cảm ơn không ghi GitHub; thiếu intent/target thì hỏi rõ.
+Với update tài liệu hiện tại, task phải có work và done không rỗng theo contract renderer, kể cả khi parse mới hoặc resume cache. Không đặt tiêu chí vào acceptance/context alias bị bỏ khi render; chỉ cho giá trị rỗng để xóa giả thuyết cũ. Yêu cầu và tài liệu hiện tại ưu tiên hơn bản nháp MODEL_HYPOTHESIS chưa được người dùng xác nhận; thay hoặc xóa rõ trường sai, giữ sự kiện người dùng đã chứng minh. Chi tiết triển khai chưa chốt không tự thành câu hỏi chặn ghi nhận yêu cầu rõ. Lỗi đọc/model/budget trong luồng tài liệu giữ context và thông báo kỹ thuật ngắn, không hỏi số ticket. Tài liệu hiện tại của chính job CONTINUE phải được đọc và đưa vào `analyze_followup`, cùng source IDs và proof riêng; giữ proof trong plan/operation trước upload/PATCH/comment và kiểm lại khi resume. Không chỉ đọc tài liệu ở ingress rồi bỏ khỏi bước cập nhật. Intent được kiểm tra là update/split/clarify/chat. Update thông thường append comment đã sanitize vào issue/ordinal tin cậy. Update kèm case_analysis hợp lệ có thể dựng lại cùng ticket bằng `format_issue` khi chỉ có một target/root không tách và có managed snapshot do lần tạo thành công hoặc recovery đã đối chiếu ghi nhận. Nội dung mới giữ facts đã cung cấp và media/source đã chứng minh, cho phép sửa giả thuyết cũ; model không chọn repo/issue/URL hay cấp quyền nguồn. Role IDs của enrichment chỉ thuộc đúng packet đã cung cấp, gồm reply hiện tại; quyền split vẫn giới hạn originals/bindings đã kiểm. Chat/cảm ơn không ghi GitHub; thiếu intent/target thì hỏi rõ.
 
 Refresh reserve trong operation ledger trước ghi, GET kiểm repo/issue/source marker + SHA body + title + tập nhãn triage sở hữu so với snapshot, PATCH đúng issue rồi đọc lại xác minh. Nội dung/title/nhãn sở hữu đã bị sửa thì dừng, giữ sửa đổi đó; nhãn ngoài triage được giữ nguyên. Đây là preflight best-effort, **không phải remote atomic CAS**: sửa tay đồng thời giữa GET và PATCH vẫn có race. PATCH chưa gửi mà hết budget là known-not-sent; sau khi đã gửi nhưng chưa xác minh thì ambiguous và không tự retry. Legacy root chưa có snapshot không tự nhận body hiện tại làm baseline, chỉ comment evidence/hỏi rõ. Không tạo ticket thay thế khi enrichment thất bại.
 
@@ -307,7 +334,9 @@ Khi THINKING bật, hosted trả `invalid_json` hoặc output không qua parser 
 
 DeepSeek non-thinking request gửi `temperature: 0` để giữ ý định sampling tập trung đã đặt ở classifier; trước đó hosted adapter bỏ sót nên server dùng mặc định riêng. Không đổi threshold hay tự coi sampling bằng không là đảm bảo đúng. Các provider khác giữ wire contract cũ; giới hạn semantics vẫn theo code validation. [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/).
 
-Khi THINKING bật, một lượt dùng chung tối đa hai model attempts thực sự, gồm retry/fallback; lock wait không tiêu attempt. Deadline ngữ nghĩa 40 giây tính cả queue/DNS/TCP/TLS/response, mỗi request tối đa 20 giây còn lại. Tối đa sáu batch đọc context có scope trong autonomous (legacy ba); text envelope tối đa 8000 byte UTF-8 bảo thủ cho cả prompt, không hứa đếm token ảnh. Source-role hẹp tối đa 512 output tokens; draft topic/followup giữ output cấu hình. Hết budget giữ xác nhận và fallback hỏi rõ; không cấp quyền retry POST. Attachment/GitHub/Telegram vẫn có timeout riêng: 40 giây không phải SLA kết thúc toàn bộ ticket/reply.
+Khi THINKING bật, một lượt thường/tài liệu ngắn dùng chung tối đa hai model attempts thực sự, gồm retry/fallback; tài liệu dài dùng Turn hữu hạn do host tính ở TG-14; lock wait không tiêu attempt. Deadline ngữ nghĩa 40 giây tính cả queue/DNS/TCP/TLS/response, mỗi request tối đa 20 giây còn lại. Tối đa sáu batch đọc context có scope trong autonomous (legacy ba); base text envelope tối đa 8000 byte UTF-8 bảo thủ cho cả prompt; chỉ supplement tài liệu text đã được host đọc đầy đủ ở TG-14 có trần tổng49152 byte, không hứa đếm token ảnh. Source-role hẹp tối đa 512 output tokens; draft topic/followup giữ output cấu hình. Hết budget giữ context và báo lỗi kỹ thuật ngắn; không cấp quyền retry POST. Attachment/GitHub/Telegram vẫn có timeout riêng: 40 giây không phải SLA kết thúc toàn bộ ticket/reply.
+
+Ingress mới có kết quả không hợp lệ chỉ lưu tối đa8 metadata lỗi do host tạo: mã lỗi cố định, đường dẫn trường cho phép, kiểu enum và độ dài có trần; không lưu tên khóa lạ, giá trị, nội dung tài liệu hay reasoning. Phân biệt task không được phép trên action khác ANALYZE với task bắt buộc bị thiếu hoặc sai trường/cap của ANALYZE mới; parser/cache legacy vẫn tương thích, không strip field lỗi để nhận đầu ra sai. NEW chỉ có sáu trường route chuẩn, việc làm/tiêu chí nằm trong `analysis.details.work/done`; ANALYZE mới có `task` riêng và không tự cấp quyền ghi ticket. Lượt gọi thứ hai sẵn có được nhận tối đa600 byte UTF-8 hướng dẫn sửa từ metadata này, tính trong base8000 byte và giới hạn tài liệu/ảnh không đổi. Ưu tiên text nguồn hiện tại đến trần700 ký tự đang có trước context lịch sử tùy chọn/metadata tài liệu cũ; nếu phần bắt buộc vẫn vượt8KB thì đóng gói theo floor hiện hữu và đánh dấu truncation. Không bỏ source ID hiện tại, ảnh hiện tại/bắt buộc hoặc nội dung đầy đủ của file text hiện tại. Cloud dùng cùng redactor trên text đầy đủ trước khi lấy excerpt, tránh cắt giữa thông tin liên hệ rồi mới redact; không mở whitelist contact hoặc đổi consent/local policy. Kết quả sửa vẫn qua cùng kiểm tra nguồn, task và quyền; không có lượt gọi thứ ba, quota fallback bổ sung hay ghi lại plan cache đã xử lý.
 
 ### TG-31 — Quyền write và sanitization
 
@@ -338,7 +367,7 @@ User yêu cầu bắt đầu nâng cấp ngày 2026-10-16. Lịch sử foundatio
 
 Một USER packet chứa đồng thời caption, pixel, sources, reply edges và candidate context. Các tin mới cùng thuộc một ticket được đưa vào một followup job nguyên tử qua `followup_job_sources`, phân tích chung một lần; reply tin đầu batch. NEW dùng luôn draft ingress đã kiểm, không gọi phân loại lần nữa. CLARIFY có candidate giữ đúng root và câu hỏi; câu trả lời ngắn phải đọc lại câu hỏi đang chờ. CLARIFY chưa có target giữ pending context và hỏi trong group, không tạo ticket đoán phạm vi.
 
-`autonomous_routes` là lịch sử quyết định bất biến; `autonomous_plans` cache plan và host repository trước side effect. Replay kiểm lại repository và đầy đủ source, không gọi model mới hay tự POST lại outcome không rõ. `autonomous_confirmations` lưu xác nhận thành công sau câu hỏi trước đó, reply đúng nguồn và ánh xạ bot notice về source. Một lượt dùng chung tối đa hai model attempts/40 giây và sáu bounded reads (legacy ba); hết ngân sách hoặc packet không vừa phải hỏi rõ có lưu vết. Candidate search có giới hạn, không phải semantic search toàn bộ hội thoại; exact reply tra durable provenance không phụ thuộc tuổi tin.
+`autonomous_routes` là lịch sử quyết định bất biến; `autonomous_plans` cache plan và host repository trước side effect. Replay kiểm lại repository và đầy đủ source, không gọi model mới hay tự POST lại outcome không rõ. `autonomous_confirmations` lưu xác nhận thành công sau câu hỏi trước đó, reply đúng nguồn và ánh xạ bot notice về source. Một lượt thường dùng chung tối đa hai model attempts/40 giây và sáu bounded reads (legacy ba); tiền xử lý tài liệu dài theo ngân sách chung hữu hạn TG-14; hết ngân sách hoặc packet không vừa phải giữ pending và báo lý do kỹ thuật có lưu vết. Candidate search có giới hạn, không phải semantic search toàn bộ hội thoại; exact reply tra durable provenance không phụ thuộc tuổi tin.
 
 ### Topic memory và trace foundation
 
@@ -628,6 +657,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/pacing.py",
           "symbol": "ChatCollector.release_due"
+        },
+        {
+          "path": "listener/src/tg_triage/ingress_model.py",
+          "symbol": "parse_critic"
         }
       ],
       "tests": [
@@ -661,11 +694,59 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         },
         {
           "path": "listener/tests/test_incident_context.py",
-          "symbol": "IncidentContextTests.test_review_replaces_wrong_four_way_split_before_any_tool_effect"
+          "symbol": "IncidentContextTests.test_critic_rejects_wrong_four_way_split_without_rewriting_or_tool_effect"
         },
         {
           "path": "listener/tests/test_incident_context.py",
           "symbol": "IncidentContextTests.test_invalid_review_fails_closed_before_plans_and_one_technical_notice"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_current_full_shared_footer_scope_precedes_optional_history_and_document_metadata"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_semantic_review_keeps_current_footer_scope_and_pixel_attribution_under_history_pressure"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_parser_rejects_missing_duplicate_foreign_or_malformed_group_indices"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_approve_preserves_first_canonical_groups_and_task_without_regeneration"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_context_lowers_whole_group_to_fixed_silent_chat_and_keeps_other_group_exact"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_context_downgrade_produces_no_telegram_reply_or_github_effect"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_reject_atomically_blocks_all_proposals_before_plans_or_external_effects"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_invalid_first_partition_cannot_be_rewritten_by_critic_into_valid_authority"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_full_untrusted_canonical_proposals_are_user_data_not_system_instructions"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_unfittable_full_proposals_fail_closed_without_truncating_or_partial_execution"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_critic_cannot_reset_shared_deadline_or_acquire_third_call"
+        },
+        {
+          "path": "listener/tests/test_ingress_critic_contract.py",
+          "symbol": "IngressCriticContractTests.test_approved_unknown_post_is_not_created_again_or_recriticized_after_restart"
         }
       ],
       "prompts": [
@@ -724,6 +805,46 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/pipeline.py",
           "symbol": "Pipeline._safety"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomous.py",
+          "symbol": "_analyze"
+        },
+        {
+          "path": "listener/src/tg_triage/autonomy_store.py",
+          "symbol": "AutonomyStoreMixin.autonomous_read_context"
+        },
+        {
+          "path": "listener/src/tg_triage/group_notices.py",
+          "symbol": "analysis_text"
+        },
+        {
+          "path": "listener/src/tg_triage/analysis_choices.py",
+          "symbol": "selection_group"
+        },
+        {
+          "path": "listener/src/tg_triage/analysis_choices.py",
+          "symbol": "render"
+        },
+        {
+          "path": "listener/src/tg_triage/analysis_task.py",
+          "symbol": "projection"
+        },
+        {
+          "path": "listener/src/tg_triage/analysis_task.py",
+          "symbol": "valid_payload"
+        },
+        {
+          "path": "listener/src/tg_triage/analysis_task.py",
+          "symbol": "render"
+        },
+        {
+          "path": "listener/src/tg_triage/ticket_status.py",
+          "symbol": "resolve"
+        },
+        {
+          "path": "listener/src/tg_triage/ticket_status.py",
+          "symbol": "render"
         }
       ],
       "tests": [
@@ -734,7 +855,126 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_direct_call.py",
           "symbol": "CategoryMappingTests.test_a_model_question_is_chat_even_with_a_tag_and_gets_no_reaction"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_explicit_moderation_request_gets_assessment_before_optional_specifics"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_recent_context_never_exposes_other_chat_or_future_time"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_cached_case_sweep_recovers_report_without_provider_or_github_write"
+        },
+        {
+          "path": "listener/tests/test_analysis_model_regression.py",
+          "symbol": "HostedAnalysisRegressionTests.test_captured_empty_answer_remains_invalid"
+        },
+        {
+          "path": "listener/tests/test_analysis_model_regression.py",
+          "symbol": "HostedAnalysisRegressionTests.test_structured_schema_requires_task"
+        },
+        {
+          "path": "listener/tests/test_analysis_model_regression.py",
+          "symbol": "HostedAnalysisRegressionTests.test_scope_prefix_never_asserts_unavailable_pixels"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_supplied_ui_task_delivers_symptoms_without_asserting_css_root_cause"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_plain_user_correction_reaches_model_and_can_replace_prior_bot_hypothesis"
+        },
+        {
+          "path": "listener/tests/test_analysis_reply_contract.py",
+          "symbol": "AnalysisReplyContractTests.test_untrusted_screenshot_transcript_cannot_turn_ui_analysis_into_github_write"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_explicit_needs_choice_boolean_must_match_options_cardinality"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_embedded_newline_cannot_inject_a_new_numbered_choice"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_single_selection_binds_sent_notice_or_original_without_model_or_mutation"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_mixed_backlog_selection_consumes_only_reply_and_preserves_new_bug"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_crash_after_selection_ack_reservation_never_replays_send"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_fresh_provider_requires_task_while_legacy_parser_remains_compatible"
+        },
+        {
+          "path": "listener/tests/test_analysis_choices_contract.py",
+          "symbol": "AnalysisChoicesContractTests.test_current_provider_schema_requires_task_but_parser_keeps_legacy_choices"
+        },
+        {
+          "path": "listener/tests/test_analysis_task_contract.py",
+          "symbol": "AnalysisTaskContractTests.test_valid_task_publishes_three_complete_lines_without_legacy_prose"
+        },
+        {
+          "path": "listener/tests/test_analysis_task_contract.py",
+          "symbol": "AnalysisTaskContractTests.test_present_bad_task_cannot_fall_back_to_valid_legacy_answer"
+        },
+        {
+          "path": "listener/tests/test_analysis_task_contract.py",
+          "symbol": "AnalysisTaskContractTests.test_fresh_legacy_analysis_is_rejected_but_default_parser_accepts_it"
+        },
+        {
+          "path": "listener/tests/test_analysis_task_contract.py",
+          "symbol": "AnalysisTaskContractTests.test_task_notice_is_not_an_implicit_numeric_selection_offer"
+        },
+        {
+          "path": "listener/tests/test_analysis_task_contract.py",
+          "symbol": "AnalysisTaskContractTests.test_cached_task_after_case_creation_recovers_complete_notice_without_model"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_status_for_old_chat_no_ticket_gets_truthful_host_response"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_group_nonanchor_resolves_real_anchor_issue"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_reserved_post_without_confirmed_issue_is_ambiguous_not_replayed"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_no_ticket_source_does_not_borrow_adjacent_confirmed_ticket"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_document_only_en_vi_are_exposed_as_unread_metadata_not_empty_sources"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_twenty_document_sources_fit_8kb_without_losing_ids_or_presence"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_cached_status_re_resolves_live_ledger_instead_of_replaying_old_state"
+        },
+        {
+          "path": "listener/tests/test_status_reply_contract.py",
+          "symbol": "StatusReplyContractTests.test_mixed_status_and_new_bug_keep_disjoint_effects"
         }
+      ],
+      "prompts": [
+        "listener/prompts/autonomous.md"
       ]
     },
     {
@@ -819,6 +1059,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_conversation_context.py",
           "symbol": "ConversationContextTests.test_duplicate_question_after_restart_is_suppressed_sources_accounted"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_new_batch_gets_one_notice_despite_old_open_outage_and_preserves_old_plan"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_technical_notice_is_short_truthful_and_does_not_delegate_again"
         }
       ]
     },
@@ -855,6 +1103,34 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/followup_store.py",
           "symbol": "FollowupStoreMixin.record_followup_evidence"
+        },
+        {
+          "path": "listener/src/tg_triage/document_reader.py",
+          "symbol": "read_documents"
+        },
+        {
+          "path": "listener/src/tg_triage/document_reader.py",
+          "symbol": "valid_proof"
+        },
+        {
+          "path": "listener/src/tg_triage/document_reader.py",
+          "symbol": "request_fits"
+        },
+        {
+          "path": "listener/src/tg_triage/document_reader.py",
+          "symbol": "valid_task_details"
+        },
+        {
+          "path": "listener/src/tg_triage/ingress_diagnostics.py",
+          "symbol": "project"
+        },
+        {
+          "path": "listener/src/tg_triage/ingress_model.py",
+          "symbol": "parse_ingress"
+        },
+        {
+          "path": "listener/src/tg_triage/document_processing.py",
+          "symbol": "prepare"
         }
       ],
       "tests": [
@@ -877,6 +1153,42 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_followup_enrichment.py",
           "symbol": "EnrichmentTests.test_upload_error_is_honest_and_no_reupload_after_ledger_exists"
+        },
+        {
+          "path": "listener/tests/test_document_content_contract.py",
+          "symbol": "DocumentContentContractTests.test_two_full_texts_reach_provider_without_losing_base_ids_or_truncation"
+        },
+        {
+          "path": "listener/tests/test_document_content_contract.py",
+          "symbol": "DocumentContentContractTests.test_bilingual_group_creates_one_issue_and_complete_read_proofs_precede_post"
+        },
+        {
+          "path": "listener/tests/test_document_content_contract.py",
+          "symbol": "DocumentContentContractTests.test_failed_current_document_blocks_new_even_with_actionable_caption"
+        },
+        {
+          "path": "listener/tests/test_document_content_contract.py",
+          "symbol": "DocumentContentContractTests.test_duplicate_restart_and_ambiguous_post_do_not_create_again"
+        },
+        {
+          "path": "listener/tests/test_document_repair_contract.py",
+          "symbol": "DocumentRepairContractTests.test_invalid_then_valid_repair_keeps_full_documents_ids_and_all_caps"
+        },
+        {
+          "path": "listener/tests/test_document_repair_contract.py",
+          "symbol": "DocumentRepairContractTests.test_diagnostic_telemetry_and_trace_do_not_persist_model_prose"
+        },
+        {
+          "path": "listener/tests/test_document_repair_contract.py",
+          "symbol": "DocumentRepairContractTests.test_two_invalid_outputs_are_two_attempts_without_fallback_bonus"
+        },
+        {
+          "path": "listener/tests/test_html_long_document_contract.py",
+          "symbol": "HtmlLongDocumentContractTests.test_long_document_parts_cover_utf8_bytes_once_without_gaps_or_overlap"
+        },
+        {
+          "path": "listener/tests/test_html_document_processing.py",
+          "symbol": "HTMLDocumentProcessingTests.test_wire_budget_ignores_private_fallback_and_never_serializes_it"
         }
       ]
     },
@@ -1025,6 +1337,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_lifecycle.py",
           "symbol": "LifecycleTests.test_reply_old_parent_cannot_repeat_same_episode_but_fresh_success_can_create_next"
+        },
+        {
+          "path": "listener/tests/test_html_long_document_contract.py",
+          "symbol": "HtmlLongDocumentContractTests.test_continue_html_facts_and_read_proof_precede_real_fake_github_comment"
         }
       ],
       "prompts": [
@@ -1253,7 +1569,19 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         },
         {
           "path": "listener/tests/test_conversation_context.py",
-          "symbol": "ConversationContextTests.test_technical_outage_late_batch_restart_deduplicates_without_merging"
+          "symbol": "ConversationContextTests.test_technical_outage_late_batch_restart_notifies_new_anchor_without_merging"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_same_failed_batch_duplicate_and_restart_never_resends_or_reclassifies"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_crash_after_notice_reservation_is_not_resent_but_new_anchor_can_notify"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_ambiguous_send_is_terminal_for_same_anchor_but_not_other_batch"
         }
       ]
     },
@@ -1468,6 +1796,30 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_ingress_packing.py",
           "symbol": "IngressPackingTests.test_realistic_three_historical_roots_do_not_starve_new_login"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_fresh_missing_analyze_task_has_required_task_diagnostic_while_legacy_stays_valid"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_new_forbidden_task_has_fixed_field_diagnostic_without_raw_task_prose"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_precise_task_scalar_required_and_type_diagnostics"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_unknown_task_key_and_reasoning_are_never_reflected_in_diagnostics"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_cloud_redacts_complete_source_before_700_character_excerpt_and_repair"
+        },
+        {
+          "path": "listener/tests/test_no_response_contract.py",
+          "symbol": "NoResponseContractTests.test_local_source_view_keeps_existing_redaction_policy"
         }
       ]
     },
@@ -1563,44 +1915,50 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     }
   ],
   "runtime_inventory": {
-    "listener/prompts/autonomous.md": "f855b093267dc41800a950af4633156117de48de58ea341cad76e31301f26543",
-    "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
-    "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
-    "listener/prompts/followup.md": "136e9d24a0df2a50f7161db9176cb1fcf2e7d568973112548a799ff6697e40e3",
-    "listener/prompts/thinking-topics.md": "f3295f8cdf8d3707d8844ffe61c2eeca0efc1763a0f9879c86b375c1a8b15a58",
-    "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8",
-    "listener/src/tg_triage/__init__.py": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
-    "listener/src/tg_triage/__main__.py": "3b2d70fc3e169fb04be69227778441cafc9bc2dcb75cf6db2bacc88eda68759e",
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
-    "listener/src/tg_triage/attachments.py": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
-    "listener/src/tg_triage/autonomous.py": "15b639e1936a16096f3db7b2dc93ea3ee13f67eba0124994daa47bc50a6b5448",
-    "listener/src/tg_triage/autonomy_store.py": "6bfca3a6338c73018aecc4f0318a719de7d8f7a5341e03affac9b622cf4d601e",
-    "listener/src/tg_triage/classifier.py": "8284a17be87f5dc883c1e870c80eebb156ec9f2913216bbbc4e086244f3feb0f",
+    "listener/src/tg_triage/analysis_choices.py": "596f09a18aef815a1ec8e8a8af79535d55a32ddbe9bd6bffea3b0cbde0aadda1",
+    "listener/src/tg_triage/analysis_task.py": "b2aada4998ce3c2c43d04a43025ed5ad72455db34c1694c2225b7af6aba954b5",
+    "listener/src/tg_triage/attachments.py": "16773726cb5b10a3c3d185eb186577984a9be66b8b6982359f4f00148ae6a66e",
+    "listener/src/tg_triage/autonomous.py": "4e1e95f3c58729bfad3a659c74f29f2dd7b7283188087fb8ba1984453999f890",
+    "listener/src/tg_triage/autonomy_store.py": "3ef24df0f53891152dfffd004c8901d43261343781a1282521064f320d1b483a",
+    "listener/src/tg_triage/classifier.py": "860dae897cbf50e110d9761e29272e1e0d7ee2a2b65c681f7ed7637d4f9362a3",
     "listener/src/tg_triage/config.py": "42e3af7cdce5282937cd7b879e676f02cebba088062de24ada1f4e58224120ec",
+    "listener/src/tg_triage/document_processing.py": "c2ee264bacb8145116156305cfafef22472ec72f0ad9a4bbb309153c76599abe",
+    "listener/src/tg_triage/document_reader.py": "163595000162d5fa1c162538d997c449d2913934e03f104fb79603e778b0cd1f",
+    "listener/src/tg_triage/followups.py": "466845732d4ce40e0799bfa67eab54a1707416a11363434ce2b106d2b1452c2c",
     "listener/src/tg_triage/followup_model.py": "898ae428bc0e5101550665853ed66dbfa0a8324fcc2ba4df18f4ab33d513d934",
     "listener/src/tg_triage/followup_store.py": "d793ce24c46e7385adaf4022e671ff4300757ef30ea584c149e440e42f360c48",
-    "listener/src/tg_triage/followups.py": "f906e2b65dab07fcda3a44a24ec6fe477989f651588de52fb9cbe0aeefa5b4ea",
     "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
-    "listener/src/tg_triage/group_notices.py": "9223144438704e49573a740bde8d85cbd76df755298fc8df60b8af0036a86f95",
-    "listener/src/tg_triage/ingress_model.py": "15368c1c94839f782424df2281e552e3a574151fec648ca4e4e46773cc819634",
+    "listener/src/tg_triage/group_notices.py": "baa1013cc3fc69c4f42063406bf239a9df0818cd632e08cffac70d7e61443668",
+    "listener/src/tg_triage/ingress_diagnostics.py": "f61db228b7b23e4357c47ec38b3fc915cfa0e9ec2a1eec26071abd897bb4f82a",
+    "listener/src/tg_triage/ingress_model.py": "489f3005ecd639f30cef3cb2acb3edc732b08f63921384eab408ed687fb59c96",
     "listener/src/tg_triage/issue_format.py": "04b274fc419a57bb0e4e59636303c8762ec0c295d9029130b85ebb6e7936c3d5",
     "listener/src/tg_triage/lifecycle.py": "e39f3e70ab2a9e9c774d9419636b23ae31f09b53b2be6daf919774bfcd319a85",
-    "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
+    "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/pacing.py": "6d104e30d9b51883dfb27d56ad107089e93a42e88c085ae72e03c0f06af0793e",
-    "listener/src/tg_triage/pipeline.py": "4009f41b5626d33498533a087ba4cd1d7cb513c7e9e0dfcbd93e744aca0c04c4",
-    "listener/src/tg_triage/provider.py": "b72f72d305d738fe183fac3a81a3141b3cdca8bffe88bc181ae04535d2a25f1a",
+    "listener/src/tg_triage/pipeline.py": "b6c6ce0ef2a061223beb697219a1d69d7b36051bcb6e26f121f6c11876d89b38",
+    "listener/src/tg_triage/provider.py": "b1e3e280829bf3729996cab5c425e58e82cf2c6cad16e95e67a3bbaae8a34b7e",
     "listener/src/tg_triage/reactions.py": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
     "listener/src/tg_triage/receipt.py": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
     "listener/src/tg_triage/rules.py": "93778eef5df2abe88ae4424179ec509595cd6dcf14d5d94ddb70d5852454bccd",
     "listener/src/tg_triage/runtime.py": "558a876aa86f2e2c7be8d54587ea9510e0762686bbf2a3a8dd9742db596b1862",
     "listener/src/tg_triage/store.py": "713a7ccde19d75f78f4ce81b6e101de5754d10a5185a9b23b2213b8aa24e44cd",
-    "listener/src/tg_triage/telegram_io.py": "9b4b9760c4490b706238b7984a9051c1546cbe1c094de3e6731023e2e7059260",
-    "listener/src/tg_triage/thinking.py": "afde97097555430904f754331d23d752174ae732ee1c3fabca618c4b4f03f306",
-    "listener/src/tg_triage/thinking_transport.py": "6a8921188e21c8424c445c03b2ff903f941885b5d4b6930306bbffd3842a6d56",
+    "listener/src/tg_triage/telegram_io.py": "01be07b3c1aadc79b618cde3728433fff8a3dbdcfaf440ad669b74d398cf106a",
+    "listener/src/tg_triage/thinking.py": "308f7f5814b16b05cff847d38be2b38772c5e65f162f8ab5052bc3012340808e",
+    "listener/src/tg_triage/thinking_transport.py": "12aa57301f012f1091e79af7a3756139c8ac8b475e4c97e4d9b66024932e0d66",
+    "listener/src/tg_triage/ticket_status.py": "0cd6ed74cf653432962da665dcbb51e2b94f4498b3e59bba133410fda7917326",
     "listener/src/tg_triage/topic_store.py": "495bd90150783df45463d86a66dd32927e69fec001f7406808f8496f2466f672",
-    "listener/src/tg_triage/trace.py": "3a887035a58bcede5027a94893a819fa5fd0ba1848fdf610f03d2ea848074307",
-    "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e"
+    "listener/src/tg_triage/trace.py": "3b4c55d7664a8024359c3a35113841c7af76e7770a1823dfe3843d3ea01d2ba0",
+    "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
+    "listener/src/tg_triage/__init__.py": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
+    "listener/src/tg_triage/__main__.py": "3b2d70fc3e169fb04be69227778441cafc9bc2dcb75cf6db2bacc88eda68759e",
+    "listener/prompts/autonomous.md": "9c1f0738ca44265bce8c601dc04694a064d77f2b4ce8d85dd709d97b4b188b22",
+    "listener/prompts/case.md": "2a5f671cd9a9dbfb1316497dc6dfcd07c404a5abd038411bc66b4ccc9e6f190b",
+    "listener/prompts/classify.md": "1af9f58ef64737dfe47e480dd47c047d8c682d7c8b0c573d98fb13cfd469d249",
+    "listener/prompts/followup.md": "136e9d24a0df2a50f7161db9176cb1fcf2e7d568973112548a799ff6697e40e3",
+    "listener/prompts/thinking-topics.md": "f3295f8cdf8d3707d8844ffe61c2eeca0efc1763a0f9879c86b375c1a8b15a58",
+    "listener/prompts/topics.md": "99dca8ee4272cca18bb283d489b709542661694639aad6ec720d63c7a2b47dc8"
   },
   "legacy_documents": [
     "Docs/00-master/worker-agent-fleet-1_brief_261007_v1.0.7.md",
@@ -1616,7 +1974,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
-  "runtime_fingerprint": "0fad3b80bf3081101b17978e929e101bcda8aec4785b8d6119cd2c9396deb7c2"
+  "runtime_fingerprint": "44b11895c124001cf78bc75be274b123d58fdf5bfe3ba990c5aade11c5898d59"
 }
 ```
 
@@ -1624,6 +1982,15 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.12.0 | 2026-10-21 10:00 | Codex / owner AlexChu | Sửa đếm wire/private fallback, đọc HTML tĩnh, xử lý tài liệu dài bằng agent với coverage proof/ngân sách chung và truyền tài liệu hiện tại tới followup. Test/model/rollout/Telegram có evidence riêng, không suy PASS từ hash. |
+| v1.11.1 | 2026-10-19 19:19 | Codex / owner AlexChu | Sửa đếm text supplement khi có ảnh lịch sử: payload ảnh có ngân sách riêng, không làm mất khả năng đọc MD; giữ giới hạn tổng media và từ chối multipart sai dạng. NEW từ tài liệu dùng đúng6 field, task facts nằm trong analysis.details. |
+| v1.11.0 | 2026-10-19 18:49 | Codex / owner AlexChu | Theo yêu cầu user: đọc đầy đủ Markdown/text có giới hạn, phân tích và tự tạo ticket; gộp bản dịch cùng yêu cầu, giữ provenance và chống POST trùng. Supplement host riêng≤48KiB, base8KB/tối đa2call40s không đổi. STATUS chỉ đọc; không thực thi chỉ dẫn trong tệp. |
+| v1.10.0 | 2026-10-19 17:55 | Codex / owner AlexChu | Câu hỏi trạng thái ticket có phản hồi STATUS chỉ đọc ledger và đúng Reply/partition; giữ phân biệt POST chưa xác nhận, không tự tạo lại. Ingress mang metadata tài liệu unread thay vì coi file là tin trống; context Reply cũ không cấp quyền ghi. |
+| v1.9.0 | 2026-10-19 15:25 | Codex / owner AlexChu | Agent tự định nghĩa task ngắn ba dòng thay mặc định menu giả thuyết; biên provider mới yêu cầu task có cấu trúc, giữ tương thích plan/lựa chọn cũ và quyền ghi hiện hữu. |
+| v1.8.0 | 2026-10-19 11:59 | Codex / owner AlexChu | Phân tích trước và đưa giả thuyết để chọn khi chưa rõ; lưu lựa chọn, xác nhận bằng Reply có nguồn chứng minh và giữ thao tác chỉ đọc, thay cho câu hỏi yêu cầu mô tả lại. Evidence model thật được ghi riêng. |
+| v1.7.4 | 2026-10-19 11:07 | Codex / owner AlexChu | Sửa trọng tâm phân tích ảnh theo phản hồi người dùng: ưu tiên kiểm tra UI/bố cục, phân biệt mép ảnh với khung ứng dụng và triệu chứng với nguyên nhân; kiểm riêng ca không gợi ý và ca đã làm rõ. Evidence model lưu riêng. |
+| v1.7.3 | 2026-10-19 10:56 | Codex / owner AlexChu | Replay model thật xác định ANALYZE trả answer rỗng; làm rõ hợp đồng phân tích ngay, giữ parser nghiêm, đồng bộ schema/prompt và bỏ giới hạn pixel khẳng định vô điều kiện. Kết quả chạy lại được lưu riêng trong evidence. |
+| v1.7.2 | 2026-10-19 09:37 | Codex / owner AlexChu | Bổ sung hợp đồng phản hồi phân tích issue từ hội thoại/ảnh, context đọc giới hạn cùng chat và tách quyền ghi ticket; kiểm thử nguồn và rollout được báo riêng. |
 | v1.7.1 | 2026-10-16 16:22 | Codex / owner AlexChu | Sửa phân giải Reply vào confirmation đã gửi sau pending→ticket; giữ edge gốc, từ chối alias sai/vòng, bổ sung regression và đồng bộ reviewed runtime hash. |
 | v1.7.0 | 2026-10-16 15:23 | Codex / owner AlexChu | Chỉ cập nhật nội dung cũ bằng Reply đã xác minh của chính nhóm; incident nhiều biểu hiện, chống tạo bug từ cảm thán/nhầm ảnh lịch sử, kiểm lại partition rủi ro trước side effect; kiểm thử và rollout phải có bằng chứng riêng. |
 | v1.6.0 | 2026-10-16 12:00 | Codex / owner AlexChu | Chat pacing30–60s, context đến muộn, durable chống hỏi lặp và packing ưu tiên đúng nguồn; rollout cần evidence riêng. |

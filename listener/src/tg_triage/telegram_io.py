@@ -267,7 +267,9 @@ def make_media_downloader(client, loop, *, timeout=DOWNLOAD_TIMEOUT_SECONDS):
 
         future = asyncio.run_coroutine_threadsafe(fetch(), loop)
         try:
-            path = future.result(timeout)
+            from .thinking import CURRENT
+            turn=CURRENT.get()
+            path = future.result(min(timeout,turn.remaining()) if turn else timeout)
         except BaseException:
             future.cancel()
             raise

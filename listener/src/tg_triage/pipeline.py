@@ -88,6 +88,7 @@ class Plan:
     fallback: bool = False         # no usable model judgment at all (model down, partition or JSON unusable)
     model_reason: str | None = None   # 12.12: the model's short why; stored for the reviewer only
     details: object = None          # 12.15: optional model fields, only passed to the renderer
+    document_reads: tuple = ()       # host read proofs, never model content or authority
     related_issue_number: int | None = None  # host-proven replied ticket; never a model target
 
 
@@ -421,10 +422,10 @@ class Pipeline:
         return tuple(dict.fromkeys(
             value for value in analysis.key_message_ids if type(value) is int and value in present))
 
-    def _images(self, case_key, messages, *, live):
+    def _images(self, case_key, messages, *, live, document_reads=()):
         try:
             return self.attachments.process(case_key, messages, live=live,
-                                            prepared=self._prepared_images)
+                                            prepared=self._prepared_images,document_reads=document_reads)
         except Exception as error:
             LOG.warning("Attachments failed exception=%s", type(error).__name__)
             return AttachmentResult(notes=[f"Ảnh đính kèm không tải được: {type(error).__name__}"])
@@ -824,7 +825,7 @@ class Pipeline:
             return result
         self._acknowledge(plan)   # ticket / needs_human, live or dry-run, before any issue
         if self.config.mode == "dry-run":
-            found = self._images(plan.key, plan.messages, live=False)
+            found = self._images(plan.key, plan.messages, live=False,document_reads=plan.document_reads)
             result = replace(result, decision="dry_run_" + plan.action, images=found.dry_run_count,
                              documents=found.documents_dry_run)
             self.store.finish(first, result)
@@ -834,7 +835,7 @@ class Pipeline:
             found = AttachmentResult()
             if self.store.count_recent_issues() < self.config.max_issues_per_hour:
                 # Images go first so the issue can embed their URLs (12.8).
-                found = self._images(plan.key, plan.messages, live=True)
+                found = self._images(plan.key, plan.messages, live=True,document_reads=plan.document_reads)
             trusted = (plan.clarify is None or plan.action != "needs_human" or plan.typed)
             issue = format_issue(
                 first, plan.classification if trusted else None, plan.tier,

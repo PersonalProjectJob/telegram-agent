@@ -275,7 +275,8 @@ def _materialize_update(pipeline,job,root,originals,reply,op,payload):
             current_images,current_documents=store.followup_media(root,[incoming],pipeline.config.gh_repo)
         else:
             found=_bounded_attachment_processor(pipeline).process(root['group_key'] or root['case_key'],[incoming],live=True,
-                                               prepared=getattr(pipeline,'_followup_prepared_images',None))
+                                               prepared=getattr(pipeline,'_followup_prepared_images',None),
+                                               document_reads=payload.get('host_document_reads',()))
             current_images,current_documents=found.images,found.documents
         if not current_images and not current_documents:
             note='Em chưa xác nhận được ảnh/tài liệu đã tải lên; nhờ Anh/Chị giữ lại bản gốc và hỗ trợ kiểm tra.'
@@ -343,6 +344,20 @@ def _materialize_update(pipeline,job,root,originals,reply,op,payload):
 def _plan(pipeline,job,root,originals,reply,history):
     tickets=_tickets(root)
     incoming=pipeline.store.followup_job_messages(job)
+    from . import document_reader
+    current_documents=[m for m in incoming if m.has_document]
+    document_contents=[]
+    if current_documents:
+        cached=getattr(pipeline,'_current_document_context',None)
+        available={r['message_id']:r for r in cached[1]} if cached and cached[0]==reply.chat_id else {}
+        missing=[m for m in current_documents if m.message_id not in available]
+        available.update({r['message_id']:r for r in document_reader.read_documents(missing,pipeline.attachments.downloader)})
+        document_contents=[available[m.message_id] for m in current_documents]
+        from .document_processing import prepare
+        document_contents=prepare(document_contents,pipeline.classifier)
+        pipeline._followup_document_reads=document_reader.proof(document_contents)
+        if any(document_reader.text_intent(m) for m in current_documents) and not document_reader.valid_proof(pipeline._followup_document_reads,incoming):
+            return dict(action='clarify',questions=[],technical_notice=document_reader.failure_text(document_contents),context_reason='document_read_failed'),[]
     if not tickets:
         return dict(action='clarify',questions=['Em chưa xác nhận được ticket gốc. Nhờ bạn hoặc Owner kiểm tra kết quả trên GitHub trước khi tạo lại nhé.']),[]
     lifecycle_state=None
@@ -419,6 +434,7 @@ def _plan(pipeline,job,root,originals,reply,history):
                     if row is not None and row['message_id'] not in present and row['issue_number']==tickets[0]:
                         analysis_sources.append(_to_message(row)); present.add(row['message_id'])
             options={}
+            if document_contents:options['document_contents']=document_contents
             pixel_sources=[m for m in incoming if m.has_image]
             if pixel_sources:
                 if not getattr(pipeline.classifier,'supports_vision',False):
@@ -433,8 +449,15 @@ def _plan(pipeline,job,root,originals,reply,history):
     except Exception as error:
         LOG.warning('Followup classifier failed exception=%s',type(error).__name__)
         value=None
+    if (document_contents and value is not None and value.get('case_analysis') is not None
+            and not document_reader.valid_task_details(value['case_analysis'])):
+        value=None
     status=(getattr(pipeline.classifier,'last_followup_outcome','provider_unavailable') if raw is None else 'invalid_output') if value is None else ('uncertain' if value['confidence']<pipeline.config.ollama.confidence_threshold else value['action'])
     LOG.info('Followup analysis job_id=%s status=%s confirmed_bindings=%s',job['id'],status,len(state['bindings']))
+    if value is None and (document_contents or status in ('context_budget_exhausted','document_context_budget_exhausted',
+            'document_processing_failed','decision_deadline_exhausted','model_call_budget_exhausted')):
+        return dict(action='clarify',ack=ack,questions=[],context_reason=status,
+                    technical_notice='Em đã lưu nội dung và các xác nhận trước. Lượt phân tích đang lỗi nên chưa cập nhật được ticket.'),[]
     expected_ids={m.message_id for m in originals}
     roles={r['message_id']:r for r in (value or {}).get('source_roles',[])}
     role_ids=expected_ids
@@ -668,10 +691,15 @@ def _run_inner(pipeline,job):
     if prior:
         plan,ops=dict(action='clarify',questions=['Em cần Owner kiểm tra thao tác GitHub chưa rõ kết quả trước đó trước khi chỉnh tiếp nhé.']),[]
     elif job['plan'] is None:
+        pipeline._followup_document_reads=[]
         plan,ops=_plan(pipeline,job,root,originals,reply,history)
     else:
         plan,ops=json.loads(job['plan']),None
     if job['plan'] is None:
+        if any(m.has_document for m in members):
+            reads=getattr(pipeline,'_followup_document_reads',[])
+            plan=dict(plan,host_document_reads=reads)
+            ops=[(kind,dict(payload,host_document_reads=reads)) for kind,payload in ops]
         if turn:
             state=json.loads(root.get('context_state') or '{}')
             turn.reason=turn.reason or plan.get('context_reason')
@@ -679,11 +707,20 @@ def _run_inner(pipeline,job):
                         hypotheses=[dict(message_id=r['message_id'],role=r['role'],confidence=r['confidence']) for r in plan.get('source_roles',[])],
                         operations=[dict(ordinal=i,kind=k) for i,(k,_) in enumerate(ops)])
         store.save_followup_plan(job,plan,ops)
+    if plan['action'] not in ('clarify','chat'):
+        from . import document_reader
+        if (any(document_reader.text_intent(m) for m in members) and plan.get('case_analysis') is not None
+                and not document_reader.valid_task_details(plan['case_analysis'])):
+            _result(pipeline,job,root,reply,'blocked','Em đã lưu tài liệu nhưng phân tích chưa có công việc và tiêu chí hợp lệ nên chưa cập nhật ticket.',include_links=False)
+            return
+        if any(document_reader.text_intent(m) for m in members) and not document_reader.valid_proof(plan.get('host_document_reads'),members):
+            _result(pipeline,job,root,reply,'blocked','Em chưa có bằng chứng đã đọc đủ tài liệu của lượt này nên chưa cập nhật ticket.',include_links=False)
+            return
     if pipeline.config.mode=='dry-run':
         store.finish_followup(job,'dryrun','Simulated '+plan['action'])
         return
     if plan['action'] in ('clarify','chat'):
-        text=_clarify(plan.get('questions',[])) if plan['action']=='clarify' else 'Em đã nhận phản hồi của Anh/Chị rồi nhé 😊'
+        text=(plan.get('technical_notice') or _clarify(plan.get('questions',[]))) if plan['action']=='clarify' else 'Em đã nhận phản hồi của Anh/Chị rồi nhé 😊'
         if plan.get('ack'):
             text=plan['ack']+'\n'+text
         _result(pipeline,job,root,reply,'done',text,(plan['existing_related'],) if plan.get('existing_related') else ())

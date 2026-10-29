@@ -44,6 +44,10 @@ class ContextJSON(str):
     """Internal serialized context, distinct from arbitrary user-supplied JSON text."""
 
 
+class DocumentContextJSON(ContextJSON):
+    """Host-built full document supplement; never inferred from user JSON text."""
+
+
 COMPACT_DETAILS = '''Optional details: copy supplied facts only; omit unknowns, never invent a spec.
 bug: environment,steps[],expected,actual,error_text. feedback: problem,user_story,proposal,
 alternatives,acceptance[],context. task: work,reason_context,scope_in,scope_out,links[],done[],due.
@@ -127,6 +131,8 @@ class Turn:
         self.started = clock()
         self.deadline = self.started + 40
         self.calls = 0
+        self.max_calls = 2
+        self.document_manifest = None
         self.reads = 0
         if type(max_reads) is not int or not 1 <= max_reads <= 6:
             raise ValueError("Invalid bounded read limit")
@@ -138,9 +144,20 @@ class Turn:
             self.version = previous[0] if previous else 0
         self.prompt_version = None
         self.model = None
+        self.validation_errors=[]
 
     def remaining(self):
         return max(0, self.deadline - self.clock())
+
+    def configure_document_work(self,parts,manifest):
+        """Only the host's complete bounded partition may extend this same turn."""
+        if type(parts) is not int or not 1<=parts<=16 or self.is_set():return False
+        if self.document_manifest is not None:return self.document_manifest==manifest
+        if self.calls:return False
+        self.document_manifest=manifest
+        self.max_calls=parts+4
+        self.deadline=self.started+40+20*parts
+        return True
 
     def is_set(self):
         return self.remaining() <= 0
@@ -153,9 +170,10 @@ class Turn:
         # UTF-8 bytes are a conservative upper bound on text tokens, including the prompt.
         # Pixel/image tokens are provider-specific and explicitly outside this text bound.
         size = request_text_bytes(body)
-        if size > 8000:
+        from .document_reader import request_fits
+        if not request_fits(body):
             self.reason = 'context_budget_exhausted'
-        elif self.calls >= 2:
+        elif self.calls >= self.max_calls:
             self.reason = 'model_call_budget_exhausted'
         elif self.is_set():
             self.reason = 'decision_deadline_exhausted'
@@ -175,6 +193,10 @@ class Turn:
 
     def record(self, intent, confirmed, unresolved=(), conflicts=None, hypotheses=(), operations=(), status='planned', proposed_plan=None):
         # All reasons are application codes; model/user prose and private thinking are excluded.
+        from .ingress_diagnostics import project
+        if intent=='ingress_validation':
+            confirmed={'errors':project(confirmed.get('errors')) if isinstance(confirmed,dict) else []}
+            self.validation_errors=project(self.validation_errors+confirmed['errors'])
         value = dict(schema='triage.decision/v1', harness_owner='AlexChu', root_key=self.root_key,
                      input_message_id=self.input_id, state_version=self.version + 1,
                      policy_version=POLICY_VERSION, intent=intent, confirmed=confirmed,
@@ -183,12 +205,14 @@ class Turn:
                      proposed_plan=proposed_plan,
                      conflicts=conflicts or {}, reason_code=self.reason or intent,
                      reply_to_message_id=self.input_id, operation_refs=list(operations), status=status,
-                     budget=dict(model_calls_used=self.calls, max_model_calls=2, reads_used=self.reads,
+                     budget=dict(model_calls_used=self.calls, max_model_calls=self.max_calls, reads_used=self.reads,
                                  max_reads=self.max_reads, elapsed_ms=int((self.clock()-self.started)*1000)))
         if self.key.startswith('case:'):
             targets = proposed_plan if proposed_plan is not None else confirmed.get('results',[])
             value['reply_to_message_id'] = None
             value['reply_to_message_ids'] = [p['reply_to'] for p in targets]
+        if self.validation_errors:
+            value['validation_errors']=project(self.validation_errors)
         with self.store._lock, self.store.connection:
             previous = self.store.connection.execute('SELECT version FROM thinking_decisions WHERE turn_key=?', (self.key,)).fetchone()
             expected = previous[0] if previous else 0

@@ -36,7 +36,7 @@ DOCUMENT_MIME = {
     "csv": frozenset(("text/csv", "application/csv", "text/x-csv", "application/vnd.ms-excel")),
     "md": frozenset(("text/markdown", "text/x-markdown", "text/x-web-markdown", "text/plain")),
     "json": frozenset(("application/json", "text/json")),
-    "html": frozenset(("text/html",)),
+    "html": frozenset(("text/html", "application/xhtml+xml", "application/octet-stream")),
     "zip": frozenset(("application/zip", "application/x-zip-compressed", "application/x-zip")),
 }
 DOCUMENT_EXTENSIONS = frozenset(DOCUMENT_MIME)
@@ -49,6 +49,7 @@ DENIED_EXTENSIONS = frozenset((
 _MIME_TO_EXTENSION = {mime: extension for extension, mimes in reversed(list(DOCUMENT_MIME.items()))
                       for mime in sorted(mimes)}
 _MIME_TO_EXTENSION["text/plain"] = "txt"
+_MIME_TO_EXTENSION.pop("application/octet-stream",None)  # Opaque MIME alone never identifies HTML.
 _SAFE_URL = re.compile(r"https://[A-Za-z0-9._~/%+-]+")
 
 
@@ -101,6 +102,7 @@ def document_extension(name, mime) -> str | None:
         if any(part.strip() in DENIED_EXTENSIONS for part in parts):
             return None
         name_extension = parts[-1].strip()
+        if name_extension=='htm':name_extension='html'
     if name_extension is not None:
         if name_extension not in DOCUMENT_EXTENSIONS:
             return None
@@ -193,7 +195,7 @@ class AttachmentProcessor:
         """Private, bounded batch shared by vision and upload; caller must close it."""
         return PreparedImages(self, case_key, messages)
 
-    def process(self, case_key, messages, *, live, prepared=None) -> AttachmentResult:
+    def process(self, case_key, messages, *, live, prepared=None, document_reads=()) -> AttachmentResult:
         result = AttachmentResult()
         limits = self.settings
         candidates = [m for m in messages if m.has_image] if limits.max_per_case > 0 else []
@@ -211,7 +213,7 @@ class AttachmentProcessor:
                 ids = {m.message_id for m in candidates}
                 accepted = [(m, p) for m, p in prepared.accepted if m.message_id in ids]
                 result.notes.extend(prepared.result.notes)
-            accepted_documents = (self._download_documents(documents, directory, result)
+            accepted_documents = (self._download_documents(documents, directory, result,document_reads)
                                   if documents else [])
             if not live:
                 result.dry_run_count = len(accepted)
@@ -311,7 +313,7 @@ class AttachmentProcessor:
                         len(accepted), type(error).__name__)
             result.notes.append(f"Ảnh đính kèm không tải được: {type(error).__name__}")
 
-    def _download_documents(self, candidates, directory, result):
+    def _download_documents(self, candidates, directory, result,document_reads=()):
         """Validate each document by name, MIME and size only (12.14); count every refusal by reason.
 
         Nothing here opens, unpacks or executes a file, and nothing logs a file name.
@@ -349,6 +351,13 @@ class AttachmentProcessor:
                 if downloaded.stat().st_size > limits.max_bytes:
                     skipped["size"] += 1
                     continue
+                read=next((r for r in document_reads if r['message_id']==message.message_id and r.get('read_status')=='read'),None)
+                if read is not None:
+                    import hashlib
+                    if downloaded.stat().st_size!=read['byte_count'] or hashlib.sha256(downloaded.read_bytes()).hexdigest()!=read['sha256']:
+                        result.notes.append('Tài liệu tải lại không khớp nội dung đã đọc; tệp này không được đính kèm.')
+                        skipped['failed']+=1
+                        continue
                 final = directory / asset_name(message.message_id, len(accepted) + 1, extension)
                 os.replace(downloaded, final)
             except Exception as error:

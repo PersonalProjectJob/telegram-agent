@@ -29,8 +29,27 @@ def clean_question(value):
     return value[:MAX_QUESTION_CHARS].strip()
 
 
+def clean_analysis(answer):
+    """Sanitize informational prose and choices without a scope prefix."""
+    if not utf8_valid(answer):
+        return ''
+    value='\n'.join(' '.join(line.split()) for line in answer[:6000].splitlines())
+    value=''.join(ch for ch in value if ch=='\n' or not unicodedata.category(ch).startswith('C'))
+    value=redact(value)
+    value=re.sub(r'(?i)(?:https?://|www\.)\S+', '[liên kết đã ẩn]', value)
+    value=re.sub(r'(?i)(?:[a-z][a-z0-9+.-]*://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?)', '[liên kết đã ẩn]', value)
+    value=value.replace('@','＠')
+    return value.strip()
+
+
+def analysis_text(answer):
+    value=clean_analysis(answer)
+    prefix='Em phân tích dựa trên phần tin được cung cấp; không phải toàn bộ lịch sử nhóm.\n'
+    return (prefix+value)[:1500].strip()
+
+
 LEGACY_PENDING_QUESTION="Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?"
-TECHNICAL_CONTEXT_QUESTION="Em chưa phân tích được các tin vừa nhận. Anh/Chị reply tin gốc để chỉ rõ yêu cầu cần xử lý giúp Em nhé."
+TECHNICAL_CONTEXT_QUESTION="Em đã lưu các tin vừa nhận. Lượt phân tích đang lỗi nên chưa tạo được ticket."
 ADDRESS_DEFAULT="Anh/Chị"
 _PROTECTED=re.compile(r'“[^\n]*”|“[^\n]*$|"[^\n]*"|"[^\n]*$|https?://\S+|^>.*$',re.MULTILINE)
 

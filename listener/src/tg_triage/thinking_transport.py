@@ -98,6 +98,8 @@ def complete(provider, base_url, model, messages, schema, *, key='', timeout=20,
         limit=75*1024*1024 if provider=='ollama' else 20*1024*1024 if images else 128*1024
         if len(json.dumps(messages).encode())>limit:
             raise ProviderError('input_too_large')
+        from .document_reader import has_document_context,MAX_REQUEST_BYTES,wire_text_bytes
+        document_request=has_document_context(messages)
         body=dict(model=model,stream=False,messages=messages)
         headers={'Content-Type':'application/json'}
         if provider=='ollama':
@@ -121,8 +123,12 @@ def complete(provider, base_url, model, messages, schema, *, key='', timeout=20,
                     body['temperature']=0
                 body['messages']=[dict(role='system',content='Return JSON matching this schema: '+json.dumps(schema))]+messages
                 path=u.path.rstrip('/')+'/chat/completions'
+            if document_request and wire_text_bytes(body)>MAX_REQUEST_BYTES:
+                raise ProviderError('input_too_large')
             addresses=_addresses(u.hostname,deadline)
             connection=DeadlineHTTPS(u.hostname,addresses[0],deadline)
+        if document_request and wire_text_bytes(body)>MAX_REQUEST_BYTES:
+            raise ProviderError('input_too_large')
         connection.connect()
         sock=connection.sock
         def expire():

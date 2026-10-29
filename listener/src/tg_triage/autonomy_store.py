@@ -36,6 +36,32 @@ class AutonomyStoreMixin:
             self.connection.execute("UPDATE autonomous_confirmations SET status='ambiguous' WHERE status='reserved'")
             self._autonomy_enabled=True
 
+    def autonomous_read_context(self,sources):
+        """Recent stored excerpts only; no target or routing authority is returned."""
+        from .store import _to_message
+        from .store import _aware
+        if not sources:
+            return []
+        first=min(sources,key=lambda m:m.message_id)
+        cutoff=min(_aware(m.received_at) for m in sources)
+        with self._lock:
+            rows=self.connection.execute("SELECT * FROM messages WHERE chat_id=? AND message_id<? ORDER BY message_id DESC LIMIT 40",
+                (first.chat_id,first.message_id)).fetchall()
+            messages=[_to_message(row) for row in rows]
+            recent=list(reversed([m for m in messages if _aware(m.received_at)<=cutoff][:8]))
+            exact=[]
+            for source in sources[:6]:
+                if source.reply_to_id is None:
+                    continue
+                target=self.group_notice_reply_target(source.chat_id,source.reply_to_id)
+                row=self.get(source.chat_id,target)
+                if row is not None and row['message_id']<first.message_id:
+                    old=_to_message(row)
+                    if _aware(old.received_at)<=cutoff and old.message_id not in {m.message_id for m in exact}:
+                        exact.append(old)
+            # Exact no-ticket replies are evidence, never candidates or write authority.
+            return ([m for m in recent if m.message_id not in {old.message_id for old in exact}]+exact)[-8:]
+
     def reserve_autonomous_outage(self,message):
         """One technical notice per chat outage, unrelated to semantic topic membership."""
         with self._lock,self.connection:
