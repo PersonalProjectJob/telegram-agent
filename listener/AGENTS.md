@@ -2,13 +2,20 @@
 
 Owner quy trình/data/state: **AlexChu**. Executor (Codex, Gemini/Antigravity, Claude…) chỉ là runtime tạm thời. File này chỉ dẫn đường cho việc đọc/sửa listener và log GitHub ticket; không phải nguồn quy tắc thứ hai, không thay quyền hoặc quy trình harness của repo. Runtime không load file này.
 
+## Trước khi làm bất cứ việc gì
+
+1. **Xác định vai của mình** trong [`rules/roles.md`](rules/roles.md) · bảng `actors`. Chưa được Owner giao vai trong phiên ⇒ bạn là `AGENT`, kể cả khi là model mạnh.
+2. **Tra quyền** của việc sắp làm ở bảng `actions` (A01–A27): `ALLOW` làm; `ASK_OWNER` chỉ làm khi có **đồng ý của Owner trong phiên** đúng định nghĩa trong `roles.md` (nêu đúng việc, gửi trong cuộc trò chuyện hiện tại, trích nguyên văn vào báo cáo); `DENY` hoặc không có trong bảng ⇒ không làm.
+3. Gặp điều kiện ở bảng `stop_and_ask` (S1–S7) ⇒ dừng, báo Owner kèm bằng chứng.
+4. **Bật bot, cài bản mới, đổi config máy chạy**: chỉ khi phiếu trong [`rules/preflight.md`](rules/preflight.md) là `GO` (P1–P13 đã ký). Đang chạy mà gặp H1–H7 ⇒ dừng bot theo bảng `halt`. Hiện trạng: `NO_GO`.
+
 ## Nguyên tắc nền (Owner, 2026-10-29)
 
 Mọi quyết định của bot phải dựa trên **file markdown cụ thể với trạng thái liệt kê cụ thể**, không dựa hoàn toàn vào model. Model chỉ trích dữ kiện; code áp quy tắc. Ba lớp file, mỗi lớp một việc:
 
 | Thư mục | Quyết định gì | Bot đọc lúc chạy? |
 |---|---|---|
-| [`rules/`](rules/README.md) | **Làm gì**: tạo ticket / hỏi / bỏ qua (bắt đầu từ README: quy tắc nạp rules vào bot và model) | Sẽ đọc khi file chuyển ACTIVE (hiện DRAFT) |
+| [`rules/`](rules/README.md) | **Làm gì**: tạo ticket / hỏi / bỏ qua (bắt đầu từ README: quy tắc nạp rules vào bot và model). Riêng `roles.md`, `preflight.md`: quyền và cổng bật cho người + Agent | Sẽ đọc file quyết định khi chuyển ACTIVE (hiện DRAFT); không đọc `roles.md`, `preflight.md` |
 | `templates/github-ticket/` ([hướng dẫn](../Docs/templates/github-ticket/README.md)) | **Nói gì, trình bày ra sao**: form ticket, comment, câu reply (TG-33) | Có |
 | `prompts/` (vd [autonomous.md](prompts/autonomous.md)) | **Model trích dữ kiện thế nào** | Có |
 
@@ -26,11 +33,12 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 ## Khi phân loại và log ticket
 
 - **"Đủ rõ" — tạo ticket hay hỏi** (TG-07, TG-08, TG-09, TG-12): tra bảng, không tự suy diễn.
-  - Trạng thái được phép: [`rules/states.md`](rules/states.md) (`READY`, `NEED_INFO`, `MEDIA_ONLY`, `CHAT`).
-  - Dữ kiện cần có và khi nào một trường được tính là CÓ: [`rules/facts.md`](rules/facts.md).
-  - Quyết định: bảng R1–R8 và danh sách thứ không bao giờ chặn việc tạo ticket trong [`rules/readiness.md`](rules/readiness.md).
-  - Hỏi gì khi thiếu, theo thứ tự nào: [`rules/questions.md`](rules/questions.md). Ca mẫu đối chiếu: [`rules/examples.md`](rules/examples.md).
-  - Khi các file `rules/` còn `DRAFT`, bot chạy thật vẫn theo hành vi hiện tại (model trả `actionable`/`confidence`); bảng trong `rules/` là đích đã duyệt hướng, dùng để đánh giá và soạn ticket tay.
+  - Trạng thái được phép: [`rules/states.md`](rules/states.md) (`READY`, `APPEND`, `NEED_INFO`, `MEDIA_ONLY`, `CHAT`, `HOLD`).
+  - Dữ kiện cần có, khi nào một trường được tính là CÓ (V1–V4, chuẩn hóa N1–N5, cụm chung chung): [`rules/facts.md`](rules/facts.md).
+  - Quyết định: bảng I1–I3 (intent, command thắng model) và R1–R13 (đọc từ trên xuống, dòng đầu khớp thắng) trong [`rules/readiness.md`](rules/readiness.md).
+  - Hỏi gì khi thiếu: [`rules/questions.md`](rules/questions.md). Bot nói ở đâu: [`rules/channels.md`](rules/channels.md) — **group gốc chỉ có reaction**, mọi tin chữ của bot ở group xử lý chung.
+  - Ca mẫu đối chiếu X1–X24: [`rules/examples.md`](rules/examples.md). Trả lời "ca X xử lý thế nào" phải nêu mã luật đã khớp (vd `I2+R9`).
+  - Khi các file `rules/` còn `DRAFT`, bot chạy thật vẫn theo hành vi hiện tại (model trả `actionable`/`confidence`, bot trả lời ngay trong group gốc); bảng trong `rules/` là đích Owner đã chốt, dùng để đánh giá và soạn ticket tay.
 - Gom/tách theo ngữ nghĩa và Reply thật; không gộp vì cùng sender, thời gian hay từ khóa. Ảnh, caption, reply phân tích chung một gói (TG-05, TG-06, TG-15).
 - Ticket đã có: open thì bổ sung; closed thì theo bảng **Vòng đời ticket** và **Ticket đã đóng**. Không tự reopen/đóng, không tạo trùng.
 - Repo, URL, nhãn, permission do config/code quyết định; model hoặc agent không tự chọn (TG-17, TG-31).
@@ -50,10 +58,10 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 
 - Đổi semantics phải cập nhật Business DOCS cùng lượt. Chạy `python scripts/check-telegram-triage-policy.py` và `python scripts/test_telegram_triage_policy.py` từ repo root; hash khớp không chứng minh đúng nghĩa.
 - Mẫu ticket/notice đóng gói trong `listener/templates/github-ticket/`; sửa qua PR và release, chạy test, `check-config` và so sánh fingerprint (TG-33).
-- **Đổi quy tắc quyết định** (`rules/`): theo [`rules/README.md`](rules/README.md) §8 — tăng `version` trong header, thêm/sửa ví dụ trong `examples.md` cho mọi luật bị đổi, chạy test + tự kiểm, cập nhật Business DOCS; chỉ chuyển `DRAFT → ACTIVE` khi Owner duyệt và không còn bảng **CHỜ OWNER CHỐT**. Không đưa quyết định vào prompt hay code nếu nó thuộc về `rules/`; model chỉ nhận phần §5 của `rules/README.md`.
+- **Đổi quy tắc quyết định** (`rules/`): theo [`rules/README.md`](rules/README.md) §8 — tăng `version` trong header, thêm/sửa ví dụ trong `examples.md` cho mọi luật bị đổi, chạy `python -m unittest tests.test_rules_markdown` (trong `listener/`, `PYTHONPATH=src`) + toàn bộ test, cập nhật Business DOCS; chỉ chuyển `DRAFT → ACTIVE` khi Owner duyệt. Không đưa quyết định vào prompt hay code nếu nó thuộc về `rules/`; model chỉ nhận phần §5 của `rules/README.md`.
 - Không replay tin cũ, không tạo issue/notice thật để kiểm thử: dùng dry-run, fake tools và smoke script trong README (TG-32).
 - Offline PASS không chứng minh installed/live PASS; deploy THINKPAD cần evidence release, installed tests và service readback riêng.
 
 ## Giới hạn quyền
 
-Không tự commit, push, deploy hoặc tạo GitHub issue chỉ vì có checklist trong tài liệu; thực hiện theo yêu cầu Owner và quyền đã được xác lập trong phiên. Task code đi qua `/dispatch`; việc đụng GitHub write hoặc production thuộc GATE 0b.
+Quyền chi tiết: [`rules/roles.md`](rules/roles.md). Không tự commit, push, deploy hoặc tạo GitHub issue chỉ vì có checklist trong tài liệu; thực hiện theo yêu cầu Owner và quyền đã được xác lập trong phiên. Task code đi qua `/dispatch`; việc đụng GitHub write hoặc production thuộc GATE 0b.
