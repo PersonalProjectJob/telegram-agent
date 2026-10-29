@@ -1,0 +1,22 @@
+[Unit]
+Description=Independent Nailhub source mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nailhub-source-mirror
+Group=nailhub-source-mirror
+WorkingDirectory=/opt/nailhub-source-mirror
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/cache/nailhub-source-mirror/browsers
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -m source_mirror --config /etc/nailhub-source-mirror/config.json run
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nailhub-source-mirror
+
+[Install]
+WantedBy=multi-user.target

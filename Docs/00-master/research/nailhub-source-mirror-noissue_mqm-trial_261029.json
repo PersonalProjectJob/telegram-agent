@@ -1,0 +1,82 @@
+{
+  "reviewer": "Codex bilingual review; not a calibrated human MQM certification",
+  "review_scope": "All 9 HTML blocks, title, summary, SEO fields, hashtag relevance; media references checked, no rendered layout test",
+  "glossary_review": "8/8 proposed glossary entries covered and acceptable in context; do-not-cure negations preserved separately",
+  "critical": 0,
+  "major": 0,
+  "minor": 2,
+  "neutral_note": "Lặp hơ đèn để gel đóng rắn có thể rút thành hơ đèn sau lần đầu; vẫn được glossary cho phép nên không tính lỗi riêng.",
+  "penalty_points": 2,
+  "score_formula": "Minor*1 + Major*5 + Critical*25; no accuracy percentage inferred",
+  "issues": [
+    {
+      "id": "M01",
+      "location": "title_vi",
+      "category": "Accuracy/Untranslated",
+      "severity": "Minor",
+      "source_span": "Blooming boo-tiful",
+      "target_span": "Blooming boo-tiful",
+      "reason": "Giữ nguyên câu chơi chữ quảng bá tiếng Anh trong tiêu đề Việt; đây không phải tên sản phẩm/tên riêng thuộc danh sách bảo vệ.",
+      "suggestion": "Bỏ câu chơi chữ tiếng Anh; dùng tiêu đề thuần Việt giữ 4 bước, bóng ma và gel loang.",
+      "status": "open"
+    },
+    {
+      "id": "M02",
+      "location": "blocks[10].html",
+      "category": "Linguistic conventions/Textual conventions",
+      "severity": "Minor",
+      "source_span": "gently dragging it down slightly",
+      "target_span": "nhẹ nhàng kéo nhẹ xuống phía dưới",
+      "reason": "Lặp ý nhẹ trong một cụm làm câu Việt rườm; không đổi nghĩa thao tác.",
+      "suggestion": "kéo nhẹ nét vẽ xuống một chút",
+      "status": "open"
+    }
+  ],
+  "source_holds": [
+    {
+      "id": "S01",
+      "location": "blocks[4].html",
+      "kind": "source ambiguity / technical review required",
+      "text": "curing after both layers",
+      "reason": "Bản Việt dùng sau cả hai lớp, còn uncertainties ghi nhận hai cách hiểu. Cần xác nhận kỹ thuật từ tác giả/hướng dẫn của sản phẩm thực tế trước khi đăng; không tự chọn một quy trình.",
+      "counted_as_translation_error": false
+    }
+  ],
+  "verdict": "REVISION_AND_TECHNICAL_REVIEW_REQUIRED",
+  "production_integration": false,
+  "checks": {
+    "blocks_14_order_and_type": true,
+    "media_ids_0_to_4": true,
+    "href_exact_preservation": true,
+    "step_headings_1_to_4": true,
+    "protected_names_place_years": true,
+    "no_added_digit_numerals": true,
+    "negation_steps_2_and_3": true,
+    "three_fingers_step1": true,
+    "two_coats_step1": true,
+    "two_eyes_three_nails_step4": true,
+    "summary_limit": true,
+    "meta_title_limit": true,
+    "meta_description_limit": true,
+    "hashtag_limits": true,
+    "uncertainty_reported": true,
+    "source_immutable": true
+  },
+  "lengths": {
+    "title_vi": 91,
+    "summary_vi": 165,
+    "meta_title_vi": 51,
+    "meta_description_vi": 147
+  },
+  "hashtags": [
+    "#gel_loang",
+    "#blooming_gel",
+    "#nail_art_halloween",
+    "#ve_mong_nghe_thuat"
+  ],
+  "limitations": [
+    "Single article only; no quota endurance or unattended systemd inference verified.",
+    "No actual PROD form/public rendering check in this trial.",
+    "CLI flags and catalog confirm requested selection; output envelope does not independently attest resolved backend model."
+  ]
+}

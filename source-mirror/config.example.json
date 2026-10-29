@@ -1,0 +1,12 @@
+{
+  "data_root": "/var/lib/nailhub-source-mirror",
+  "source_url": "https://www.scratchmagazine.co.uk/step-by-step/",
+  "slots": ["08:00", "12:00", "16:00", "20:00"],
+  "timezone": "Asia/Ho_Chi_Minh",
+  "localization": {
+    "enabled": true,
+    "model": "gemini-3.8-flash-medium",
+    "effort": "medium",
+    "socket_path": "/run/nailhub-source-mirror-agy/agy.sock"
+  }
+}

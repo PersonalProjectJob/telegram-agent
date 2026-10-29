@@ -1,0 +1,6 @@
+{
+  "socket_path": "/run/nailhub-source-mirror-agy/agy.sock",
+  "allowed_uid": 991,
+  "workdir": "/var/lib/nailhub-source-mirror-agy",
+  "agy_binary": "/opt/nailhub-source-mirror-agy/agy"
+}
