@@ -8,6 +8,7 @@ from .followup_model import validate_followup, MAX_SPLIT
 from .issue_format import Issue, format_issue, redact, sanitize, telegram_link
 from .models import Classification
 from .group_notices import clean_question, address_question
+from .ticket_templates import active
 
 LOG=logging.getLogger(__name__)
 SCOPE_QUESTION='Em chưa xác định chắc mỗi yêu cầu gồm những tin/ảnh nào. Anh/Chị chỉ rõ tin hoặc ảnh thuộc yêu cầu thứ nhất và thứ hai giúp Em nhé?'
@@ -20,6 +21,39 @@ def _safe(text):
 
 def _link(repo, number):
     return f'https://github.com/{repo}/issues/{number}'
+
+
+def _recurrence_body(body, url):
+    return body+'\n\n'+active().render('comments.md','append.recurrence',{'url':url})
+
+
+def _source_body(body, url):
+    return body+'\n\n'+active().render('comments.md','append.source',{'url':url})
+
+
+def _enrichment_comment(summary, reply, link):
+    return active().render('comments.md','enrichment',{'summary':_safe(summary),
+        'reply_quote':'> '+_safe(reply).replace('\n','\n> '),'reply_link':link or ''})
+
+
+def _scope_confirmation(source, ordinal, link, images, documents):
+    return active().render('comments.md','scope_confirmation',{'source':_safe(_describe(source)),
+        'ordinal':str(ordinal+1),'source_link':link or '', 'image_urls':[url for _,url in images],
+        'document_urls':[url for _,url in documents]})
+
+
+def _scope_correction(first, pending, pending_images, pending_documents):
+    return active().render('comments.md','scope_correction',{'title':_safe(first['title']),
+        'summary':_safe(first['summary']), 'message_ids':', '.join(str(i) for i in first['message_ids']),
+        'questions':[_safe(q) for q in first['missing_info']], 'has_unresolved':'yes' if pending is not None else '',
+        'unresolved':[_safe(_describe(m)) for m in pending or []],
+        'unresolved_image_urls':[url for _,url in pending_images],
+        'unresolved_document_urls':[url for _,url in pending_documents]})
+
+
+def _completion_text(plan):
+    name = 'followup.recurrence' if plan.get('related_episode') else 'followup.split' if plan['action']=='split' else 'followup.updated'
+    return active().render('group-replies.md',name)
 
 
 def _tickets(root):
@@ -298,7 +332,7 @@ def _materialize_update(pipeline,job,root,originals,reply,op,payload):
         issue=format_issue(sources[0],c,'model',False,pipeline.config.ollama.model,case_messages=sources,
             max_quoted=len(sources),key_message_ids=analysis['key_message_ids'],details=analysis['details'],
             images=all_images,documents=all_documents,clarify=analysis['missing_info'],notes=[note] if note else [])
-        body=issue.body+'\n\nLỗi tái diễn; ticket liên quan: '+_link(pipeline.config.gh_repo,payload['parent_number'])
+        body=_recurrence_body(issue.body,_link(pipeline.config.gh_repo,payload['parent_number']))
         snapshot=dict(repo=pipeline.config.gh_repo,title=issue.title,body_sha=hashlib.sha256(body.encode()).hexdigest(),
             source_ids=payload['source_ids'],analysis=analysis,images=all_images,documents=all_documents,owned_labels=list(issue.labels))
         payload.update(title=issue.title,body=body,labels=list(issue.labels),new_snapshot=snapshot)
@@ -372,12 +406,8 @@ def _plan(pipeline,job,root,originals,reply,history):
             except Exception:
                 return dict(action='clarify',questions=[TARGET_QUESTION],context_reason='lifecycle_target_unobserved'),[]
         selected=[m for m in originals if m.message_id==reply.reply_to_id]
-        body='### Xác nhận phạm vi từ người gửi\n'+_safe(_describe(selected[0]))+f' thuộc phạm vi ticket {ordinal+1}.'
-        if telegram_link(selected[0]):
-            body+='\nTin nguồn: '+telegram_link(selected[0])
         images,documents=pipeline.store.followup_media(root,selected,pipeline.config.gh_repo)
-        body+=''.join('\nẢnh nguồn: '+url for _,url in images)
-        body+=''.join('\nTài liệu nguồn: '+url for _,url in documents)
+        body=_scope_confirmation(selected[0],ordinal,telegram_link(selected[0]),images,documents)
         return dict(action='update',summary='Xác nhận phạm vi',questions=[],groups=[],context_reason='confirmed_binding'),[('comment',dict(number=tickets[ordinal],body=body))]
     anchor_plan=_anchor_split(state,originals) if (accepted or _explicit_count(reply.text) is not None) else None
     if accepted and anchor_plan is None:
@@ -516,9 +546,7 @@ def _plan(pipeline,job,root,originals,reply,history):
             state['lifecycle_evidence_ids']=list(dict.fromkeys(state.get('lifecycle_evidence_ids',[])+known+[reply.message_id]))[-30:]
             pipeline.store.save_followup_context_state(job['root_key'],state)
             root['context_state']=json.dumps(state)
-        body='### Bổ sung từ hội thoại Telegram\n'+_safe(value['summary'])+'\n\nPhản hồi của người gửi:\n> '+_safe(reply.text).replace('\n','\n> ')
-        if telegram_link(reply):
-            body+='\n\nNguồn phản hồi: '+telegram_link(reply)
+        body=_enrichment_comment(value['summary'],reply.text,telegram_link(reply))
         analysis=value.get('case_analysis')
         sources=_enrichment_sources(pipeline,root,originals)
         if reply.message_id not in {m.message_id for m in sources}:sources.append(reply)
@@ -570,21 +598,15 @@ def _plan(pipeline,job,root,originals,reply,history):
         issue=format_issue(selected[0],None if value.get('context_reason')=='confirmed_anchors' else c,'model',bool(group['missing_info']),pipeline.config.ollama.model,
                            case_messages=selected,max_quoted=len(selected),images=images,documents=documents,
                            clarify=group['missing_info'],text=(c.title,c.summary),details={})
-        body=issue.body+'\n\nTicket nguồn: '+_link(pipeline.config.gh_repo,tickets[0])
+        body=_source_body(issue.body,_link(pipeline.config.gh_repo,tickets[0]))
         operations.append(('create',dict(title=issue.title,body=body,labels=list(issue.labels))))
     first=value['groups'][0]
-    scope='### Điều chỉnh phạm vi sau phản hồi Telegram\nTicket này theo dõi yêu cầu thứ nhất: '+_safe(first['title'])+'\n'+_safe(first['summary'])
-    scope+='\nID tin nguồn: '+', '.join(str(i) for i in first['message_ids'])
-    if first['missing_info']:
-        scope+='\nCần làm rõ:\n'+'\n'.join('• '+_safe(q) for q in first['missing_info'])
+    pending=None; pending_images=[]; pending_documents=[]
     if unresolved:
         pending=[m for m in originals if m.message_id in unresolved]
-        scope+='\n\nTin/ảnh chưa được gán, phạm vi chưa xác nhận (không mặc định thuộc ticket này):\n'
-        scope+='\n'.join('• '+_safe(_describe(m)) for m in pending)
         pending_images,pending_documents=pipeline.store.followup_media(root,pending,pipeline.config.gh_repo)
-        scope+=''.join('\nẢnh chưa được gán: '+url for _,url in pending_images)
-        scope+=''.join('\nTài liệu chưa được gán: '+url for _,url in pending_documents)
         value['questions']=_context_questions(state,originals)
+    scope=_scope_correction(first,pending,pending_images,pending_documents)
     operations.append(('correction',dict(number=tickets[0],body=scope)))
     return value,operations
 
@@ -773,9 +795,7 @@ def _run_inner(pipeline,job):
                 store.connection.execute("UPDATE followup_operations SET status='ambiguous' WHERE job_id=? AND ordinal=? AND status='reserved'",(job['id'],op['ordinal']))
             _result(pipeline,job,root,reply,'blocked','Em chưa xác nhận được một thao tác GitHub đã hoàn tất hay chưa. Nhờ Owner kiểm tra trước khi thử lại; các ticket đã xác nhận được giữ lại bên dưới nhé.',completed)
             return
-    text=('Em đã tạo ticket cho lần lỗi tái diễn và gắn ticket liên quan rồi nhé 😊' if plan.get('related_episode') else
-          'Em đã tách các yêu cầu thành từng ticket riêng rồi nhé 😊' if plan['action']=='split'
-          else 'Em đã bổ sung thông tin vào ticket rồi nhé 😊')
+    text=_completion_text(plan)
     questions=plan.get('questions',[])+[q for g in plan.get('groups',[]) for q in g['missing_info']]
     questions += [json.loads(o['payload'])['media_note'] for o in store.followup_operations(job) if json.loads(o['payload']).get('media_note')]
     if questions:

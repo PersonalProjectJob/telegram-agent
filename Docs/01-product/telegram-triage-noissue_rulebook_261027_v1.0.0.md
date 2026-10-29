@@ -1,8 +1,8 @@
 # Telegram triage → GitHub ticket — Rulebook
 
-**Version**: v1.0.1 · **Updated**: 2026-10-28 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
+**Version**: v1.1.2 · **Updated**: 2026-10-29 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Author**: Claude · **Baseline code**: `d8accc8`
 
-**Status**: Bản chi tiết hóa, dạng kiểm được, của [Business DOCS](telegram-triage-noissue_business_261015_v1.0.0.md) v1.7.1. Không thêm quy tắc mới. Nếu một dòng ở đây khác Business DOCS, **Business DOCS thắng**; báo lại chỗ lệch. Bối cảnh, thuật ngữ và quy trình bàn giao: [Overview](../00-master/telegram-triage-noissue_overview_261027_v1.0.0.md).
+**Status**: Bản chi tiết hóa, dạng kiểm được, của [Business DOCS](telegram-triage-noissue_business_261015_v1.0.0.md) v1.8.2. Không thêm quy tắc mới. Nếu một dòng ở đây khác Business DOCS, **Business DOCS thắng**; báo lại chỗ lệch. Bối cảnh, thuật ngữ và quy trình bàn giao: [Overview](../00-master/telegram-triage-noissue_overview_261027_v1.0.0.md).
 
 ## 0. Cách đọc
 
@@ -220,10 +220,12 @@ Code áp theo **đúng thứ tự** sau, bước đầu tiên khớp thì dừng
 | TG-25.1 | MUST NOT giữ lock SQLite trong lúc chờ model/Telegram/GitHub. | `store.py` |
 | TG-25.2 | Người dùng im lặng **không** phải là đồng ý. | — |
 | TG-31.1 | Repo và nhãn cố định bởi config/code. Nhãn hợp lệ: `bug, feature, question, task, feedback, triage, needs-human, source:telegram`. | `models.py:LABELS`, `github_issues.py` |
-| TG-31.2 | MUST redact email và số điện thoại; sanitize chống mention/link/reference/Markdown injection. | `issue_format.py` |
+| TG-31.2 | MUST redact email và số điện thoại trong quote; sanitize chống mention/link/reference/Markdown injection, trừ ngoại lệ dòng link nguồn do code dựng ở TG-31.3. | `issue_format.py` |
+| TG-31.3 | Theo Owner 2026-10-29, code dựng link nguồn http/https hợp lệ (không userinfo, host IDNA, tối đa 2000 ký tự), loại trùng tối đa 10; link chứa email/phone vẫn đầy đủ và click được, display được sanitize. Link github.com được click và có thể tạo cross-reference; ngoại lệ này chỉ áp dụng cho dòng link nguồn do code dựng. Quote vẫn redact email/phone và vô hiệu hóa link/reference. Link tính là evidence bug, nên không hỏi evidence tự động nếu chỉ có link. | `issue_format.py:source_links` |
 | TG-32.1 | Quota issue (`max_issues_per_hour`, mặc định 20) tính mọi lần tạo, kể cả sibling và outcome không rõ. Comment không tính. Upload có quota riêng. | `github_issues.py` |
 | TG-32.2 | Dry-run: không ghi GitHub, không upload, không gửi notice text; được tải/validate và thả ❤. | `pipeline.py` |
 | TG-32.3 | Log và usage MUST NOT chứa nội dung tin. Usage giữ 90 ngày. | `store.py:USAGE_RETENTION_DAYS`, `usage.py` |
+| TG-33.1 | Layout và wording lấy từ template đóng gói; validate trước khi chạy, lỗi template thoát 2. Thay đổi qua PR và release, đối chiếu fingerprint. | `ticket_templates.py` |
 
 ### 9.1 Định dạng issue
 
@@ -243,7 +245,7 @@ Code áp theo **đúng thứ tự** sau, bước đầu tiên khớp thì dừng
 
 Sửa lại body ticket hiện có MUST dùng `format_issue` qua `scripts/reformat-telegram-issue.py` (TG-27), không viết Markdown tay.
 
-Soạn ticket hoặc comment thủ công (người hoặc Agent) MUST theo đúng khuôn trong [Template log ticket](../templates/github-ticket/README.md): bug, task, feedback, needs-human, comments, group-replies. Test `listener/tests/test_ticket_md_templates.py` giữ các khuôn này khớp với renderer; đổi wording trong code thì sửa template cùng lượt.
+Soạn ticket hoặc comment thủ công (người hoặc Agent) MUST theo [hướng dẫn template](../templates/github-ticket/README.md). Runtime đọc layout và wording từ bộ template đóng gói; code giữ marker, title, nhãn, sanitization, liên kết và logic theo TG-31/TG-33. Reformat dùng cùng release và so sánh fingerprint.
 
 ## 10. Phản hồi trong Telegram (TG-11, TG-13, TG-26, TG-28, TG-29)
 
@@ -356,5 +358,8 @@ ID tin là giả lập.
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.1.2 | 2026-10-29 | Codex / owner AlexChu | Đồng bộ quyết định Owner về link GitHub và email/phone trong link nguồn. |
+| v1.1.1 | 2026-10-29 | Codex / owner AlexChu | Đồng bộ TG-31: link nguồn an toàn trong evidence. |
+| v1.1.0 | 2026-10-28 | Codex / owner AlexChu | Đồng bộ TG-33, mẫu đóng gói và fingerprint. |
 | v1.0.1 | 2026-10-28 | Claude / owner AlexChu | §9.1: bắt buộc dùng thư mục template log ticket khi soạn tay; test chống lệch template với renderer. |
 | v1.0.0 | 2026-10-27 02:45 | Claude / owner AlexChu | Chi tiết hóa TG-01…TG-32 thành điều khoản MUST/MUST NOT có nơi thực thi, thứ tự quyết định `_safety`, định dạng issue, bảng quyết định tổng hợp, 13 ví dụ chuẩn, danh sách cấm và tự kiểm. |

@@ -6,8 +6,12 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from tg_triage.classifier import CASE_SCHEMA, Classifier, parse_case_analysis
-from tg_triage.issue_format import (BUG_QUESTIONS, DOD_EVIDENCE_LINE, MAX_CLARIFY,
-                                    NO_DETAIL_LINE, format_issue)
+from tg_triage.issue_format import MAX_CLARIFY, format_issue
+from tg_triage.ticket_templates import active
+
+BUG_QUESTIONS = tuple(active().render("bug.md", "question." + key) for key in ("environment", "steps", "expected_actual", "evidence"))
+DOD_EVIDENCE_LINE = "- [ ] Đính kèm evidence kết quả (ảnh/link/log) khi đóng issue"
+NO_DETAIL_LINE = "(chưa có thông tin)"
 from tg_triage.models import IncomingMessage
 from tg_triage.pipeline import Pipeline
 from tg_triage.store import Store

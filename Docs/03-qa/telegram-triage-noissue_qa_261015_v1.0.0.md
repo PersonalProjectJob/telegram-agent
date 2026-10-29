@@ -5,7 +5,7 @@
 ## Related Documents
 
 - [Master scope](../00-master/worker-agent-fleet-1_master_261007_v1.0.8.md)
-- [TG-01..TG-32](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md)
+- [TG-01..TG-33](../01-product/telegram-triage-noissue_business_261015_v1.0.0.md)
 - [Engineering and research](../02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md)
 
 ## Historical Harness foundation acceptance (2026-10-16)

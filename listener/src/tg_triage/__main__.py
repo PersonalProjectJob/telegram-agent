@@ -17,6 +17,7 @@ from .provider import build_provider
 from .store import Store
 from .usage import UsageRecorder
 from .runtime import AlreadyRunning, ProcessLock, validate_data_directories
+from .ticket_templates import TemplateError, load_templates
 
 
 def _build_classifier(config, store):
@@ -70,14 +71,18 @@ def main(argv=None) -> int:
                 store.close()
             return 0
         config = load_config(args.config)
+        templates = load_templates() if args.command in ('run', 'check-config') else None
         if args.command == "check-config":
-            print(json.dumps(config.redacted(), ensure_ascii=False, indent=2))
+            result = config.redacted()
+            result['templates'] = {'fingerprint': templates.fingerprint}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.command == "login":
             validate_data_directories(config)
             from .telegram_io import login
             with ProcessLock(Path(config.db_path).parent):
                 asyncio.run(login(config))
         else:
+            logging.getLogger(__name__).info('templates fingerprint=%s', templates.fingerprint)
             validate_data_directories(config)
             # Lock before opening the store: a second process must not recover
             # another process's in-flight records.
@@ -103,6 +108,9 @@ def main(argv=None) -> int:
         return 130
     except ConfigError as error:
         print(f"ConfigError: {error}", file=sys.stderr)
+        return 2
+    except TemplateError as error:
+        print(f"TemplateError: {error}", file=sys.stderr)
         return 2
     except AlreadyRunning:
         print("AlreadyRunning: Telegram triage service is already running", file=sys.stderr)

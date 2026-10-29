@@ -16,20 +16,20 @@ class TraceTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         source = Path(__file__).resolve().parents[1]
-        for folder in ('listener/src/tg_triage', 'listener/prompts', 'listener/tests'):
+        for folder in ('listener/src/tg_triage', 'listener/prompts', 'listener/tests', 'listener/templates'):
             shutil.copytree(source/folder, self.root/folder, ignore=shutil.ignore_patterns('__pycache__'))
         self.policy = self.root/checker.POLICY
         self.policy.parent.mkdir(parents=True)
         self.trace = {'schema': 'telegram-triage-policy/v1', 'owner': 'AlexChu', 'rules': [],
                       'runtime_inventory': {}, 'legacy_documents': [], 'related_documents': []}
-        for n in range(1,33):
+        for n in range(1,34):
             self.trace['rules'].append({'id': f'TG-{n:02}',
                 'code': [{'path':'listener/src/tg_triage/rules.py', 'symbol':'evaluate'}],
                 'tests': [{'path':'listener/tests/test_rules.py', 'symbol':'RulesTests.test_all_commands_are_confident_and_keep_payload'}]})
-        for folder, pattern in [('listener/src/tg_triage','*.py'),('listener/prompts','*.md')]:
+        for folder, pattern in [('listener/src/tg_triage','*.py'),('listener/prompts','*.md'),('listener/templates','**/*.md')]:
             for path in (self.root/folder).glob(pattern):
                 self.trace['runtime_inventory'][path.relative_to(self.root).as_posix()] = checker.normalized_hash(path)
-        self.headings = [f'### TG-{n:02} Rule' for n in range(1,33)]
+        self.headings = [f'### TG-{n:02} Rule' for n in range(1,34)]
         self.extra = ''
     def write(self):
         self.policy.write_text('\n'.join(self.headings)+'\n```json telegram-triage-trace\n'+json.dumps(self.trace)+'\n```\n'+self.extra,encoding='utf-8')
@@ -41,7 +41,7 @@ class TraceTests(unittest.TestCase):
         p=self.root/'listener/src/tg_triage/rules.py'
         p.write_bytes(p.read_bytes().replace(b'\r\n',b'\n').replace(b'\n',b'\r\n'))
         self.write()
-        self.assertEqual(checker.check(self.root)['rules'],32)
+        self.assertEqual(checker.check(self.root)['rules'],33)
     def test_duplicate_heading(self):
         self.headings.append(self.headings[0]); self.assert_rejected('headings')
     def test_missing_rule(self):
@@ -60,6 +60,10 @@ class TraceTests(unittest.TestCase):
     def test_inventory_drift(self):
         (self.root/'listener/prompts/unreviewed.md').write_text('new')
         self.assert_rejected('REVIEW_REQUIRED runtime inventory')
+    def test_template_drift(self):
+        p=self.root/'listener/templates/github-ticket/bug.md'
+        p.write_text(p.read_text(encoding='utf-8')+'\n',encoding='utf-8')
+        self.assert_rejected('REVIEW_REQUIRED runtime hash')
     def test_broken_link(self):
         self.extra='[broken](missing.md)'; self.assert_rejected('missing or escaping')
     def test_legacy_requires_status_and_source(self):

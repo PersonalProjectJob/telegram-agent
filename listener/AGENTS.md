@@ -5,7 +5,7 @@ Owner quy trình/data/state: **AlexChu**. Executor (Codex, Gemini/Antigravity, C
 ## Đọc trước khi xử lý
 
 0. [Overview và bàn giao](../Docs/00-master/telegram-triage-noissue_overview_261027_v1.0.0.md) (phạm vi, thuật ngữ, quy trình theo loại việc) và [Rulebook](../Docs/01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md) (rule MUST/MUST NOT, bảng quyết định, ví dụ chuẩn). Agent yếu: chỉ làm điều Rulebook cho phép rõ ràng, còn lại dừng và hỏi Owner.
-1. [Business DOCS — nguồn nghiệp vụ duy nhất](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md): **Bảng quyết định hiện hành**, **TG-01…TG-32**, **Vòng đời ticket**, **Ticket đã đóng**, **Quy trình điều tra bắt buộc**, **Tiêu chí bàn giao**. Đọc toàn bộ ngữ cảnh của rule, không hành động chỉ từ tên mã.
+1. [Business DOCS — nguồn nghiệp vụ duy nhất](../Docs/01-product/telegram-triage-noissue_business_261015_v1.0.0.md): **Bảng quyết định hiện hành**, **TG-01…TG-33**, **Vòng đời ticket**, **Ticket đã đóng**, **Quy trình điều tra bắt buộc**, **Tiêu chí bàn giao**. Đọc toàn bộ ngữ cảnh của rule, không hành động chỉ từ tên mã.
 2. [THINKING engineering/research](../Docs/02-engineering/telegram-triage-noissue_thinking-research_261015_v1.0.0.md) và [QA acceptance](../Docs/03-qa/telegram-triage-noissue_qa_261015_v1.0.0.md): phân biệt hành vi đã triển khai với đề xuất, và tiêu chí bằng chứng.
 3. [Hướng dẫn listener](README.md): cấu hình, dry-run, drift check, trace chỉ đọc, reformat ticket.
 
@@ -33,6 +33,7 @@ Tài liệu Fleet cũ là lịch sử. Riêng §12.11 của [assistant-definitio
 ## Khi sửa code hoặc prompt
 
 - Đổi semantics phải cập nhật Business DOCS cùng lượt. Chạy `python scripts/check-telegram-triage-policy.py` và `python scripts/test_telegram_triage_policy.py` từ repo root; hash khớp không chứng minh đúng nghĩa.
+- Mẫu ticket/notice đóng gói trong `listener/templates/github-ticket/`; sửa qua PR và release, chạy test, `check-config` và so sánh fingerprint (TG-33).
 - Không replay tin cũ, không tạo issue/notice thật để kiểm thử: dùng dry-run, fake tools và smoke script trong README (TG-32).
 - Offline PASS không chứng minh installed/live PASS; deploy THINKPAD cần evidence release, installed tests và service readback riêng.
 
