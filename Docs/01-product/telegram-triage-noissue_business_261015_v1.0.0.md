@@ -18,6 +18,7 @@ User yêu cầu tài liệu này và sau đó yêu cầu triển khai THINKING. 
 - [Overview và bàn giao](../00-master/telegram-triage-noissue_overview_261027_v1.0.0.md)
 - [Rulebook — rule chi tiết MUST/MUST NOT](telegram-triage-noissue_rulebook_261027_v1.0.0.md)
 - [Template log ticket](../templates/github-ticket/README.md)
+- [Quy tắc quyết định dạng markdown (DRAFT) — quy tắc nạp rules vào bot và model](../../listener/rules/README.md)
 - [PR #43](https://github.com/PersonalProjectJob/telegram-agent/pull/43)
 
 ## Business DOCS — Harness phân loại hội thoại và vòng đời ticket
@@ -1688,7 +1689,14 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/AGENTS.md",
     "Docs/00-master/telegram-triage-noissue_overview_261027_v1.0.0.md",
     "Docs/01-product/telegram-triage-noissue_rulebook_261027_v1.0.0.md",
-    "Docs/templates/github-ticket/README.md"
+    "Docs/templates/github-ticket/README.md",
+    "listener/rules/README.md",
+    "listener/rules/states.md",
+    "listener/rules/facts.md",
+    "listener/rules/readiness.md",
+    "listener/rules/questions.md",
+    "listener/rules/examples.md",
+    "Docs/04-tasks/telegram-triage-noissue_tasks_261029_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
   "runtime_fingerprint": "0fad3b80bf3081101b17978e929e101bcda8aec4785b8d6119cd2c9396deb7c2"

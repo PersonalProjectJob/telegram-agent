@@ -157,6 +157,8 @@ flowchart TD
 | Khối "Tin gốc", footer "Phân loại…" | `_common.md` |
 | Câu bot trả lời trong group | `group-replies.md` |
 
+**Sequence hiện tại (PR #81, đang chạy):** model phán đủ rõ; GitHub là nền tảng duy nhất.
+
 ```mermaid
 sequenceDiagram
     participant Bot as Bot (code)
@@ -171,6 +173,58 @@ sequenceDiagram
     GH-->>Bot: Số issue
     Bot->>Tpl: Lấy câu reply group
     Bot->>TG: Reply link vào tin đầu
+```
+
+**Sequence đích (Owner chốt 2026-10-29, CHƯA triển khai):** mọi quyết định theo file markdown quy tắc; model chỉ trích dữ kiện; nền tảng ticket đổi được bằng cấu hình. Thiết kế chi tiết: [Kế hoạch §0](../04-tasks/telegram-triage-noissue_tasks_261029_v1.0.0.md) · bảng quy tắc nháp: [listener/rules/README.md](../../listener/rules/README.md).
+
+| Bước | Việc | Ai làm | Dựa vào file |
+| :--- | :--- | :--- | :--- |
+| 0 | Nạp + kiểm quy tắc, template, prompt, cấu hình nền tảng (sai ⇒ không khởi động) | Code | `rules/`, `templates/`, `prompts/`, `platforms/`, config |
+| 1 | Tổng hợp tin theo quy tắc gom (Reply thật, gói context) | Code | `rules/` |
+| 2 | Trích dữ kiện + tin nguồn (không kết luận) | Model | `prompts/` (danh sách trường sinh từ `rules/`) |
+| 3 | Áp bảng quy tắc → READY / NEED_INFO / MEDIA_ONLY / CHAT | Code | `rules/README.md` |
+| 4 | Chọn template theo loại + trạng thái + nền tảng | Code | `templates/` |
+| 5 | Tạo / bổ sung ticket qua adapter nền tảng | Code | `platforms/<nền tảng>.md`, config |
+| 6 | Reply group | Code | `templates/group-replies.md` |
+
+```mermaid
+sequenceDiagram
+    participant R as Quy tắc (rules/*.md)
+    participant Bot as Bot (code)
+    participant TG as Group Telegram
+    participant M as Model
+    participant T as Template
+    participant A as Adapter nền tảng
+    participant X as GitHub / Jira / Azure
+
+    Note over Bot,R: 0. Khởi động
+    Bot->>R: Nạp + kiểm quy tắc, template, prompt, nền tảng
+    R-->>Bot: Hợp lệ (fingerprint) — sai thì không chạy
+
+    TG->>Bot: Tin, ảnh, caption
+    Note over Bot: 1. Tổng hợp theo quy tắc gom
+
+    Bot->>M: 2. Gói tin + danh sách dữ kiện cần trích
+    M-->>Bot: Dữ kiện + source_ids (không kết luận)
+
+    Note over Bot,R: 3. Code áp bảng quy tắc
+    Bot->>R: Dữ kiện → R1…R8
+    R-->>Bot: READY / NEED_INFO / MEDIA_ONLY / CHAT
+
+    alt READY
+        Bot->>T: 4. Chọn template theo loại + nền tảng
+        T-->>Bot: Nội dung ticket
+        Bot->>A: 5. Tạo / bổ sung ticket
+        A->>X: API nền tảng (một lần, đọc lại xác nhận)
+        X-->>A: Mã ticket + link
+        Bot->>T: Lấy câu reply
+        Bot->>TG: 6. Reply link vào tin đầu
+    else NEED_INFO / MEDIA_ONLY
+        Bot->>T: Câu hỏi theo trường thiếu
+        Bot->>TG: Hỏi, không tạo ticket
+    else CHAT
+        Note over Bot: Không làm gì
+    end
 ```
 
 #### Workflow 2: Bổ sung, tách, tái diễn ticket đã có

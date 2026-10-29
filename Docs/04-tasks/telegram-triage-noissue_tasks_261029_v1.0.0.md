@@ -3,6 +3,69 @@
 **Version**: v1.0.0 · **Date**: 2026-10-29 (Asia/Saigon) · **Owner**: AlexChu · **Author**: Claude · **Status**: Draft — chưa thực hiện
 **Đầu vào**: [Audit listener](../02-engineering/telegram-triage-noissue_listener-audit_261029_v1.0.0.md) · PR #79, #81 (chưa merge, chưa deploy)
 
+## 0. Nguyên tắc nền (Owner, 2026-10-29)
+
+> **Mọi quyết định của bot phải dựa trên một file markdown cụ thể với các trạng thái được liệt kê cụ thể, không dựa hoàn toàn vào model. Nâng cấp model chỉ giúp cải thiện chất lượng hoặc đẩy nhanh tiến độ, không đổi quy tắc.**
+
+Hệ quả kiến trúc (mở rộng mẫu PR #81 từ "câu chữ" sang "quyết định"):
+
+```
+ Tin Telegram ──► MODEL: trích DỮ KIỆN có nguồn            ──► CODE: áp QUY TẮC markdown ──► Hành động
+                  (đối tượng, hành vi, mong muốn, loại,          (bảng điều kiện → trạng thái)    (tạo / hỏi / bổ sung / bỏ qua)
+                   ảnh nào thuộc tin nào, source_ids)              listener/rules/*.md
+                                                                   validate lúc khởi động, fingerprint,
+                                                                   trace trong Business DOCS
+```
+
+- Model **không** trả kết luận cuối (NEW/CLARIFY, actionable); model trả dữ kiện đã điền + nguồn. Thiếu dữ kiện ⇒ quy tắc markdown quyết định hỏi gì.
+- Quy tắc là **bảng điều kiện → trạng thái** trong markdown (người đọc được, máy đọc được), cùng cơ chế với template TG-33: đóng gói theo release, sai ⇒ không khởi động.
+- Đổi model chỉ đổi chất lượng trích dữ kiện; regression test chạy trên bảng dữ kiện mẫu, không phụ thuộc model.
+
+### Các quyết định hiện do model phán (cần chuyển sang file quy tắc)
+
+| Quyết định | Hiện tại | Đích |
+|---|---|---|
+| Đủ rõ → tạo ticket hay hỏi (TG-08) | Model trả `actionable`, `confidence`, `missing_info`; code kiểm cờ (`autonomous.py:40-43`) | `rules/readiness.md`: checklist bắt buộc theo loại bug/task/feedback; model chỉ điền trường |
+| Chat hay việc, loại bug/task/feedback (TG-07, TG-09) | Model chọn `category` | `rules/classification.md`: định nghĩa + dấu hiệu theo dữ kiện; model trích dữ kiện |
+| Hỏi gì khi thiếu (TG-12) | Model viết câu hỏi | Câu hỏi theo trường thiếu trong `readiness.md` (đã có mẫu ở template) |
+| Gộp/tách chủ đề (TG-05/06) | Model chia partition | Phần cứng (Reply thật, quyền nguồn) đã ở code; phần ngữ nghĩa ghi tiêu chí trong `rules/topics.md` |
+| Vòng đời: bổ sung / tái diễn / hỏi (Vòng đời ticket) | Một phần code (`lifecycle.py`), một phần model | `rules/lifecycle.md`: bảng trạng thái issue × bằng chứng → hành động |
+| Ảnh model chưa xem (D7) | Code ép hỏi lại | Một dòng trong `readiness.md` |
+| Ưu tiên (priority) | Model | `rules/priority.md` hoặc bỏ nếu không dùng |
+
+### Luồng chuẩn (Owner chốt thứ tự, 2026-10-29)
+
+```
+0. Nạp + kiểm quy tắc, template, prompt, cấu hình nền tảng  (sai ⇒ không khởi động)
+1. Bot tổng hợp tin theo quy tắc gom (Reply thật, gói context)
+2. Gửi model: CHỈ trích dữ kiện (danh sách trường sinh từ quy tắc)
+3. Code áp quy tắc → trạng thái READY / NEED_INFO / MEDIA_ONLY / CHAT
+4. Chọn template theo loại + trạng thái + nền tảng đích
+5. Tạo / bổ sung ticket qua adapter nền tảng (GitHub, Jira, Azure…)
+6. Reply group theo template
+```
+
+### Nền tảng ticket linh hoạt (Owner, 2026-10-29: "tạo 1 hệ thống linh hoạt có thể thay đổi nền tảng tạo ticket")
+
+```
+ Bot (trạng thái READY + nội dung) ──► TicketPlatform (giao diện chung)
+                                         ├─ create(ticket)        → mã + link (đọc lại xác nhận)
+                                         ├─ append(ticket_id, …)  → bổ sung
+                                         ├─ read(ticket_id)       → trạng thái open/closed, nội dung, nhãn
+                                         └─ attach(file)          → link ảnh/tài liệu
+                                                │
+                     ┌──────────────────────────┼──────────────────────────┐
+                 GitHub adapter            Jira adapter               Azure DevOps adapter
+                 (có sẵn, tách ra)          (thêm khi cần)             (thêm khi cần)
+```
+
+- **Chọn nền tảng bằng cấu hình**, không sửa code: `[ticket] platform = "github" | "jira" | "azure"` cùng thông tin kết nối từng nền tảng.
+- **Ánh xạ nghiệp vụ → nền tảng nằm trong markdown** `listener/platforms/<nền tảng>.md`: loại ticket → issue type/label, ưu tiên → field, trạng thái open/closed, định dạng nội dung (Markdown / Jira ADF / HTML). Đúng nguyên tắc §0: đổi ánh xạ không cần sửa code.
+- **Template theo định dạng nền tảng**: giữ một bộ template nội dung chung; adapter chuyển định dạng (Markdown → ADF/HTML) bằng code, không để model làm.
+- **Giữ nguyên bảo đảm hiện có cho mọi nền tảng**: ghi một lần (reserve → gửi → đọc lại), không tự gửi lại khi kết quả không rõ (TG-24), xác minh đúng dự án/repo đích (TG-17), marker nguồn để bổ sung đúng ticket.
+- **Dữ liệu lưu**: thay `issue_number` gắn cứng GitHub bằng cặp `(platform, ticket_key)` (vd `github:#82`, `jira:SUP-123`); migration chỉ thêm cột, giữ dữ liệu cũ.
+- **Thứ tự**: tách GitHub thành adapter đầu tiên (không đổi hành vi, golden giữ nguyên) → cấu hình chọn nền tảng → thêm Jira/Azure khi có dự án thật để test.
+
 ## 1. Mục tiêu Owner chốt (2026-10-29)
 
 | # | Mục tiêu | Đo bằng |
@@ -30,7 +93,9 @@ P3 CI cho listener  ──────► P4 Code gọn (W5 → W4 → W6), mỗ
 
 ## 3. Chi tiết từng giai đoạn
 
-### P1 — Làm rõ Business DOCS (mục tiêu D, G1)
+### P1 — Làm rõ Business DOCS (mục tiêu D, G1) + quy tắc quyết định dạng markdown (§0)
+**Lát đầu tiên (ưu tiên cao nhất): [`listener/rules/README.md`](../../listener/rules/README.md) cho TG-08 "đủ rõ"** (Owner chốt vị trí `listener/rules/` ngày 2026-10-29). Đã tách thành: `README.md` (quy tắc nạp rules vào bot và model), `states.md`, `facts.md`, `readiness.md`, `questions.md`, `examples.md` — tất cả DRAFT, chờ duyệt; còn mở D7 và ngưỡng confidence — checklist theo loại, trường bắt buộc, câu hỏi theo trường thiếu, xử lý ảnh model chưa xem (D7), bộ ví dụ đạt/không đạt từ ticket thật (#46, #47, #82). Đổi model ingress sang trả dữ kiện; code áp bảng. Các file quy tắc còn lại làm theo từng lát sau khi lát đầu chạy ổn.
+
 Vấn đề hiện tại: ~1.700 dòng nhưng ~1.200 là JSON trace; quy tắc trộn lý do nghiệp vụ, chi tiết kỹ thuật, debug và lịch sử; Rulebook lặp lại quy tắc (hai nguồn).
 - Tách **JSON trace** ra file riêng (`…_trace.json`), sửa `check-telegram-triage-policy.py` đọc file đó.
 - Mỗi TG viết lại theo khuôn ngắn: **Quy tắc (MUST/MUST NOT) · Vì sao · Ví dụ · Ngoại lệ**; chi tiết kỹ thuật (byte, giây, tên bảng) chuyển sang Engineering doc, TG chỉ trỏ tới.
