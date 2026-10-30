@@ -31,7 +31,8 @@ _BRACKETS = {"(": ")", "[": "]", "{": "}"}
 _CLOSERS = {close: open_ for open_, close in _BRACKETS.items()}
 
 
-# Contact data never goes into an issue of a (possibly public) repo. Redaction runs on text that
+# Quotes and fields redact contact data; code-built source-link lines retain the full URL per
+# the TG-31 Owner decision of 2026-10-29. Redaction runs on text that
 # `sanitize` already escaped, so the patterns accept its output: "@" is followed by U+200B, and
 # "_" / "\\" are backslash-escaped. SQLite keeps the original text (internal data).
 EMAIL_PLACEHOLDER = "[email đã ẩn]"
@@ -164,10 +165,14 @@ def source_links(case_messages) -> list[str]:
                     url_target = urlunsplit((parts.scheme, authority, parts.path, parts.query, parts.fragment))
                 else:
                     url_target = url
-                target = quote(url_target, safe="!#$%&*+,-./:;=?@^_{|}~")
+                target_parts = urlsplit(url_target)
+                safe = "!#$%&*+,-./:;=?@^_{|}~"
+                target = urlunsplit((target_parts.scheme, quote(target_parts.netloc, safe=safe + "[]"),
+                                     quote(target_parts.path, safe=safe), quote(target_parts.query, safe=safe),
+                                     quote(target_parts.fragment, safe=safe)))
+                key = (parts.scheme.lower(), host.lower(), parts.port, parts.path, parts.query, parts.fragment)
             except (ValueError, UnicodeError):
                 continue
-            key = (parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment)
             if key in seen:
                 continue
             seen.add(key)

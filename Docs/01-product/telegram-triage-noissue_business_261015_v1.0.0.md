@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.8.2 · **Updated**: 2026-10-29 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.8.3 · **Updated**: 2026-10-29 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ hay tự tạo ticket thật để kiểm thử.
 
@@ -227,6 +227,8 @@ Command đủ điều kiện có heart khi nhận; topic issue có heart trướ
 ### TG-14 — Ảnh và tài liệu
 
 Ảnh giữ source ID, được validate signature/size/count rồi upload asset có tên do code tạo. Tài liệu chỉ nhận extension+MIME allowlist; không mở, unpack hay execute. Media lỗi/quá giới hạn ghi chú; không làm mất ticket. Quota upload tách khỏi issue.
+
+Ghi chú media bị bỏ qua hoặc tải lỗi chỉ gồm media của tin nhắn nguồn thuộc ticket; log thống kê ảnh chỉ ghi ID tin nhắn, không ghi nội dung hay tên file.
 
 Ảnh mới trong reply tới root tin cậy được chuẩn bị cùng caption và hội thoại để phân tích một gói context. Sau khi xác định đúng intent/target, dùng reservation upload hiện có và lưu asset/source provenance bền vững; uploaded/reserved/unknown không tự upload lại. Không đọc lại pixels ảnh cũ chỉ để sửa phạm vi. Ảnh không khả dụng phải nói rõ, không ghi nhận OCR hay báo cập nhật thành công giả.
 
@@ -884,6 +886,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
       "code": [
         {
           "path": "listener/src/tg_triage/attachments.py",
+          "symbol": "AttachmentProcessor.process"
+        },
+        {
+          "path": "listener/src/tg_triage/attachments.py",
           "symbol": "document_extension"
         },
         {
@@ -892,6 +898,22 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         }
       ],
       "tests": [
+        {
+          "path": "listener/tests/test_attachment_note_scope.py",
+          "symbol": "AttachmentNoteScopeTests.test_prepared_batch_scopes_limit_notes_to_case"
+        },
+        {
+          "path": "listener/tests/test_attachment_note_scope.py",
+          "symbol": "AttachmentNoteScopeTests.test_failures_are_scoped_and_first_failure_is_per_case"
+        },
+        {
+          "path": "listener/tests/test_attachment_note_scope.py",
+          "symbol": "AttachmentNoteScopeTests.test_unprepared_matches_same_prepared_batch"
+        },
+        {
+          "path": "listener/tests/test_attachment_note_scope.py",
+          "symbol": "AttachmentNoteScopeTests.test_image_accounting_logs_counts_and_ids_without_names"
+        },
         {
           "path": "listener/tests/test_attachments.py",
           "symbol": "ImageInIssueTests.test_every_image_of_the_case_is_uploaded_with_message_id_and_ordinal_names"
@@ -1653,7 +1675,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/__init__.py": "a0d704101dd43989f394a4c0ca7d54624c9e13eec981f932e47b3b0106cff595",
     "listener/src/tg_triage/__main__.py": "b661f62dd1affd730cf061d9c5bd97351af07d3b42d6e7d0122c60324f535ac9",
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
-    "listener/src/tg_triage/attachments.py": "77a0efaf7f7c44a3c2efe69135d9717f9b1035a967fb95a32973041aca4e40ff",
+    "listener/src/tg_triage/attachments.py": "0033f3dd4d990743aede2fe0ed94c843c33518a712aab7fb7a950e5e5b4dbce6",
     "listener/src/tg_triage/autonomous.py": "8328c1759996f5cda965edff8ac9a8bd06903f4d58190610bf8a674166a42798",
     "listener/src/tg_triage/autonomy_store.py": "6bfca3a6338c73018aecc4f0318a719de7d8f7a5341e03affac9b622cf4d601e",
     "listener/src/tg_triage/classifier.py": "8284a17be87f5dc883c1e870c80eebb156ec9f2913216bbbc4e086244f3feb0f",
@@ -1664,7 +1686,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/github_issues.py": "c06a17612996023e2ea014947fdfd1664a4798e5cfee4f3c0fe9038c922b361f",
     "listener/src/tg_triage/group_notices.py": "22f437ff95afe56bc95ae397cab5cd318f3ca710f70b850e00f559cbe14d6b43",
     "listener/src/tg_triage/ingress_model.py": "15368c1c94839f782424df2281e552e3a574151fec648ca4e4e46773cc819634",
-    "listener/src/tg_triage/issue_format.py": "3bb1650a10b4983dca11efaed9d3f15d9363e9824adfb31a156ed7bf57631f6a",
+    "listener/src/tg_triage/issue_format.py": "23d8d4ac42551468614555cbd8bdd8bdbaa94d61759bffeef0d0a9d9b3e1d65f",
     "listener/src/tg_triage/lifecycle.py": "e39f3e70ab2a9e9c774d9419636b23ae31f09b53b2be6daf919774bfcd319a85",
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
@@ -1728,6 +1750,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.8.3 | 2026-10-29 | Codex / owner AlexChu | Giới hạn ghi chú media theo nguồn ticket, log thống kê ảnh bằng ID và sửa link IPv6/IDNA. |
 | v1.8.2 | 2026-10-29 | Codex / owner AlexChu | Cho phép link nguồn GitHub và link chứa email/phone theo quyết định Owner; giữ chặn userinfo. |
 | v1.8.1 | 2026-10-29 | Codex / owner AlexChu | Trích xuất, kiểm tra và hiển thị link nguồn trong evidence theo TG-31. |
 | v1.8.0 | 2026-10-28 11:15 | Codex / owner AlexChu | Thêm TG-33 cho template đóng gói, validate fail-closed và fingerprint; bổ sung ranh giới TG-27/TG-31. |
