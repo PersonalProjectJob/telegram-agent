@@ -145,9 +145,8 @@ def process(pipeline,message,start):
             turn.record('ingress_candidates',dict(source_ids=[m.message_id for m in sources],
                 candidates=[dict(candidate_id=c['candidate_id'],case_key=c['source']['case_key'],
                     exact_reply=c['exact_reply'],pending=c['pending']) for c in candidates]))
-        # New evidence gets the download slots first. Optional historical pictures
-        # can bias scope and exhaust the cap before the current picture is read.
-        # Historical pixels require an actual reply edge; text/proofs stay intact.
+        # Current sources take vision slots first, then exact-reply history;
+        # read_context fills any remaining slots.
         vision_sources={m.message_id:m for m in routing_sources}
         for candidate in candidates:
             if candidate['exact_reply']:
@@ -213,7 +212,7 @@ def process(pipeline,message,start):
                             question='Em đã đọc tài liệu nhưng kết quả phân tích chưa có việc cần làm và tiêu chí hoàn thành đầy đủ. Anh/Chị reply thử phân tích lại nhé.')
                     if group.get('host_reason')=='document_context_budget_exhausted':
                         group['question']='Nội dung tài liệu vượt giới hạn 48 KiB sau mã hóa để phân tích đầy đủ. Anh/Chị chia nhỏ tài liệu rồi gửi lại nhé.'
-                    if group['action']=='NEW' and pipeline._vision_unavailable([m for m in sources if m.message_id in group['message_ids']]):
+                    if group['action']=='NEW' and pipeline._vision_unavailable([m for m in sources if m.message_id in group['message_ids']]) and not pipeline._unseen_tolerated([m for m in sources if m.message_id in group['message_ids']]):
                         group['action']='CLARIFY'; group['host_reason']='ingress_pixels_unavailable'
                     if group['action']=='NEW':
                         related=[c for c in candidates if not c['pending'] and set(c['reply_source_ids'])&set(group['message_ids'])]
