@@ -67,6 +67,43 @@ class FollowupStoreMixin:
         if message.reply_to_id is None:
             return None
         with self._lock:
+            confirmation=None
+            if (getattr(self,'_autonomy_enabled',False) or self.connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='autonomous_confirmations'").fetchone()):
+                confirmation=self.connection.execute('''SELECT message_id,issue_number
+                    FROM autonomous_confirmations WHERE chat_id=? AND notice_message_id=? AND status='sent' ''',
+                    (message.chat_id,message.reply_to_id)).fetchone()
+                if confirmation is not None:
+                    source=self.get(message.chat_id,confirmation['message_id'])
+                    number=confirmation['issue_number']
+                    nested=self.connection.execute('''SELECT 1 FROM autonomous_confirmations
+                        WHERE chat_id=? AND notice_message_id=? LIMIT 1''',
+                        (message.chat_id,confirmation['message_id'])).fetchone()
+                    if (confirmation['message_id']==message.reply_to_id or nested is not None or source is None
+                            or source['case_key'] is None or type(number) is not int or number<=0
+                            or source['issue_number']!=number or source['decision'] not in ('issue','needs_human')):
+                        return None
+                    import re
+                    if (not isinstance(source['issue_url'],str) or not re.fullmatch(
+                            r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/'+str(number),source['issue_url'])):
+                        return None
+                    # Normalize only this lookup. The stored Telegram edge remains
+                    # the actual reply to the sent confirmation, never rewritten.
+                    from dataclasses import replace
+                    message=replace(message,reply_to_id=confirmation['message_id'])
+            resolved=self._followup_source_original(message)
+            if confirmation is not None:
+                if not resolved or resolved['issue_number']!=confirmation['issue_number']:
+                    return None
+                root=self.connection.execute('SELECT chat_id,issue_number FROM followup_roots WHERE root_key=?',
+                                             (resolved['root_key'],)).fetchone()
+                if root is not None and (root['chat_id']!=message.chat_id or root['issue_number']!=confirmation['issue_number']):
+                    return None
+            return resolved
+
+    def _followup_source_original(self,message):
+        """Resolve original source/group/episode notices; never chase confirmation aliases."""
+        with self._lock:
             episode_notice=self.connection.execute('''SELECT r.* FROM followup_episodes e
                 JOIN followup_jobs j ON j.id=e.job_id JOIN group_notices n
                 ON n.chat_id=j.chat_id AND n.message_id=j.message_id JOIN followup_roots r ON r.root_key=e.root_key

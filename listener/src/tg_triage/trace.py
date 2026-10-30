@@ -6,13 +6,13 @@ from .config import ConfigError
 from .issue_format import redact
 
 REPO = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
-REASON_CODES = frozenset('''context_budget_exhausted decision_deadline_exhausted
+REASON_CODES = frozenset('''semantic_review_rejected context_budget_exhausted decision_deadline_exhausted
     lookup_budget_exhausted model_call_budget_exhausted initial_partition initial_result
     accounting_verified followup_result update split clarify ignore confirmed_binding
     conflicting_binding partial_binding invalid_accounting invalid_count invalid_output
     invalid_source_roles unproven_binding unproven_count provider_unavailable
     ambiguous_enrichment invalid_enrichment_sources vision_unavailable unresolved_role
-    ingress_scope_clarification ingress_packing ingress_review ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat
+    ingress_validation ingress_scope_clarification ingress_packing ingress_review ingress_candidates ingress_result semantic_new semantic_continue semantic_clarify semantic_chat semantic_analyze semantic_status cached_analysis_invalid document_read_failed document_task_incomplete document_context_budget_exhausted document_processing_failed cached_document_invalid
     ingress_pixels_unavailable invalid_ingress_output closed_episode_unclear recurrence_unproven
     lifecycle_unavailable lifecycle_lookup_failed lifecycle_target_unobserved lifecycle_foreign_sources related_create
     cached_repo_changed cached_sources_missing cached_reply_authority_revoked reply_authority_required batch_scope_correction_unclear'''.split())
@@ -223,7 +223,7 @@ class Reader:
             record = _json(row.get('record'))
             data = {k: row[k] for k in ('turn_key','root_key','version') if k in row}
             enums=dict(schema={'triage.decision/v1'},harness_owner={'AlexChu'},
-                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_packing','ingress_review','ingress_result'},
+                       intent={'initial_partition','initial_result','followup_result','update','split','clarify','ignore','ingress_candidates','ingress_packing','ingress_review','ingress_result','ingress_validation'},
                        status={'planned','done','blocked','ambiguous','dryrun','missing','queued','error','verified'})
             for field in ('schema','harness_owner','intent','status','policy_version','prompt_version'):
                 val=record.get(field)
@@ -241,6 +241,12 @@ class Reader:
             if isinstance(budget,dict):
                 data['budget']={k:budget[k] for k in ('model_calls_used','max_model_calls','reads_used','max_reads','elapsed_ms')
                                 if type(budget.get(k)) is int and budget[k]>=0}
+            if isinstance(record.get('validation_errors'),list):
+                from .ingress_diagnostics import project
+                data['validation_errors']=project(record['validation_errors'])
+            elif record.get('intent')=='ingress_validation' and isinstance(record.get('confirmed'),dict):
+                from .ingress_diagnostics import project
+                data['validation_errors']=project(record['confirmed'].get('errors'))
             if record.get('intent')=='ingress_packing' and isinstance(record.get('confirmed'),dict):
                 packed=record['confirmed']
                 data['packing']={k:packed[k] for k in ('new_text_cap','candidate_text_cap','text_bytes')

@@ -52,27 +52,27 @@ class IncidentContextTests(TestCase):
         pipeline.notice_sender=lambda c,m,t:pipeline.notices.append((m,t)) or 9000+len(pipeline.notices)
         return pipeline,downloader
 
-    def test_review_replaces_wrong_four_way_split_before_any_tool_effect(self):
+    def test_critic_rejects_wrong_four_way_split_without_rewriting_or_tool_effect(self):
         http=FakeHTTP(response(wire([463]),wire([464]),wire([465]),wire([466])),
-                      response(wire([463,464,465,466])))
+                      {'message':{'content':json.dumps({'reviews':[{'group_index':i,'verdict':'reject'} for i in range(4)]})}})
         p,download=self.pipeline(http,cap=1)
         for m in incident():p.store.enqueue(m)
         result=p.process(incident()[0])
-        self.assertEqual('issue',result.decision)
-        self.assertEqual(1,len(p.github.calls)); self.assertEqual([463],[m for m,_ in p.notices])
+        self.assertEqual('pending_review',result.decision)
+        self.assertFalse(p.github.calls); self.assertEqual([463],[m for m,_ in p.notices])
         self.assertEqual([463],[mid for _,mid in download.calls])
         self.assertEqual(2,len(http.calls))
-        self.assertEqual(4,p.store.reconcile(result.case_key).received)
+        self.assertEqual(4,p.store.connection.execute("SELECT COUNT(*) FROM autonomous_routes WHERE message_id>=463").fetchone()[0])
         self.assertNotEqual(p.store.get(incident()[0].chat_id,457)['case_key'],result.case_key)
         self.assertEqual('pending_review',p.store.get(incident()[0].chat_id,457)['decision'])
-        self.assertEqual(1,p.store.connection.execute('SELECT COUNT(*) FROM autonomous_plans WHERE anchor_id>=463').fetchone()[0])
+        self.assertEqual({'CLARIFY'},{r[0] for r in p.store.connection.execute('SELECT action FROM autonomous_routes WHERE message_id>=463')})
         for index,(request,_) in enumerate(http.calls):
             body=json.loads(request.data); packet=json.loads(body['messages'][1]['content'])
             self.assertEqual([463],[m['message_id'] for m in packet['images_order']])
             self.assertEqual([],packet['candidates'])
             self.assertLessEqual(request_text_bytes(body),8000)
             self.assertEqual(bool(index),'PROPOSED_ROUTES_FOR_REVIEW' in packet)
-        self.assertIn('booking',p.github.calls[0].body)
+        self.assertEqual('semantic_review_rejected',p.classifier.last_ingress_outcome)
 
     def test_invalid_review_fails_closed_before_plans_and_one_technical_notice(self):
         http=FakeHTTP(response(wire([463]),wire([464,465,466])),
@@ -111,7 +111,7 @@ class IncidentContextTests(TestCase):
 
     def test_review_can_keep_independent_login_separate_from_booking(self):
         proposal=response(wire([463,464,465,466]),wire([467],title='Lỗi đăng nhập',summary='Đăng nhập thất bại.'))
-        http=FakeHTTP(proposal,proposal);p,_=self.pipeline(http)
+        http=FakeHTTP(proposal,{'message':{'content':json.dumps({'reviews':[{'group_index':0,'verdict':'approve'},{'group_index':1,'verdict':'approve'}]})}});p,_=self.pipeline(http)
         sources=incident()+[message(467,text='Yêu cầu riêng: đăng nhập đúng mật khẩu vẫn bị từ chối.',mentions_listener=False)]
         for m in sources:p.store.enqueue(m)
         p.process(sources[0])

@@ -42,6 +42,25 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
+def clean_analysis(answer):
+    """Sanitize informational prose and choices without a scope prefix."""
+    if not utf8_valid(answer):
+        return ''
+    value='\n'.join(' '.join(line.split()) for line in answer[:6000].splitlines())
+    value=''.join(ch for ch in value if ch=='\n' or not unicodedata.category(ch).startswith('C'))
+    value=redact(value)
+    value=re.sub(r'(?i)(?:https?://|www\.)\S+', '[liên kết đã ẩn]', value)
+    value=re.sub(r'(?i)(?:[a-z][a-z0-9+.-]*://\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?)', '[liên kết đã ẩn]', value)
+    value=value.replace('@','＠')
+    return value.strip()
+
+
+def analysis_text(answer):
+    value=clean_analysis(answer)
+    prefix='Em phân tích dựa trên phần tin được cung cấp; không phải toàn bộ lịch sử nhóm.\n'
+    return (prefix+value)[:1500].strip()
+
+
 ADDRESS_DEFAULT="Anh/Chị"
 _PROTECTED=re.compile(r'“[^\n]*”|“[^\n]*$|"[^\n]*"|"[^\n]*$|https?://\S+|^>.*$',re.MULTILINE)
 
