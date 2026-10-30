@@ -136,7 +136,7 @@ class ConversationContextTests(TestCase):
         self.assertEqual([1],sent)
         self.assertEqual([LEGACY_PENDING_QUESTION],p.classifier.calls[1][1][0]['pending_questions'])
 
-    def test_technical_outage_late_batch_restart_deduplicates_without_merging(self):
+    def test_technical_outage_late_batch_restart_notifies_new_anchor_without_merging(self):
         sent=[]
         with TemporaryDirectory() as directory:
             path=str(Path(directory)/'outage.sqlite3')
@@ -146,7 +146,9 @@ class ConversationContextTests(TestCase):
             store=Store(path)
             p=self.build(Router(None),store,lambda c,m,t:sent.append(m) or 902)
             p.process(message(2,text='Ảnh bổ sung',reply_to_id=901,received_at=NOW+timedelta(seconds=90)))
-            self.assertEqual([1],sent)
+            self.assertEqual([1,2],sent)
+            p.close_due_cases()
+            self.assertEqual([1,2],sent)
             self.assertNotEqual(store.get(message().chat_id,1)['case_key'],store.get(message().chat_id,2)['case_key'])
             self.assertEqual(2,store.connection.execute('SELECT COUNT(*) FROM autonomous_routes').fetchone()[0])
             self.assertEqual(1,store.connection.execute('SELECT COUNT(*) FROM autonomous_outages').fetchone()[0])
@@ -160,13 +162,15 @@ class ConversationContextTests(TestCase):
         rows=p.store.connection.execute('SELECT status FROM autonomous_outages ORDER BY cycle').fetchall()
         self.assertEqual(['closed','open'],[r[0] for r in rows])
 
-    def test_technical_outage_unknown_transport_does_not_retry(self):
+    def test_technical_outage_unknown_transport_does_not_retry_same_anchor(self):
         attempts=[]
         def sender(c,m,t):
             attempts.append(m); raise TimeoutError('unknown delivery')
         p=self.build(Router(None,None),sender=sender)
         p.process(message(1)); p.process(message(2,reply_to_id=1,received_at=NOW+timedelta(minutes=5)))
-        self.assertEqual([1],attempts)
+        self.assertEqual([1,2],attempts)
+        p.close_due_cases()
+        self.assertEqual([1,2],attempts)
         self.assertEqual(2,p.store.connection.execute('SELECT COUNT(*) FROM autonomous_routes').fetchone()[0])
 
     def test_two_unvalidated_old_topics_late_photo_does_not_fake_merge(self):

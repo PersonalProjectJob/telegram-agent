@@ -25,7 +25,7 @@ Anh/Chị muốn team xử lý gì, ở màn hình/chức năng nào và kết q
 Anh/Chị muốn xử lý phần nào trong nội dung này và kết quả mong muốn là gì?
 {{/block}}
 {{#block question.technical_context}}
-Em chưa phân tích được các tin vừa nhận. Anh/Chị reply tin gốc để chỉ rõ yêu cầu cần xử lý giúp Em nhé.
+Em đã lưu các tin vừa nhận. Lượt phân tích đang lỗi nên chưa tạo được ticket.
 {{/block}}
 {{#block followup.updated}}
 Em đã bổ sung thông tin vào ticket rồi nhé 😊

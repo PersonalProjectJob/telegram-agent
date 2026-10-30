@@ -1,6 +1,6 @@
 """Event-driven semantic intake. SQL proofs and canonical renderer own all side effects."""
 from dataclasses import replace
-from . import group_notices
+from . import group_notices, analysis_choices, analysis_task, ticket_status, document_reader
 from .models import CaseAnalysis, Decision, TopicGroup
 from .thinking import CURRENT, decision_turn
 
@@ -13,8 +13,13 @@ def _has_reply_authority(group,sources,candidate):
     return any(m.message_id in own and m.message_id in bound and m.reply_to_id is not None for m in sources)
 
 
-def _validate(groups,sources,candidates,threshold):
+def _validate(groups,sources,candidates,threshold,*,read_context=None):
     if not isinstance(groups,list) or not groups:
+        return None
+    from .store import _aware
+    read_context=list(read_context or [])
+    if not sources or any(m.chat_id!=sources[0].chat_id or m.message_id>=min(s.message_id for s in sources)
+            or _aware(m.received_at)>min(_aware(s.received_at) for s in sources) for m in read_context):
         return None
     expected={m.message_id for m in sources}; seen=set(); chosen={c['candidate_id']:c for c in candidates}
     for group in groups:
@@ -24,7 +29,10 @@ def _validate(groups,sources,candidates,threshold):
         if not ids or any(type(i) is not int or i not in expected or i in seen for i in ids):
             return None
         seen.update(ids)
-        action=group.get('action'); candidate=chosen.get(group.get('candidate_id'))
+        action=group.get('action')
+        if not analysis_task.valid_payload(group):
+            return None
+        candidate=chosen.get(group.get('candidate_id'))
         if group.get('candidate_id') is not None and candidate is None:
             return None
         if action=='CONTINUE' and (candidate is None or group['confidence']<threshold):
@@ -35,13 +43,18 @@ def _validate(groups,sources,candidates,threshold):
             return None
         analysis=group.get('analysis')
         allowed=set(ids)|({m.message_id for m in candidate['messages']} if candidate else set())
+        if action=='ANALYZE':
+            allowed|={m.message_id for m in read_context}
+            for historical in candidates:
+                if _has_reply_authority(group,sources,historical):
+                    allowed|={m.message_id for m in historical['messages']}
         if analysis is None or any(i not in allowed for i in analysis.key_message_ids):
             return None
         if action=='NEW' and (analysis.verdict!='ticket' or analysis.actionable is not True
                 or analysis.classification is None or analysis.classification.confidence<threshold
                 or group['confidence']<threshold or analysis.missing_info):
             group['action']='CLARIFY'
-        if action not in ('NEW','CONTINUE','CLARIFY','CHAT'):
+        if action not in ('NEW','CONTINUE','CLARIFY','CHAT','ANALYZE','STATUS'):
             return None
         group['candidate']=candidate
     return groups if seen==expected else None
@@ -65,15 +78,15 @@ def _clarify(pipeline,case_key,source,question,*,notice=True,technical=False):
     if not notice or pipeline.config.mode=='dry-run' or pipeline.notice_sender is None:
         return
     try:
-        if technical and not pipeline.store.reserve_autonomous_outage(source):
-            return
+        if technical:
+            pipeline.store.reserve_autonomous_outage(source)  # Chat outage telemetry never suppresses a new batch notice.
         if not pipeline.store.reserve_autonomous_clarification(case_key,source,question):
             return
     except Exception:
         return  # Durable reservation unavailable: fail closed before any send.
     group_notices.notify(pipeline.store,pipeline.notice_sender,source,
         Decision('needs_human','model',case_key=case_key),(question,),pipeline.config.gh_repo,
-        text_override='Em cần Anh/Chị làm rõ thêm một chút nhé: '+question)
+        text_override=question if technical else 'Em cần Anh/Chị làm rõ thêm một chút nhé: '+question)
 
 
 def process(pipeline,message,start):
@@ -103,8 +116,12 @@ def process(pipeline,message,start):
     sources.sort(key=lambda m:m.message_id)
     key=f'{message.chat_id}:{message.message_id}'
     with decision_turn(pipeline,'ingress:'+key,key,message.message_id):
+        host_groups=[] if cached else [g for source in sources
+            if (g:=analysis_choices.selection_group(pipeline.store,source,pipeline.config.gh_repo)) is not None]
+        selection_ids={i for g in host_groups for i in g['message_ids']}
+        routing_sources=[m for m in sources if m.message_id not in selection_ids]
         candidates=[]
-        ordered=[m for m in sources if m.reply_to_id is not None][:6]
+        ordered=[m for m in routing_sources if m.reply_to_id is not None][:6]
         for source in ordered:
             found=pipeline.store.autonomy_candidates(source,pipeline.config.gh_repo)
             for candidate in found:
@@ -122,6 +139,7 @@ def process(pipeline,message,start):
                 candidates.append(candidate)
         for i,candidate in enumerate(candidates,1):
             candidate['candidate_id']=f'c{i}'
+        read_context=pipeline.store.autonomous_read_context(routing_sources) if routing_sources else []
         turn=CURRENT.get()
         if turn:
             turn.record('ingress_candidates',dict(source_ids=[m.message_id for m in sources],
@@ -130,16 +148,29 @@ def process(pipeline,message,start):
         # New evidence gets the download slots first. Optional historical pictures
         # can bias scope and exhaust the cap before the current picture is read.
         # Historical pixels require an actual reply edge; text/proofs stay intact.
-        vision_sources={m.message_id:m for m in sources}
+        vision_sources={m.message_id:m for m in routing_sources}
         for candidate in candidates:
             if candidate['exact_reply']:
                 for old in candidate['messages']:
                     vision_sources.setdefault(old.message_id,old)
+        for old in read_context:
+            vision_sources.setdefault(old.message_id,old)
+        document_rows=[] if cached else document_reader.read_documents(routing_sources,pipeline.attachments.downloader)
+        if document_rows:
+            from .document_processing import prepare
+            document_rows=prepare(document_rows,pipeline.classifier)
+        pipeline._current_document_context=(message.chat_id,document_rows)
         try:
-            if any(m.has_image for m in vision_sources.values()) and getattr(pipeline.classifier,'supports_vision',False):
+            if routing_sources and any(m.has_image for m in vision_sources.values()) and getattr(pipeline.classifier,'supports_vision',False):
                 pipeline._prepared_images=pipeline.attachments.prepare_images(key,list(vision_sources.values()))
             ask=getattr(pipeline.classifier,'analyze_ingress',None)
             if cached:
+                if cached.get('action')=='NEW' and any(document_reader.text_intent(m) for m in sources) and not (document_reader.valid_proof(cached.get('host_document_reads'),sources) and document_reader.valid_task_details(cached['analysis'])):
+                    return _quarantine(pipeline,message,'cached_document_invalid')
+                if cached.get('action')=='STATUS' and not analysis_task.valid_payload(cached):
+                    return _quarantine(pipeline,message,'cached_analysis_invalid')
+                if cached.get('action')=='ANALYZE' and not _valid_cached_analysis(pipeline,cached,sources):
+                    return _quarantine(pipeline,message,'cached_analysis_invalid')
                 groups=[cached]
                 candidate=cached.get('candidate')
                 if candidate is not None and not _has_reply_authority(cached,sources,candidate):
@@ -150,8 +181,11 @@ def process(pipeline,message,start):
                             or stored['issue_url']!=f"https://github.com/{pipeline.config.gh_repo}/issues/{proof['issue_number']}"):
                         raise ValueError('Cached ingress target proof changed')
             else:
-                answer=ask(sources,candidates,**pipeline._vision_options(list(vision_sources.values()))) if ask else None
-                groups=_validate(answer,sources,candidates,pipeline.config.ollama.confidence_threshold)
+                doc_options={'document_contents':document_rows} if document_rows else {}
+                document_failure=any(r.get('read_status')=='processing_failed' for r in document_rows)
+                if document_failure:pipeline.classifier.last_ingress_outcome='document_processing_failed'
+                answer=ask(routing_sources,candidates,read_context=read_context,**doc_options,**pipeline._vision_options(list(vision_sources.values()))) if ask and routing_sources and not document_failure else None
+                groups=_validate(answer,routing_sources,candidates,pipeline.config.ollama.confidence_threshold,read_context=read_context) if routing_sources else []
             if groups is None:
                 # No guessed membership on provider/schema failure, even adjacent messages.
                 reason=getattr(pipeline.classifier,'last_ingress_outcome','invalid_ingress_output')
@@ -159,11 +193,26 @@ def process(pipeline,message,start):
                     reason='invalid_ingress_output'  # Parsed JSON is not host-authorized source accounting.
                 groups=[dict(message_ids=[source.message_id],action='CLARIFY',candidate=None,candidate_id=None,
                     confidence=0,question='',analysis=CaseAnalysis('needs_human',None,(source.message_id,)),
-                    host_reason=reason,host_batch_notice_anchor=sources[0].message_id) for source in sources]
+                    host_reason=reason,host_batch_notice_anchor=routing_sources[0].message_id) for source in routing_sources]
+            if not cached:
+                groups+=host_groups
             if not cached and not any('host_batch_notice_anchor' in group for group in groups):
                 pipeline.store.close_autonomous_outage(message.chat_id)
             if not cached:
                 for group in groups:
+                    own=[m for m in sources if m.message_id in group['message_ids']]
+                    rows=[r for r in document_rows if r['message_id'] in group['message_ids']]
+                    group.pop('host_document_reads',None)
+                    if rows and group['action']!='STATUS':
+                        group['host_document_reads']=document_reader.proof(rows)
+                    text_rows=[r for r in rows if any(m.message_id==r['message_id'] and document_reader.text_intent(m) for m in own)]
+                    if text_rows and group['action']!='STATUS' and not document_reader.valid_proof(document_reader.proof(rows),own):
+                        group.update(action='CLARIFY',candidate=None,candidate_id=None,host_reason='document_read_failed',question=document_reader.failure_text(text_rows))
+                    if group['action']=='NEW' and text_rows and not document_reader.valid_task_details(group['analysis']):
+                        group.update(action='CLARIFY',candidate=None,candidate_id=None,host_reason='document_task_incomplete',
+                            question='Em đã đọc tài liệu nhưng kết quả phân tích chưa có việc cần làm và tiêu chí hoàn thành đầy đủ. Anh/Chị reply thử phân tích lại nhé.')
+                    if group.get('host_reason')=='document_context_budget_exhausted':
+                        group['question']='Nội dung tài liệu vượt giới hạn 48 KiB sau mã hóa để phân tích đầy đủ. Anh/Chị chia nhỏ tài liệu rồi gửi lại nhé.'
                     if group['action']=='NEW' and pipeline._vision_unavailable([m for m in sources if m.message_id in group['message_ids']]):
                         group['action']='CLARIFY'; group['host_reason']='ingress_pixels_unavailable'
                     if group['action']=='NEW':
@@ -193,12 +242,18 @@ def process(pipeline,message,start):
                     continue
                 if action=='CLARIFY' or action=='CONTINUE' and (analysis.verdict!='ticket' or not analysis.actionable):
                     batch_anchor=group.get('host_batch_notice_anchor')
-                    question=(group_notices.question('technical_context') if batch_anchor is not None else group['question'] or next(iter(analysis.missing_info),''))
+                    question=(group['question'] if group.get('host_reason') in ('document_context_budget_exhausted','document_read_failed','document_task_incomplete') else group_notices.question('technical_context') if batch_anchor is not None else group['question'] or next(iter(analysis.missing_info),''))
                     results.append(_pending(pipeline,own,candidate,question,reason,
                         notice=batch_anchor is None or own[0].message_id==batch_anchor,technical=batch_anchor is not None))
                     continue
                 case_key,group_key,members=pipeline.store.autonomy_case(own,candidate if action=='CONTINUE' else None)
                 first=min(members,key=lambda m:m.message_id)
+                if action=='STATUS':
+                    results.append(_status(pipeline,case_key,first,own))
+                    continue
+                if action=='ANALYZE':
+                    results.append(_analyze(pipeline,case_key,first,group.get('answer',''),group.get('options',[]),group.get('task')))
+                    continue
                 if action=='CHAT':
                     from .pipeline import Plan
                     plan=Plan(group_key,members,first,'model','chat',reason='semantic_chat')
@@ -212,7 +267,7 @@ def process(pipeline,message,start):
                         reason=analysis.reason,details=analysis.details)
                     plan=pipeline._safety(pipeline._plan_group({m.message_id:m for m in members},model_group,{}))
                     plan=replace(plan,key=group_key,key_ids=analysis.key_message_ids)
-                    plan=replace(plan,related_issue_number=group.get('host_related_issue'))
+                    plan=replace(plan,related_issue_number=group.get('host_related_issue'),document_reads=tuple(group.get('host_document_reads',())))
                 result=pipeline._run(plan,case_key)
                 if candidate and candidate['pending'] and result.issue_number and pipeline.notice_sender is not None:
                     if pipeline.store.reserve_autonomous_confirmation(first,result.issue_number):
@@ -237,6 +292,39 @@ def process(pipeline,message,start):
                 pipeline._prepared_images=None
 
 
+def _valid_cached_analysis(pipeline,cached,sources):
+    if cached.get('candidate') is not None or not analysis_task.valid_payload(cached):
+        return False
+    origin=cached.get('host_selection_origin')
+    if origin is None:
+        return True
+    for source in sources:
+        proof=analysis_choices.offer(pipeline.store,source,pipeline.config.gh_repo,origin=origin)
+        if proof is None or proof['options']!=cached.get('host_selection_offer'):
+            return False
+    return True
+
+
+def _status(pipeline,case_key,first,sources):
+    text=ticket_status.render(ticket_status.resolve(pipeline.store,sources,pipeline.config.gh_repo))
+    result=Decision('chat','model',case_key=case_key,reason='semantic_status')
+    pipeline.store.finish(first,result)
+    pipeline.store.close_case(case_key,result,0)
+    if pipeline.config.mode!='dry-run':
+        group_notices.notify(pipeline.store,pipeline.notice_sender,first,result,(),pipeline.config.gh_repo,text_override=text)
+    return result
+
+
+def _analyze(pipeline,case_key,first,answer,options=(),task=None):
+    result=Decision('chat','model',case_key=case_key,reason='semantic_analyze')
+    pipeline.store.finish(first,result)
+    pipeline.store.close_case(case_key,result,0)
+    if pipeline.config.mode!='dry-run':
+        group_notices.notify(pipeline.store,pipeline.notice_sender,first,result,(),pipeline.config.gh_repo,
+            text_override=analysis_task.render(task) if task is not None else analysis_choices.render(answer,options))
+    return result
+
+
 def resume_case(pipeline,case_key):
     """Resume cached canonical draft after a crash; never repeat an ambiguous GitHub POST."""
     from .pipeline import Plan
@@ -254,6 +342,16 @@ def resume_case(pipeline,case_key):
     first=min(members,key=lambda m:m.message_id); group_key=f'{first.chat_id}:{first.message_id}'
     pipeline.store.plan_groups(case_key,[(group_key,[m.message_id for m in members])])
     action=cached['action']; analysis=cached['analysis']
+    if action=='NEW' and any(document_reader.text_intent(m) for m in members) and not (document_reader.valid_proof(cached.get('host_document_reads'),members) and document_reader.valid_task_details(cached['analysis'])):
+        return _quarantine(pipeline,first,'cached_document_invalid',case_key)
+    if action=='STATUS':
+        if not analysis_task.valid_payload(cached):
+            return _quarantine(pipeline,first,'cached_analysis_invalid',case_key)
+        return _status(pipeline,case_key,first,members)
+    if action=='ANALYZE':
+        if not _valid_cached_analysis(pipeline,cached,members):
+            return _quarantine(pipeline,first,'cached_analysis_invalid',case_key)
+        return _analyze(pipeline,case_key,first,cached.get('answer',''),cached.get('options',[]),cached.get('task'))
     if action=='CLARIFY' or action=='CONTINUE' and not analysis.actionable:
         plan=Plan(group_key,members,first,'model','pending_review',reason='semantic_clarify')
     elif action=='CHAT':
@@ -267,12 +365,12 @@ def resume_case(pipeline,case_key):
             missing_info=analysis.missing_info,actionable=analysis.actionable,reason=analysis.reason,details=analysis.details)
         plan=pipeline._safety(pipeline._plan_group({m.message_id:m for m in members},model_group,{}))
         plan=replace(plan,key=group_key,key_ids=analysis.key_message_ids)
-        plan=replace(plan,related_issue_number=cached.get('host_related_issue'))
+        plan=replace(plan,related_issue_number=cached.get('host_related_issue'),document_reads=tuple(cached.get('host_document_reads',())))
     result=pipeline._run(plan,case_key)
     pipeline.store.close_case(case_key,result,0)
     if result.decision=='pending_review' and pipeline.config.mode!='dry-run':
         batch_anchor=cached.get('host_batch_notice_anchor')
-        _clarify(pipeline,case_key,first,group_notices.question('technical_context') if batch_anchor is not None else cached['question'] or group_notices.question('fallback'),
+        _clarify(pipeline,case_key,first,cached['question'] if cached.get('host_reason') in ('document_context_budget_exhausted','document_read_failed','document_task_incomplete') else group_notices.question('technical_context') if batch_anchor is not None else cached['question'] or group_notices.question('fallback'),
                  notice=batch_anchor is None or first.message_id==batch_anchor,technical=batch_anchor is not None)
     return result
 
@@ -289,6 +387,10 @@ def _quarantine(pipeline,message,reason,case_key=None):
             Decision('needs_human','none',case_key=case_key),
             (('Để bổ sung nội dung cũ, Anh/Chị reply đúng tin gốc hoặc tin xác nhận ticket giúp Em nhé.'
               if reason=='cached_reply_authority_revoked' else
+              'Em chưa xác minh được bản tài liệu đã đọc để tạo ticket. Anh/Chị gửi lại tệp .md/.txt nhé.'
+              if reason=='cached_document_invalid' else
+              'Em chưa khôi phục được nội dung phân tích đã lưu. Anh/Chị có thể reply thử phân tích lại nhé.'
+              if reason in ('cached_analysis_invalid','cached_document_invalid') else
               'Repository đã thay đổi từ lần phân tích trước. Nhờ Owner xác nhận nơi ghi nhận yêu cầu này giúp Em nhé.'),),
             pipeline.config.gh_repo)
     return result

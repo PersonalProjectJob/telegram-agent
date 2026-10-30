@@ -96,11 +96,17 @@ class CloudProvider(OllamaProvider):
             self._fallback.usage_role = "fallback"
             self._fallback.max_output = c.max_output
 
+    _ingress_cloud_view=True
+
+    def _ingress_source_text(self, text):
+        from .ai_transport import redact
+        return redact(text)
+
     def _cloud_messages(self, messages):
         """OpenAI-style messages: contact text redacted, images as inline data: parts; None when an
         image cannot be sent as a known type."""
         from .ai_transport import redact
-        from .thinking import ContextJSON
+        from .thinking import ContextJSON, DocumentContextJSON
         def content_for_cloud(message):
             content=message['content']
             if message.get('role')=='user' and isinstance(content,ContextJSON):
@@ -110,6 +116,7 @@ class CloudProvider(OllamaProvider):
                     packet=None
                 if isinstance(packet,dict) and (
                         ('source_ids' in packet and 'sources' in packet)
+                        or ('NEW_SOURCE_IDS' in packet and 'source_columns' in packet and 'sources' in packet)
                         or ('REPLY' in packet and 'ORIGINAL_METADATA' in packet)
                         or ('confirmed_requests' in packet and 'unresolved' in packet)):
                     def clean(value):
@@ -117,7 +124,8 @@ class CloudProvider(OllamaProvider):
                         if isinstance(value,list):return [clean(v) for v in value]
                         if isinstance(value,dict):return {k:clean(v) for k,v in value.items()}
                         return value
-                    return json.dumps(clean(packet),ensure_ascii=False,separators=(',',':'))
+                    serialized=json.dumps(clean(packet),ensure_ascii=False,separators=(',',':'))
+                    return DocumentContextJSON(serialized) if isinstance(content,DocumentContextJSON) else serialized
             return redact(content)
         result = []
         for message in messages:
@@ -153,10 +161,10 @@ class CloudProvider(OllamaProvider):
             return None
         from .thinking import CURRENT
         turn = CURRENT.get()
-        if turn and turn.calls >= 2:
+        if turn and turn.calls >= turn.max_calls:
             turn.reason = 'model_call_budget_exhausted'
             return None
-        local = dict(body, model=c.fallback_model, think=c.fallback_think,
+        local = dict(body, messages=body.get("_local_messages") or body["messages"], model=c.fallback_model, think=c.fallback_think,
                      options=dict(body.get("options", {})))
         return self._fallback._ask(local, parse, attempts)
 
@@ -172,6 +180,10 @@ class CloudProvider(OllamaProvider):
         messages = self._cloud_messages(body["messages"])
         if messages is None:
             return None
+        from .document_reader import request_fits,has_document_context
+        if has_document_context(messages) and not request_fits(dict(body,messages=messages)):
+            if turn:turn.reason='context_budget_exhausted'
+            return None
         started = time.monotonic()
         try:
             key = read_key(c.key_file, c.provider + "|" + c.base_url, group_name="tglistener")
@@ -180,7 +192,8 @@ class CloudProvider(OllamaProvider):
             return None
         # Format failure gets one same-host validation retry before changing provider.
         # The shared Turn remains the authority for actual calls and the deadline.
-        for _ in range(max(attempts, 2) if turn else attempts):
+        attempt_limit=max(attempts,2) if turn else attempts
+        for attempt_index in range(attempt_limit):
             try:
                 timeout = turn.attempt(body,consume=False) if turn else c.timeout_seconds
             except BudgetExhausted:
@@ -220,4 +233,13 @@ class CloudProvider(OllamaProvider):
                 return result
             if outcome not in (("invalid_output", "invalid_json") if turn else ("invalid_output",)):
                 return None
+            repair=getattr(parse,'repair',None)
+            if outcome=='invalid_output' and callable(repair) and attempt_index+1<attempt_limit:
+                repaired=repair(body)
+                if repaired is None:
+                    return None
+                body=repaired
+                messages=self._cloud_messages(body['messages'])
+                if messages is None or has_document_context(messages) and not request_fits(dict(body,messages=messages)):
+                    return None
         return None
