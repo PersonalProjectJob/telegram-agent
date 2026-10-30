@@ -412,6 +412,23 @@ Nếu parent đã có episode tái diễn được verified, lần tạo episode
 
 Trạng thái closed hoặc một câu "đã xử lý" không tự chứng minh đã hoạt động tốt. Lifecycle phải GET trạng thái hiện tại từ trusted repository/issue, lưu thời điểm quan sát và evidence cho nhận định recurrence. Reply tin cũ vẫn bắt đầu từ provenance nguồn; tuổi tin không đủ để tạo ticket mới. Chưa cấp quyền tự mở lại ticket. Quan hệ related và create phải đi qua ledger/reservation, canonical template, verified readback và reply đúng source; unknown outcome không tự retry.
 
+## Quyết định đích 2026-10-29: quyết định theo markdown (chưa triển khai)
+
+Owner chốt: mọi quyết định của bot dựa trên file markdown trong [`listener/rules/`](../../listener/rules/README.md) với trạng thái liệt kê cụ thể; model chỉ trích dữ kiện, code áp quy tắc. Các file đang `DRAFT`, runtime **chưa** đọc; các rule TG ở trên vẫn mô tả hành vi đang chạy và chỉ được sửa câu chữ ở PR triển khai code. Đặc tả: [rules-spec](../04-tasks/telegram-triage-noissue_rules-spec_261029_v1.0.0.md).
+
+| Mã | Quyết định đích | Rule hiện hành sẽ đổi |
+|---|---|---|
+| Q1 | Ảnh đơn lẻ không chữ: im lặng, giữ pending (`MEDIA_ONLY`) | Khớp TG-15 |
+| Q2 | Command quyết `intent` trước model; không có command thì model chọn trong danh sách đóng + `unknown` | TG-04, TG-07, TG-10 |
+| Q3 | Ảnh model chưa xem không chặn tạo ticket; ticket đính đủ ảnh, ghi số ảnh chưa xem (D7 = A) | TG-14, TG-15 |
+| Q4 | Bỏ ngưỡng `confidence` khỏi quyết định, chỉ ghi log | TG-08 |
+| Q5 | Model lỗi/sai schema/hết quota ⇒ `HOLD`: không ticket, không hỏi, thử lại tối đa 3 lần rồi báo Owner | TG-08, TG-12 |
+| Q6 | Giá trị chung chung so **nguyên cụm** sau chuẩn hóa | TG-08 |
+| Q7 | Reply thật vào ticket open luôn bổ sung (`APPEND`), trừ chat | TG-18 |
+| Q8 | Group gốc chỉ có reaction; mọi tin chữ của bot ở **một group xử lý chung** | TG-11, TG-12, TG-13 |
+| Q9 | Chỉ Reply thật vào tin hỏi của bot ở group xử lý mới nối về chủ đề | TG-16 (hiện: cross-chat không cấp quyền) |
+| Q10 | Mỗi trường chỉ hỏi một lần; pending hết hạn sau 7 ngày, im lặng | TG-12 |
+
 ## Bộ nhớ, truy vấn và debug vận hành
 
 Mục này cụ thể hóa TG-19/TG-24/TG-27/TG-32 cho operator và agent tiếp nhận. Đây là hướng dẫn điều tra trên schema hiện có; không cấp quyền replay hoặc sửa dữ liệu. Runtime không load tài liệu này. Mọi báo cáo phải phân biệt dữ liệu live, snapshot có thời điểm và thiết kế chưa triển khai.
@@ -2094,7 +2111,11 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/rules/readiness.md",
     "listener/rules/questions.md",
     "listener/rules/examples.md",
-    "Docs/04-tasks/telegram-triage-noissue_tasks_261029_v1.0.0.md"
+    "listener/rules/roles.md",
+    "listener/rules/preflight.md",
+    "listener/rules/channels.md",
+    "Docs/04-tasks/telegram-triage-noissue_tasks_261029_v1.0.0.md",
+    "Docs/04-tasks/telegram-triage-noissue_rules-spec_261029_v1.0.0.md"
   ],
   "source_kind": "reviewed_worktree_projection_after_baseline",
   "runtime_fingerprint": "44b11895c124001cf78bc75be274b123d58fdf5bfe3ba990c5aade11c5898d59"
