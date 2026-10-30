@@ -54,3 +54,6 @@ tài liệu {{index}}
 {{#block fallback.needs_clarity}}
 Chưa đủ thông tin để phân loại, cần người đọc xem lại.
 {{/block}}
+{{#block note.unseen_images}}
+Model chưa xem {{count}} ảnh đính kèm trong lượt phân tích; người xử lý cần mở các ảnh này để kiểm tra.
+{{/block}}

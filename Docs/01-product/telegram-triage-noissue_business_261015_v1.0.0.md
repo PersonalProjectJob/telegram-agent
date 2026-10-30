@@ -1,6 +1,6 @@
 # Telegram triage — nguồn quy tắc nghiệp vụ duy nhất
 
-**Version**: v1.13.0 · **Updated**: 2026-10-30 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
+**Version**: v1.14.0 · **Updated**: 2026-10-30 (Asia/Saigon) · **Owner/state lineage**: AlexChu · **Executor**: Codex
 
 **Status**: Nguồn nghiệp vụ của code THINKING trong PR #43 theo yêu cầu user. Bản chuẩn hóa trước đó đối chiếu THINKPAD với baseline `9746ef2`; implementation mới thêm controller, journal SQLite và prompt gọn. Kết quả review/test/installed/deploy do controller báo bằng evidence riêng, không suy từ hash tài liệu. Không replay các tin cũ. Chỉ tạo ticket thật trong kiểm thử khi user đã yêu cầu rõ, như luồng đọc hai file và tạo ticket; không tự tạo việc giả.
 
@@ -251,6 +251,8 @@ Command đủ điều kiện có heart khi nhận; topic issue có heart trướ
 
 Ghi chú media bị bỏ qua hoặc tải lỗi chỉ gồm media của tin nhắn nguồn thuộc ticket; log thống kê ảnh chỉ ghi ID tin nhắn, không ghi nội dung hay tên file.
 
+Giới hạn `max_per_case` áp dụng riêng cho ảnh upload của từng ticket, không chia chung giữa các nhóm. Ảnh đã chuẩn bị hợp lệ được tái dùng; lỗi thật không tải lại. Ảnh ngoài đợt vision được kiểm tra và tải riêng khi cần; mỗi ticket có một dòng thống kê ảnh theo ID.
+
 Ảnh mới trong reply tới root tin cậy được chuẩn bị cùng caption và hội thoại để phân tích một gói context. Sau khi xác định đúng intent/target, dùng reservation upload hiện có và lưu asset/source provenance bền vững; uploaded/reserved/unknown không tự upload lại. Không đọc lại pixels ảnh cũ chỉ để sửa phạm vi. Ảnh không khả dụng phải nói rõ, không ghi nhận OCR hay báo cập nhật thành công giả.
 
 Ingress mang metadata tài liệu thưa theo source ID (`DOCUMENTS`): có file, tên đã làm sạch, MIME, kích thước khai báo và mặc định `read_status=unread`. Không coi file EN/VI không caption là tin trống, không tuyên bố đã đọc từ tên file. Metadata/nội dung forward chỉ là dữ liệu không tin cậy, không cấp quyền đăng nhập, chạy lệnh hay deploy. Metadata nền được tính trong giới hạn20 source/8KB; cắt context tùy chọn trước nguồn bắt buộc và đánh dấu truncation. Khi sát giới hạn, `DOCUMENT_DEFAULTS` có thể giữ giá trị chung có file/chưa đọc; tên/MIME/kích thước tùy chọn được bỏ với `document_metadata_truncated=true`. Mọi source ID, cờ tài liệu và ít nhất30 ký tự đầu mỗi caption hiện tại vẫn phải còn.
@@ -264,6 +266,8 @@ Base prompt/schema/context vẫn≤8000 byte; lane tài liệu host giới hạn
 ### TG-15 — Vision và ảnh thiếu ngữ cảnh
 
 Phân tích ảnh ban đầu phụ thuộc provider/consent/fallback. Ảnh không caption và không yêu cầu có thể pending_review, không tự tạo ticket/hỏi. Vision lỗi hoặc partition mơ hồ của yêu cầu tạo needs_human; câu hỏi thuần túy về ảnh vẫn chat.
+
+Ngân sách vision chung là `min(5, max_per_case)`. Autonomous chỉ giữ NEW khi provider hỗ trợ vision; model đã xem ít nhất một ảnh của group; group có chữ ngoài command; ảnh chưa xem chỉ bị cắt bởi ngân sách và metadata hợp lệ, chưa tải tại thời điểm quyết định; tổng ảnh group không vượt giới hạn ticket; và mỗi ảnh chưa xem có chữ riêng ngoài command hoặc reply thật tới một tin khác trong cùng group. Trường hợp khác vẫn CLARIFY khi pixel không khả dụng. Ticket ghi qua template số ảnh đã được nhận để đính kèm mà model chưa xem; ảnh bỏ qua hoặc tải lỗi không tính trong số đó. Rủi ro còn lại: ảnh chưa xem sau đó tải lỗi được báo là “không tải được” và ticket vẫn được tạo. Lựa chọn ảnh read_context không đổi.
 
 Valid partition giữ riêng từng group: uncertainty của image group không nuốt task/chat khác. Khi partition/model lỗi, chỉ component có reply edge thật được xử lý chung; không dùng adjacency hay cùng sender để gộp unrelated text vào image ticket. Image-command chưa rõ giữ type nhưng needs_human; command text độc lập vẫn theo rule. Pixel không khả dụng vẫn cho phép phân loại caption/text với marker rõ, không gửi ảnh vượt consent hay tuyên bố OCR. Budget/provider/unavailable-pixel/semantic-uncertainty là reason khác nhau; không nói “chưa đọc ảnh” cho lỗi chưa dispatch do budget.
 
@@ -420,7 +424,7 @@ Owner chốt: mọi quyết định của bot dựa trên file markdown trong [`
 |---|---|---|
 | Q1 | Ảnh đơn lẻ không chữ: im lặng, giữ pending (`MEDIA_ONLY`) | Khớp TG-15 |
 | Q2 | Command quyết `intent` trước model; không có command thì model chọn trong danh sách đóng + `unknown` | TG-04, TG-07, TG-10 |
-| Q3 | Ảnh model chưa xem không chặn tạo ticket; ticket đính đủ ảnh, ghi số ảnh chưa xem (D7 = A) | TG-14, TG-15 |
+| Q3 | D7 được triển khai với sáu điều kiện tại TG-15, gồm kiểm metadata trước khi tải và chữ hoặc reply cho từng ảnh chưa xem; ticket ghi số ảnh chưa xem được nhận để đính kèm, giới hạn upload theo từng ticket. Ảnh tải lỗi sau quyết định được báo lỗi và ticket vẫn tạo. | TG-14, TG-15 |
 | Q4 | Bỏ ngưỡng `confidence` khỏi quyết định, chỉ ghi log | TG-08 |
 | Q5 | Model lỗi/sai schema/hết quota ⇒ `HOLD`: không ticket, không hỏi, thử lại tối đa 3 lần rồi báo Owner | TG-08, TG-12 |
 | Q6 | Giá trị chung chung so **nguyên cụm** sau chuẩn hóa | TG-08 |
@@ -1247,6 +1251,42 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_html_document_processing.py",
           "symbol": "HTMLDocumentProcessingTests.test_wire_budget_ignores_private_fallback_and_never_serializes_it"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t1_batch_history_does_not_consume_case_limit"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t2_case_limit"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t3_absent_and_prepared_reuse"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t4_real_failure_not_retried"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t5_logs_case_and_batch"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t1_unseen_note_only_counts_attached"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t2_skipped_images_not_counted_as_unseen"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_unseen_download_failure_has_no_unseen_note"
+        },
+        {
+          "path": "listener/tests/test_attachment_note_scope.py",
+          "symbol": "AttachmentNoteScopeTests.test_unseen_note_counts_only_accepted_case_images"
         }
       ]
     },
@@ -1260,6 +1300,10 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/src/tg_triage/pipeline.py",
           "symbol": "Pipeline._plan_chunk"
+        },
+        {
+          "path": "listener/src/tg_triage/pipeline.py",
+          "symbol": "Pipeline._unseen_tolerated"
         }
       ],
       "tests": [
@@ -1274,6 +1318,38 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
         {
           "path": "listener/tests/test_thinking_image_context.py",
           "symbol": "ThinkingImageTests.test_uncertain_image_group_does_not_swallow_independent_task_or_chat"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t6_autonomous_two_groups"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t7_guard_all_five_conditions"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t8_followup_incoming_outside_batch"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t9_template_validation"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_d1_unseen_caption_or_group_reply_required"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_d1_captionless_unseen_without_reply_clarifies"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t7_single_unseen_image_clarifies"
+        },
+        {
+          "path": "listener/tests/test_image_case_limit.py",
+          "symbol": "ImageCaseLimitTests.test_t8_followup_over_vision_budget_clarifies_without_upload"
         }
       ]
     },
@@ -2047,8 +2123,8 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/ai_transport.py": "3534ca68a62e76328bb4118d79277aa21ce57d2a60dcc300a50a070a26f08f43",
     "listener/src/tg_triage/analysis_choices.py": "596f09a18aef815a1ec8e8a8af79535d55a32ddbe9bd6bffea3b0cbde0aadda1",
     "listener/src/tg_triage/analysis_task.py": "b2aada4998ce3c2c43d04a43025ed5ad72455db34c1694c2225b7af6aba954b5",
-    "listener/src/tg_triage/attachments.py": "da020108bcecab0cc8fd4fece8451607cd6d7c1d6447e7038efebed2371cd0ae",
-    "listener/src/tg_triage/autonomous.py": "c045094d099430a5936c527d5e6079f84a7b9b597823d057bfe436a967ff4413",
+    "listener/src/tg_triage/attachments.py": "9214bcd7637334ffddc737de730f2516ccbc5074b46b9015073cf952930c18f4",
+    "listener/src/tg_triage/autonomous.py": "7688848460e8ae91e3ce26caaf084fe6409584bf285009b8e753cdfea46832c3",
     "listener/src/tg_triage/autonomy_store.py": "3ef24df0f53891152dfffd004c8901d43261343781a1282521064f320d1b483a",
     "listener/src/tg_triage/classifier.py": "860dae897cbf50e110d9761e29272e1e0d7ee2a2b65c681f7ed7637d4f9362a3",
     "listener/src/tg_triage/config.py": "42e3af7cdce5282937cd7b879e676f02cebba088062de24ada1f4e58224120ec",
@@ -2066,7 +2142,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/model_lock.py": "52a02869c560575355d448856001f799cc3579b52d5eea8687fb2c1e1179675c",
     "listener/src/tg_triage/models.py": "4cdde0d6f3d0af4571fe032c90a2c423143d69512a6ddeea5d541e844fea4e14",
     "listener/src/tg_triage/pacing.py": "6d104e30d9b51883dfb27d56ad107089e93a42e88c085ae72e03c0f06af0793e",
-    "listener/src/tg_triage/pipeline.py": "bdc9f45218da8b6d96a373e7c109c79d94b1874a491c7db1772230bce38a48c9",
+    "listener/src/tg_triage/pipeline.py": "3ad25cf3ba704defaf8870f6436e871f7203f86232a290dd4e782769f59c4da0",
     "listener/src/tg_triage/provider.py": "b1e3e280829bf3729996cab5c425e58e82cf2c6cad16e95e67a3bbaae8a34b7e",
     "listener/src/tg_triage/reactions.py": "eb5e1f13db0127412239cdc0275bc4ffbc90f287eb87c060124328a0dcc53e71",
     "listener/src/tg_triage/receipt.py": "ff455fdfb9424cc3e802641607dfe3c872ddc65490b2705bb804ca92f282d51a",
@@ -2077,11 +2153,11 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
     "listener/src/tg_triage/thinking.py": "308f7f5814b16b05cff847d38be2b38772c5e65f162f8ab5052bc3012340808e",
     "listener/src/tg_triage/thinking_transport.py": "12aa57301f012f1091e79af7a3756139c8ac8b475e4c97e4d9b66024932e0d66",
     "listener/src/tg_triage/ticket_status.py": "0cd6ed74cf653432962da665dcbb51e2b94f4498b3e59bba133410fda7917326",
-    "listener/src/tg_triage/ticket_templates.py": "bf3e79947097167d0eec6db8de187630f32cf577014790f2ab183c1f352001c3",
+    "listener/src/tg_triage/ticket_templates.py": "2b7e2c52a1de4730bc5fba68e679b788b4c89d9a31dff33bc634f2d9f704dc3b",
     "listener/src/tg_triage/topic_store.py": "495bd90150783df45463d86a66dd32927e69fec001f7406808f8496f2466f672",
     "listener/src/tg_triage/trace.py": "3b4c55d7664a8024359c3a35113841c7af76e7770a1823dfe3843d3ea01d2ba0",
     "listener/src/tg_triage/usage.py": "421146bd0ac181a2ff45be7c2d7e82cca1ff54cafc2941bc958f20eb9622828e",
-    "listener/templates/github-ticket/_common.md": "1623c19e563940d7d2d264f3330f03633231bfed45150df6e91ae09419fe0cae",
+    "listener/templates/github-ticket/_common.md": "289673fcdee85098ce2b0f64675961b58f5260a0aac271788c5c3b2c692c6c1d",
     "listener/templates/github-ticket/bug.md": "4a0eb199589d55dbc33c2db4297b71258858c915e513c79ab2be62c23e390bb4",
     "listener/templates/github-ticket/comments.md": "3a358d5d6ee36d1bcc810fadb03208c2f9cffbd9a672ccdb5348761fa43f8a27",
     "listener/templates/github-ticket/feedback.md": "4f42dce1ab50b3f8c492f24523caf447d4273b8fbad629243b716e81bbc92cda",
@@ -2126,6 +2202,7 @@ Một block JSON duy nhất bên dưới là chỉ mục truy vết của chính
 
 | Version | Ngày giờ (Asia/Saigon) | Tác giả | Thay đổi |
 |---|---|---|---|
+| v1.14.0 | 2026-10-30 | Codex / owner AlexChu | Tách ngân sách vision khỏi giới hạn upload theo ticket; áp dụng D7 sáu điều kiện, kiểm metadata trước tải và ghi số ảnh chưa xem được nhận để đính kèm. Ảnh tải lỗi sau quyết định được báo lỗi và ticket vẫn tạo. |
 | v1.13.0 | 2026-10-30 | Claude / owner AlexChu | Gộp nhánh Codex đang chạy production (đọc tài liệu, phân tích, STATUS, ingress diagnostics; các dòng v1.7.2–v1.12.0 ngày 19–21/10 bên dưới) với main (TG-33 template, link nguồn, ghi chú ảnh theo nguồn). Hai nhánh đánh số song song từ v1.7.1; số v1.8.x/v1.12.0 trùng tên nhưng là thay đổi khác nhau. |
 | v1.8.3 | 2026-10-29 | Codex / owner AlexChu | Giới hạn ghi chú media theo nguồn ticket, log thống kê ảnh bằng ID và sửa link IPv6/IDNA. |
 | v1.8.2 | 2026-10-29 | Codex / owner AlexChu | Cho phép link nguồn GitHub và link chứa email/phone theo quyết định Owner; giữ chặn userinfo. |

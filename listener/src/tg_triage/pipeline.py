@@ -478,6 +478,30 @@ class Pipeline:
                      if self._prepared_images is not None else set())
         return bool(expected - available)
 
+    def _unseen_tolerated(self, messages):
+        from .attachments import ALLOWED_MIME, VISION_BUDGET
+        if (not getattr(self.classifier, "supports_vision", False)
+                or getattr(self.classifier, "rejects_images", False)
+                or self._prepared_images is None):
+            return False
+        images = {(m.chat_id, m.message_id) for m in messages if m.has_image}
+        seen = {(m.chat_id, m.message_id) for m, _ in self._prepared_images.accepted}
+        budget = {item[:2] for item in self._prepared_images.result.image_skips
+                  if item[2] == VISION_BUDGET}
+        group_ids = {(m.chat_id, m.message_id) for m in messages}
+        grounded = all(
+            _own_words(m.text) or (m.reply_to_id != m.message_id
+                                   and (m.chat_id, m.reply_to_id) in group_ids)
+            for m in messages if (m.chat_id, m.message_id) in images - seen)
+        invalid_metadata = any(
+            (m.chat_id, m.message_id) in images - seen and
+            ((m.image_size is not None and m.image_size > self.config.attachments.max_bytes)
+             or (m.image_mime is not None and m.image_mime not in ALLOWED_MIME))
+            for m in messages)
+        return (bool(images & seen) and len(images) <= self.config.attachments.max_per_case
+                and any(_own_words(m.text) for m in messages)
+                and not invalid_metadata and grounded and bool(images - seen) and (images - seen) <= budget)
+
     def _vision_fallback(self, messages, group=None):
         first = min(messages, key=lambda m: m.message_id)
         # A lone photo is not an explicit request and must not manufacture an issue.

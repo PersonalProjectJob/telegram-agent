@@ -19,10 +19,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from . import ticket_templates
+
 LOG = logging.getLogger(__name__)
 
 ALLOWED_MIME = frozenset(("image/jpeg", "image/png", "image/webp"))
 ALT_TEXT = "Ảnh"
+VISION_MAX_IMAGES = 5
+VISION_BUDGET = "vision_budget"
 
 # 12.14: the only document types accepted. Fixed in code, not configurable. For each extension, the
 # MIME types Telegram may report for it. The extension is read from the file name or, when the
@@ -212,11 +216,12 @@ class AttachmentProcessor:
             if prepared is None:
                 accepted = self._download(case_key, candidates, directory, result) if candidates else []
             else:
-                ids = {(m.chat_id, m.message_id) for m in candidates}
-                accepted = [(m, p) for m, p in prepared.accepted if (m.chat_id, m.message_id) in ids]
-                result.image_skips = [item for item in prepared.result.image_skips if item[:2] in ids]
-                result.image_failures = [item for item in prepared.result.image_failures if item[:2] in ids]
-                result.notes.extend(self._image_notes(result.image_skips, result.image_failures))
+                accepted = self._download(case_key, candidates, directory, result, reuse=prepared) if candidates else []
+                seen = {(m.chat_id, m.message_id) for m, _ in prepared.accepted}
+                unseen = sum((m.chat_id, m.message_id) not in seen for m, _ in accepted)
+                if unseen:
+                    result.notes.append(ticket_templates.active().render(
+                        "_common.md", "note.unseen_images", {"count": str(unseen)}))
             accepted_documents = (self._download_documents(documents, directory, result, document_reads)
                                   if documents else [])
             if not live:
@@ -233,16 +238,33 @@ class AttachmentProcessor:
             shutil.rmtree(directory, ignore_errors=True)
         return result
 
-    def _download(self, case_key, candidates, directory, result):
+    def _download(self, case_key, candidates, directory, result, *, limit=None,
+                  limit_reason="vượt giới hạn số ảnh", reuse=None, label="Images"):
         """Validate each image; every skipped image is counted by reason, never named."""
         limits = self.settings
         skipped = {"vượt giới hạn số ảnh": 0, "quá dung lượng cho phép": 0,
                    "sai định dạng (chỉ nhận JPG, PNG, WEBP)": 0, "không tải được": 0}
+        limit = limits.max_per_case if limit is None else limit
         accepted = []
+        reused = {(m.chat_id, m.message_id): p for m, p in reuse.accepted} if reuse else {}
+        previous = {item[:2]: item for item in reuse.result.image_skips if item[2] != VISION_BUDGET} if reuse else {}
+        failures = {item[:2]: item for item in reuse.result.image_failures} if reuse else {}
+        candidates = sorted(candidates, key=lambda m: (m.chat_id, m.message_id) not in reused)
         for message in candidates:
-            if len(accepted) >= limits.max_per_case:
+            key = (message.chat_id, message.message_id)
+            if key in previous:
+                item = previous[key]
+                result.image_skips.append(item)
+                skipped[item[2]] += 1
+                if key in failures:
+                    result.image_failures.append(failures[key])
+                continue
+            if len(accepted) >= limit:
                 skipped["vượt giới hạn số ảnh"] += 1
-                result.image_skips.append((message.chat_id, message.message_id, "vượt giới hạn số ảnh"))
+                result.image_skips.append((*key, limit_reason))
+                continue
+            if key in reused:
+                accepted.append((message, reused[key]))
                 continue
             if message.image_size is not None and message.image_size > limits.max_bytes:
                 skipped["quá dung lượng cho phép"] += 1
@@ -289,8 +311,8 @@ class AttachmentProcessor:
         def ids(items):
             return ",".join(f"{chat}:{message}" for chat, message in items[:20])
 
-        LOG.info("Images found=%s accepted=%s skipped_limit=%s skipped_size=%s skipped_type=%s "
-                 "failed=%s accepted_ids=%s skipped_ids=%s", len(candidates), len(accepted),
+        LOG.info("%s found=%s accepted=%s skipped_limit=%s skipped_size=%s skipped_type=%s "
+                 "failed=%s accepted_ids=%s skipped_ids=%s", label, len(candidates), len(accepted),
                  skipped["vượt giới hạn số ảnh"], skipped["quá dung lượng cho phép"],
                  skipped["sai định dạng (chỉ nhận JPG, PNG, WEBP)"], skipped["không tải được"],
                  ids([(m.chat_id, m.message_id) for m, _ in accepted]),
@@ -453,7 +475,9 @@ class PreparedImages:
         try:
             os.chmod(self.directory, 0o700)
             candidates = [m for m in messages if m.has_image]
-            self.accepted = processor._download(case_key, candidates, self.directory, self.result)
+            self.accepted = processor._download(case_key, candidates, self.directory, self.result,
+                                               limit=min(VISION_MAX_IMAGES, processor.settings.max_per_case),
+                                               limit_reason=VISION_BUDGET, label="Vision batch")
         except BaseException:
             self.close()
             raise

@@ -20,9 +20,21 @@ class AttachmentNoteScopeTests(unittest.TestCase):
         self.addCleanup(prepared.close)
         a = processor.process("a", messages[:1], live=False, prepared=prepared)
         b = processor.process("b", messages[1:], live=False, prepared=prepared)
+        self.assertEqual(a.image_skips, [])
+        self.assertEqual(len(b.image_skips), 1)
+        self.assertEqual(b.image_skips[0][2], "vượt giới hạn số ảnh")
+        self.assertEqual((a.dry_run_count, b.dry_run_count), (1, 5))
+
+    def test_unseen_note_counts_only_accepted_case_images(self):
+        messages = [photo(i) for i in range(1, 8)]
+        processor = self.processor(FakeDownloader({i: (JPG, "private.jpg") for i in range(1, 8)}))
+        prepared = processor.prepare_images("batch", messages)
+        self.addCleanup(prepared.close)
+        a = processor.process("a", messages[:1], live=False, prepared=prepared)
+        b = processor.process("b", messages[1:], live=False, prepared=prepared)
         self.assertEqual(a.notes, [])
-        self.assertEqual(b.notes, ["Ảnh bị bỏ qua (2 ảnh): vượt giới hạn số ảnh"])
-        self.assertEqual((a.dry_run_count, b.dry_run_count), (1, 4))
+        self.assertEqual(b.notes, ["Ảnh bị bỏ qua (1 ảnh): vượt giới hạn số ảnh",
+                                   "Model chưa xem 1 ảnh đính kèm trong lượt phân tích; người xử lý cần mở các ảnh này để kiểm tra."])
 
     def test_failures_are_scoped_and_first_failure_is_per_case(self):
         def downloader(chat, number, directory):
@@ -56,7 +68,7 @@ class AttachmentNoteScopeTests(unittest.TestCase):
         self.addCleanup(prepared.close)
         shared = processor.process("case", messages, live=False, prepared=prepared)
         self.assertEqual(plain.notes, ["Ảnh bị bỏ qua (1 ảnh): vượt giới hạn số ảnh"])
-        self.assertEqual(shared.notes, plain.notes)
+        self.assertEqual(shared.notes, ["Ảnh bị bỏ qua (1 ảnh): vượt giới hạn số ảnh"])
 
     def test_image_accounting_logs_counts_and_ids_without_names(self):
         messages = [photo(i) for i in range(1, 7)]

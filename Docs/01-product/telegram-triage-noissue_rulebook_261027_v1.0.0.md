@@ -139,7 +139,7 @@ Code áp theo **đúng thứ tự** sau, bước đầu tiên khớp thì dừng
 | ID | Rule | Thực thi |
 |---|---|---|
 | TG-14.1 | Ảnh, caption, reply và tin xung quanh MUST được phân tích **trong một gói**; `images_order` ánh xạ ảnh → source ID. MUST NOT phân tích ảnh bằng call riêng rồi ghép. | `thinking.py` |
-| TG-14.2 | Ảnh hợp lệ: JPEG/PNG/WEBP, kiểm **signature** file, ≤ `max_bytes` (10 MB), ≤ `max_per_case` (5). | `attachments.py` |
+| TG-14.2 | Ảnh hợp lệ: JPEG/PNG/WEBP, kiểm **signature** file, ≤ `max_bytes` (10 MB), upload ≤ `max_per_case` (5) cho mỗi ticket. | `attachments.py` |
 | TG-14.3 | Tài liệu hợp lệ: pdf, docx, xlsx, pptx, txt, csv, md, json, html, zip; tên file và MIME phải khớp; ≤ 10 MB; ≤ 5/case. MUST NOT mở, giải nén hay chạy file. File thực thi luôn bị từ chối. | `attachments.py` |
 | TG-14.4 | Tên file upload do code đặt. Upload vào release tag `attachments-<case_key>` của repo đích; ≤ 60 upload/giờ chung ảnh + tài liệu. | `attachments.py` |
 | TG-14.5 | Media lỗi/vượt giới hạn ⇒ ghi chú trong issue, **không** làm mất ticket. | `attachments.py` |
@@ -152,7 +152,8 @@ Code áp theo **đúng thứ tự** sau, bước đầu tiên khớp thì dừng
 | TG-15.3 | Vision lỗi hoặc partition mơ hồ với ảnh có yêu cầu ⇒ `needs_human`. Câu hỏi thuần về ảnh ⇒ chat. | `pipeline.py` |
 | TG-15.4 | Khi model/partition lỗi: chỉ gom chung các tin nối bằng **reply edge thật**. MUST NOT gộp text không liên quan vào ticket ảnh vì nằm kề nhau. | `pipeline.py:_vision_failure_plans` |
 | TG-15.5 | Text không có ảnh, chưa phân loại vì vision lỗi ⇒ `pending_review`, reason `vision_partition_unresolved`, notice `context_pending`. | `pipeline.py`, TG-12 |
-| TG-15.6 | Lý do lỗi MUST phân biệt: hết budget / provider lỗi / không có pixel / model không chắc. MUST NOT nói "chưa đọc ảnh" khi lỗi là do budget. Không tuyên bố đã OCR. | `pipeline.py` |
+| TG-15.6 | Lý do lỗi MUST phân biệt: hết ngân sách lượt gọi model/deadline / provider lỗi / không có pixel / model không chắc. MUST NOT nói "chưa đọc ảnh" khi lỗi là do ngân sách lượt gọi model/deadline; quy định này không áp dụng cho ngân sách số ảnh vision ở TG-15.7. Không tuyên bố đã OCR. | `pipeline.py` |
+| TG-15.7 | Vision tối đa `min(5, max_per_case)` ảnh mỗi batch. [A] D7 giữ NEW chỉ khi provider hỗ trợ vision, model đã xem ≥1 ảnh của group, group có chữ ngoài command, mọi ảnh chưa xem chỉ do ngân sách và metadata hợp lệ, chưa tải tại thời điểm quyết định, số ảnh group ≤ `max_per_case`, và mỗi ảnh chưa xem có chữ riêng ngoài command hoặc reply thật tới tin khác trong cùng group. Ticket ghi qua template số ảnh chưa xem được nhận để đính kèm; ảnh bỏ qua hoặc tải lỗi không tính. Rủi ro còn lại: ảnh chưa xem sau đó tải lỗi được báo “không tải được” và ticket vẫn tạo. Nếu không đủ điều kiện, pixel thiếu vẫn dẫn tới CLARIFY. | `pipeline.py:_unseen_tolerated`, `autonomous.py` |
 | TG-22.1 | Khi tách ticket, ảnh không caption có thể còn **chưa gán** nhưng MUST hiện rõ là chưa gán. | `followups.py` |
 | TG-30.1 | Ảnh chỉ lên model cloud khi **cả** `cloud_consent` và `cloud_image_consent` là `true`; nếu không, dùng Ollama vision local. | `provider.py` |
 
