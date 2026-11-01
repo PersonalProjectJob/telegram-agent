@@ -14,8 +14,8 @@ approved_by: "Owner — ok proceed in chat"
 
 ## Metadata
 
-- Version: v1.0.12 (giữ tên file gốc để không làm gãy liên kết).
-- Created: 2026-10-28 17:40; Updated: 2026-10-29 10:40, giờ Việt Nam.
+- Version: v1.0.77 (giữ tên file gốc để không làm gãy liên kết).
+- Created: 2026-10-28 17:40; Updated: 2026-11-01 22:20, giờ Việt Nam.
 - Document status: **Approved / Active — Owner yêu cầu proceed đến Published PROD ngày 28/10/2026**.
 - Audience: Owner, Marketing, vận hành, Development, QA.
 - Harness / data / state owner: AlexChu.
@@ -26,6 +26,165 @@ approved_by: "Owner — ok proceed in chat"
 - Đồng bộ tài liệu: Owner yêu cầu ngày 29/10/2026 chép bộ 5 DOCS mới nhất từ worktree về `C:/Users/AD/Documents/GitHub/AgentBuilder/Docs/`, chưa commit. Bản repo chính là điểm đọc chung sau đồng bộ; giữ bản worktree trùng nội dung tại thời điểm bàn giao.
 - Phần bổ sung ngày 29/10: đặc tả business `nailblog <URL>` tại §10.1, do Owner yêu cầu; chưa triển khai parser, điểm nhận lệnh hoặc kiểm thử lệnh này trên THINKPAD. Kết quả PROD tại §11.3 là bằng chứng ngày 28/10, không phải kiểm tra vận hành mới ngày 29/10.
 
+## 0. Trạng thái vận hành hiện tại — 01/11/2026, 22:20 VN
+
+Phần này là mốc hiện hành sau yêu cầu và triển khai mới nhất; các phần sau ghi cả quyết định, đề xuất và kết quả **tại thời điểm lịch sử**. Nếu nội dung cũ nói chưa có Việt hóa, ảnh AI, Telegram hoặc nguồn chính thống, hãy đọc theo ngày của mục đó, không coi là trạng thái mới nhất.
+
+### Hoàn tất khảo sát các ranh giới còn lại — 01/11 khoảng 22:20 VN
+
+`strict_json`, `model_response` và `validate_review` đã được nhiều consumer dùng chung; phạm vi fence được truyền rõ ở consumer. Tách tiếp toàn bộ `localization.py` lúc này có nhiều call site và binding evidence, chưa chứng minh được lợi ích hay tính tương thích nên chưa thay đổi. AST của 81 module, chuẩn hóa tên hàm, chỉ còn hai hàm `main` entrypoint giống nhau từ ba dòng trở lên; chúng nạp hai broker/policy khác nhau, không gộp chỉ để giảm vài dòng. Đây là kiểm tra AST tĩnh, không khẳng định không có đoạn trùng một phần hoặc import động.
+
+Guard có contract khác nhau: đường publish official `official_scratch_publish.verify_media` dùng kiểm HTTP 200 qua `scratch_cdn_readback`; `official_native_guard.readback` trả bytes và còn được dùng bởi `official_visual_evidence.inspect` cho prototype/review. Không thay chúng bằng một contract hoặc khôi phục so sánh CDN vào guard publish. Kiểm kê service/socket/timer của 9 module không có import tĩnh được ghi trong [tham chiếu agent](research/nailhub-source-mirror-noissue_agent-reference_261101_v1.0.0.md); không xóa module nào. Ảnh nguồn quá 10 media chưa được tự cắt. Các tối ưu khác chưa xác minh vẫn để sau; chưa có bài original được quan sát đi trọn Create/Published/readback sau các lát mới.
+
+### Thống nhất chọn chủ đề theo slot — 01/11 khoảng 22:16 VN
+
+Đã dùng cùng `slot_policy` khi chọn ứng viên scheduled và kiểm lại trước chuẩn bị: 08 nail, 12/16/20 business. Chỉ ứng viên hợp slot mới tham gia ưu tiên bài không theo mùa/Halloween; do đó bài sai giờ không còn che một bài Halloween hợp 08. Thứ tự ứng viên scheduled hợp lệ theo queue ổn định; `topics.priority_slots` business/luxury cũ vẫn được chấp nhận để tương thích, nhưng **không xếp lại scheduled**; đường manual không gắn slot giữ thứ tự cũ với fallback luxury. Giới hạn Halloween, tax, quota và UNKNOWN được giữ. Thay đổi này có chủ ý về thứ tự lựa chọn, không bảo đảm phân loại heuristic luôn đúng.
+
+Stage đạt **326 test, 26 skipped**; probe DB/snapshot live chỉ đọc cho cùng tập hợp hợp slot trước/sau tại thời điểm kiểm (08: 10; mỗi giờ business: 1), không ghi DB. Reviewer độc lập PASS logic/installer/hậu kiểm; sau cài 81 file khớp bundle, DB integrity OK, không unresolved, worker/broker/timer active/enabled. Backup `/opt/nailhub-source-mirror/backups/slot-unify-20261101`; không restore DB. Không có Create/publish thử, và kết quả scheduled thực tế sau thay đổi chưa được xác nhận.
+
+Kiểm kê AST ghi nhận 9 module không có import tĩnh đi vào, gồm `__init__`, `isolated_media_validator`, `official_auto_gate`, `official_autostage`, `official_cover_entry`, `official_review_worker`, `publication_gate`, `scratch_cover_entry`, `telegram_command_ipc`. Nhiều module là entrypoint/hành vi động: **không kết luận unused, không xóa** nếu chưa kiểm mọi service/CLI/call site và evidence. Bài nguồn có hơn 10 media vẫn bị giữ trước tải theo hành vi cũ; không tự cắt ảnh tải được. Các lát refactor khác còn chờ khảo sát, không coi toàn bộ kế hoạch đã hoàn thành.
+
+### Đơn giản hóa scanner kiểm trùng — 01/11 khoảng 22:11 VN
+
+Đã dùng chung hai phép giống nhau: tính timeout và giải mã response admin. Nhánh official vẫn kiểm nguồn URL theo từng trang; nhánh bài gốc vẫn kiểm title/summary và semantic riêng, với kiểu lỗi và lý do riêng. Không gộp kết luận trùng, không thay pagination, quota, guard hay policy. Lưu ý khi instrumentation: alias helper của nhánh original phải được patch ở đúng namespace dùng nó.
+
+Stage đạt **324 test, 26 skipped**. Reviewer độc lập xác nhận hợp đồng đọc giữ nguyên; probe GET-only thật dưới khóa quét ổn định 147 ID/15 trang hai lượt cho mỗi nhánh, không gọi model và không Create. Cài xong 81 file khớp bundle, worker/broker/timer active/enabled, integrity OK, không unresolved; backup `/opt/nailhub-source-mirror/backups/scan-unify-20261101`. Không restore DB. Kiểm trùng vẫn không nguyên tử với writer độc lập; probe không chứng minh một bài đã Published. Những phần đơn giản hóa khác chỉ tiếp tục theo từng lát sau review, không coi toàn bộ plan đã xong.
+
+### Cập nhật bộ lọc — triển khai 01/11 lúc khoảng 22:05 VN
+
+- Consumer kiểm factual/adjudicator của bài gốc và kiểm trùng giờ nhận JSON thô hoặc một hàng rào Markdown bao trọn JSON, vẫn strict schema, cấm duplicate keys/NaN và giữ verdict HOLD; generation đầu không được nới. Replay evidence thật: SBA Grow 16:00 fenced PASS đọc được, California 16:00 vẫn HOLD 7 issue, SBA Grow 20:00 vẫn HOLD 1 issue. Đây là replay, không phải bài đã đăng.
+- Bộ lọc SBA phân biệt mua doanh nghiệp/cơ sở với mua thiết bị/dịch vụ theo ngữ cảnh; vẫn chặn các chủ đề pháp lý/thuế và technical như trước. `Build a luxury nail salon` nhận business, ví dụ build gel/acrylic nails được đánh dấu không rõ thay vì business. Hai quy tắc là heuristic, không bảo đảm nhận mọi cách nói; giữ nguồn, glossary và MQM.
+- Duplicate precheck và kiểm trước Create ghi audit bền vững theo article/phase, outcome và reason code an toàn, không lưu raw payload hoặc exception text tùy ý; nếu không ghi được audit, bước đăng không tự đi tiếp. Quét admin chỉ đọc lúc khoảng 22:04 trả khác biệt trên 147 bài và ghi audit canary; **không chứng minh lý do HOLD 20:12**. Cạnh tranh với tác giả độc lập vẫn không nguyên tử.
+- Stage đạt 321 test, 26 skipped; reviewer độc lập kiểm các ví dụ đối nghịch và installer. Cài bốn module, backup `/opt/nailhub-source-mirror/backups/filters-20261101`; hậu kiểm 81 file khớp bundle, worker/broker/timer active/enabled, integrity OK, không unresolved. Không đổi HTTP 200-only, policy, quota, guard, không tạo/publish bài thử. Lịch và kết quả thật ở slot sau vẫn cần theo dõi.
+
+### Kế hoạch đơn giản hóa Python — Owner yêu cầu 01/11
+
+**Kết quả lát đầu — 21:52 VN:** đã tách sáu hàm framing/socket/kiểm ảnh có AST và source giống nhau của hai broker vào `cover_ipc_common.py`; request, serve, policy, đối chiếu UID/GID và source scope vẫn riêng; helper peer/socket dùng chung. Đây là giảm mã trùng, **chưa giảm số module**: từ 80 lên 81 do thêm helper, vẫn 44 `official_*.py`. Các pha tiếp theo trong plan chưa thực hiện. Không thay bộ lọc, lịch, quota, DB hay policy; không Create/publish bài thử.
+
+Stage đạt 314 test, 26 skipped; một test cũ được cố định budget slot trong stage để không phụ thuộc giờ. Reviewer độc lập xác nhận logic trước cài. Probe IPC tách biệt từ chối đúng source sai ở cả hai broker; một lần tạo ảnh thật `ai_original` PASS (SHA ảnh bắt đầu `a08fcc8c`). Mô phỏng SIGKILL/khôi phục cây cũ và mới dùng service giả lập, không phải thử mất điện thật. Sau cài: 81 file khớp bundle, worker và hai broker/timer active/enabled, peer socket PASS, DB integrity OK, không có intent/unknown; IPC Scratch giữ hash policy cũ. Backup `/opt/nailhub-source-mirror/backups/simplify-cover-20261101`; không restore DB khi rollback. Chưa chứng minh bài được Published hay chạy tất cả nguồn qua model sau thay đổi.
+
+- **Mốc kiểm kê live 21:44 VN:** package Python trên THINKPAD có 80 module cấp đầu, trong đó 44 tên `official_*.py`; worker và hai broker bìa đang active. Số lượng mô tả cấu trúc, không tự chứng minh module nào thừa hoặc an toàn để xóa.
+- **Pha 1 — lát cắt nhỏ:** từ bản live có hash, xác định phần xử lý lặp giữa broker ảnh nguồn chính thống và broker Scratch/bài gốc; chỉ tách helper khi so sánh chứng minh cùng hành vi. Giữ riêng đối chiếu UID/GID, policy, nguồn, request và quyền sử dụng; helper peer/socket có thể dùng chung; không hợp nhất scope hay thay contract. Kiểm thử dương/âm và nhờ reviewer độc lập trước deploy.
+- **Pha 2 — review tiếp:** thống kê call site, test và đường chạy thật; tiếp tục gộp từng phần thực sự trùng, tránh viết lại hàng loạt, không xóa module/chuyển chức năng chỉ dựa trên tên. Các thay đổi bộ lọc trong guide vẫn là đề xuất riêng, không mặc định được thực hiện trong refactor.
+- **Pha 3 — triển khai theo từng lát:** snapshot DB và mã, đối chiếu baseline, giữ khóa dùng chung, kiểm không có intent/unknown và không đụng lịch đang chạy; thay đổi có backup/rollback, kiểm worker, broker, socket và policy sau cài. Không restore DB cũ, không tạo/publish bài thử, không commit.
+- **Bất biến:** 08 nail, 12/16/20 business; nguồn/attribution chính xác, glossary/MQM, 4 bài/ngày của workflow, duplicate/unknown, một vòng sửa giới hạn, kiểm CDN HTTP 200-only và thông báo hiện có. Chỉ ghi kết quả được kiểm chứng; chưa coi plan là thay đổi hoàn thành.
+
+### Tài liệu bộ lọc và kết quả 16:00 / 20:00 — 01/11
+
+[Bộ lọc và cách xử lý](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md) ghi chi tiết từng điều kiện đang cài, đầu vào, kết quả, reason và ví dụ; các điều chỉnh trong đó chỉ là đề xuất, chưa triển khai. Ba lượt 16:00 và ba lượt 20:00 đã HOLD trước Create, không có attempt mới trong DB workflow. Riêng một bài gốc 20:00 đã qua nội dung và Việt hóa nhưng dừng ở duplicate precheck; log không đủ chi tiết để kết luận có trùng thật. Worker/broker vẫn active tại mốc kiểm, official autostage có lần `ScheduleUnavailable`; xem tài liệu bộ lọc để phân biệt lỗi JSON bọc Markdown, regex quá rộng và factual HOLD thực chất.
+
+### Bài gốc khi thiếu nguồn phù hợp — triển khai 01/11
+
+- Khoảng 13:28 VN, đã cài trên THINKPAD luồng dự phòng cho ba khung **12:00, 16:00 và 20:00**: khi không chọn được ứng viên nguồn thông thường, AGY có thể viết bài gốc về kinh doanh tiệm nail dựa trên tài liệu chính thống. 08:00 vẫn dành cho nội dung nail; luồng bài gốc này không tự chạy ở 08:00. Quota bốn bài/ngày, khóa chung và xử lý lượt chưa rõ vẫn được giữ.
+- Các nguồn tham khảo cố định gồm SBA [khởi sự](https://www.sba.gov/counseling/launch-your-business/), [quản lý](https://www.sba.gov/counseling/manage-your-business/), [phát triển](https://www.sba.gov/counseling/grow-your-business/) và [FAQ California Board of Barbering and Cosmetology](https://www.barbercosmo.ca.gov/forms_pubs/publications/faqs). Thứ tự ưu tiên xoay theo ngày và khung giờ; đây chưa phải khám phá toàn bộ nguồn. Sau cài đã tải được cả bốn trang; 16:00 ngày 01/11 ưu tiên SBA quản lý nếu cần dùng dự phòng. Nội dung giấy phép/tín chỉ từ California chỉ có phạm vi California, không suy ra quy định bang khác.
+- Bài gốc ghi rõ do AI tạo và kèm nguồn tham khảo thật, không ghi Scratch hay cơ quan nguồn là tác giả. Tiêu đề và từng câu được đối chiếu với trích đoạn nguồn, rồi rà soát bằng lượt AI khác; Việt hóa, glossary và MQM vẫn áp dụng. Một lần sửa có giới hạn được phép khi phản hồi kiểm tra đủ điều kiện; bài không xác minh được bị giữ. Các bước tự động có tính xác suất, không phải chứng nhận chuyên môn hay bảo đảm mọi thông tin đúng.
+- Mỗi bài giữ nội dung, nguồn, bằng chứng và bìa AI trong cùng thư mục; bìa dựa trên tiêu đề và tóm tắt cuối. Kiểm trùng rà danh sách quản trị và tương đồng ngữ nghĩa, nhưng không khóa được tác giả độc lập hay bảo đảm tuyệt đối. Nguồn thiếu/thay đổi, nội dung mơ hồ, lỗi chất lượng, thiếu thời gian hoặc tạo bài chưa rõ có thể khiến bài bị giữ hoặc bỏ qua.
+- Bằng chứng: 311 test stage đạt, 26 skipped; reviewer độc lập đã rà mẫu SBA tiếng Anh theo từng trích đoạn và không thấy sai lệch thực tế. Việt hóa/MQM vượt khi phát lại đúng hai phản hồi AGY đã lưu; quét trùng thật trên 144 bài trả kết quả khác biệt; canary tạo bìa thật cho bài gốc và Scratch đều thành công. Hậu kiểm độc lập: package khớp bản cài, worker, hai broker bìa và timer active/enabled, DB integrity OK, không có lượt chưa rõ. Backup: `/opt/nailhub-source-mirror/backups/original-v2-20261101`; không khôi phục ngược DB chỉ để rollback mã.
+- **Chưa có bằng chứng bài gốc tự động đi hết Create → Published → đọc lại trên PROD sau triển khai.** Kiểm thử và canary không phải bài đã đăng. Slot 12:00 ngày 01/11 thử ba ứng viên nhưng đều bị giữ vì chủ đề không phù hợp, không tạo lượt đăng; không cam kết slot 16:00 thành công.
+
+```mermaid
+flowchart TD
+    A([Đến giờ kinh doanh]) --> B{Có bài nguồn phù hợp?}
+    B -- Có --> C[Chuẩn bị bài nguồn]
+    B -- Không --> D[Chọn tài liệu chính thống]
+    D --> E[Viết bài gốc AI]
+    E --> F{Nguồn và chất lượng đạt?}
+    F -- Không --> G[Giữ hoặc bỏ qua]
+    F -- Có --> H[Việt hóa và tạo bìa]
+    C --> H
+    H --> I{Kiểm tra cuối đạt?}
+    I -- Không --> G
+    I -- Có --> J[Đăng và đọc lại]
+    J --> K{Kết quả rõ?}
+    K -- Không --> L[Chờ đối soát]
+    K -- Có --> M([Ghi nhận đã đăng])
+```
+
+### Cập nhật kiểm tra ảnh và xử lý slot 08:00 — 01/11
+
+- **Chính sách hiện hành theo yêu cầu Owner:** sau khi tải ảnh lên, kiểm tra URL CDN bằng HTTPS và yêu cầu **HTTP 200** cho ảnh và thumbnail nếu có. Giữ giới hạn thời gian, kiểm tra domain/địa chỉ mạng và đối chiếu thông tin nguồn, file gốc, receipt upload với dữ liệu bài. Không tải/giải mã hoặc so sánh nội dung ảnh CDN trong kiểm tra này. Vì vậy HTTP 200 chỉ cho biết URL phản hồi thành công, **không chứng minh nội dung trả về là ảnh đúng hoặc giống ảnh gốc**. Chính sách áp dụng cho đường đăng Scratch và đường đăng nguồn chính thống; các kiểm tra nguồn, glossary, MQM và chống trùng khác vẫn được giữ.
+- Lượt 08:00 cho bài nguồn [Rainbow daisy nails](https://www.scratchmagazine.co.uk/nail_art/rainbow-daisy-nails/) đã tải thành công sáu ảnh nhưng bị giữ trước khi Create: bước đọc CDN gặp `OSError` do socket đã đóng, sau đó giao diện chờ phản hồi Create 30 giây. Guard ghi `allowed: false`, phase lưu bền vững là `pre_create`; hai tìm kiếm admin GET-only theo tên VI/EN đều không có kết quả. Đây là bằng chứng hỗ trợ kết luận lượt này chưa tạo bài; tìm kiếm theo tên không loại trừ mọi bài do người khác tự tạo với tên khác.
+- Theo yêu cầu Owner, attempt 18 đã được đối soát thành `released` lúc khoảng 10:01; ảnh/receipt và bản bằng chứng được giữ tại `/var/lib/nailhub-source-mirror/reports/attempt-18/reconciliation-http200-20261101.json`. Slot 08:00 vẫn được đánh dấu đã xử lý, không tạo lượt đăng bù; bài có thể được xem xét ở một khung 08:00 phù hợp sau này, không chọn cho 12:00 kinh doanh.
+- Bản kiểm tra HTTP 200 được triển khai sau review độc lập, sao lưu DB/mã và thay đổi package nguyên khối. Cả sáu URL thật của attempt 18 trả HTTP 200 qua mã mới; 286 test của bản stage đạt, 26 skipped, cùng 24 test tập trung cho nhánh ảnh/guard đạt. Worker đã restart và active, không còn intent/unknown và DB integrity OK. Backup: `/opt/nailhub-source-mirror/backups/http200-20261101-v2` trên THINKPAD.
+- Tại mốc 10:02, khung **12:00 ngày 01/11** còn mở, dành cho bài kinh doanh; worker không tạm dừng và các dịch vụ/timer gốc đang active khi hậu kiểm. Chưa có bài thành công từ luồng mới trong ngày tại thời điểm ghi; việc đăng 12:00 vẫn phụ thuộc ứng viên phù hợp và các cổng chất lượng, không phải kết quả đã xác nhận.
+
+### Mục tiêu, lịch và phạm vi
+
+| Giờ Việt Nam | Chủ đề được chọn tự động | Ngày bắt đầu áp dụng |
+|---|---|---|
+| 08:00 | Một bài nội dung nail phù hợp. | Sau triển khai 22:17 ngày 31/10. |
+| 12:00 | Nội dung kinh doanh hữu ích cho tiệm nail. | Như trên. |
+| 16:00 | Nội dung kinh doanh hữu ích cho tiệm nail. | Như trên. |
+| 20:00 | Nội dung kinh doanh hữu ích cho tiệm nail. | Như trên. |
+
+Ba khung kinh doanh phục vụ vận hành, tăng trưởng, thanh toán, thuế hoặc quy định có liên quan; không chọn bài hướng dẫn kỹ thuật nail thuần túy cho các khung này. Nội dung kinh doanh tổng quát của IRS/SBA vẫn có thể phù hợp cho chủ tiệm dù nguồn không nhắc chữ nail: cần biên tập đúng bối cảnh, không thêm dữ kiện mà nguồn không có. Đây là phân loại bằng quy tắc, không bảo đảm hiểu đúng mọi bài; bài mơ hồ có thể bị giữ hoặc bỏ qua. Không mặc định giới hạn loại chủ đề theo một domain. Danh mục thu thập nguồn chính thống hiện là danh sách URL cố định; phạm vi publish đã bật CDC/NIOSH, IRS và SBA, không đồng nghĩa đã có khám phá liên tục mọi bài mới trên các website này.
+
+Mục tiêu và trần là **bốn bài xuất bản của riêng workflow mỗi ngày theo giờ Việt Nam**; bài của người/luồng khác trên PROD không tự động được cộng vào quota này. Mỗi slot tối đa một bài; thiếu ứng viên phù hợp có thể thiếu bài, không đăng nội dung sai chủ đề chỉ để đủ số. Lệnh URL thủ công và quota/chống trùng dùng cùng dữ liệu vận hành, không tạo cơ sở dữ liệu riêng.
+
+### Luồng hiện hành
+
+| Bước | Hành động và điều kiện |
+|---|---|
+| 1 | Đến giờ, kiểm tra tạm dừng, quota của workflow, lượt chưa rõ kết quả và khóa dùng chung trước khi chọn bài. |
+| 2 | Chọn ứng viên phù hợp khung giờ; giữ bản nguồn và thông tin dẫn nguồn trong thư mục riêng của bài. Kiểm tra trùng trước khi tạo. |
+| 3 | Chuẩn bị nội dung EN/VI, tiêu đề, tóm tắt, SEO và phân loại phù hợp; đối chiếu glossary, dữ kiện, nguồn và MQM. Bài chưa đạt được giữ để kiểm tra. |
+| 4 | Dùng ảnh bìa nguồn hợp lệ khi đường xử lý hỗ trợ. Nếu bìa Scratch thiếu hoặc tải/giải mã thất bại, tạo ảnh AI từ **tiêu đề và tóm tắt cuối cùng**; đường nguồn chính thống chỉ tạo AI khi bìa được xác định thiếu hoặc không dùng được. Ảnh và bằng chứng gắn với bài/payload; ghi nhận là ảnh AI. |
+| 5 | Ảnh trong thân không bắt buộc: nếu tải thất bại hoặc chưa xác minh được quyền sử dụng thì có thể bỏ ảnh và chú thích đi kèm, giữ nội dung chữ và trích dẫn chính xác. Nguồn chính thống có bìa gốc sẵn dùng nhưng chưa được đường xử lý này hỗ trợ sẽ được bỏ qua/giữ, không tự coi ảnh đó đã được cấp quyền. |
+| 6 | Qua các kiểm tra còn áp dụng, thao tác bằng trình soạn Nailhub; lưu ý định trước khi tạo, kiểm tra lại trùng và đọc lại admin/public. Scratch đối chiếu tiêu đề, đường chính thống rà nguồn; kiểm tra không khóa được tác giả độc lập trên PROD nên vẫn có khoảng thời gian có thể phát sinh trùng. Chỉ tính thành công sau khi có kết quả Published xác nhận được. |
+| 7 | Lỗi trước tạo có thể bỏ ứng viên hoặc giữ để xử lý; nếu kết quả sau tạo chưa rõ, giữ trạng thái chưa rõ và đối soát trước khi thử lại. Không tự gửi lại mù. |
+
+```mermaid
+flowchart TD
+    A([Đến khung giờ]) --> B{Được phép chạy?}
+    B -- Không --> X([Chờ xử lý])
+    B -- Có --> C[Chọn bài đúng chủ đề]
+    C --> D[Lưu nguồn và nội dung]
+    D --> E{Đạt nguồn và chất lượng?}
+    E -- Không --> H[Giữ hoặc chọn bài khác]
+    E -- Có --> F{Tình trạng bìa?}
+    F -- Dùng được --> G[Dùng bìa phù hợp]
+    F -- Thiếu hoặc không dùng được --> I[Tạo bìa từ tiêu đề và tóm tắt]
+    F -- Chưa rõ hoặc chưa hỗ trợ --> H
+    I --> J{Ảnh tạo hợp lệ?}
+    J -- Không --> H
+    G --> K[Kiểm trùng và đăng]
+    J -- Có --> K
+    K --> L{Đọc lại rõ kết quả?}
+    L -- Có --> M[Lưu bài đã đăng]
+    L -- Không --> N[Giữ để đối soát]
+```
+
+### Trạng thái và ngoại lệ
+
+| Trạng thái nghiệp vụ | Khi nào | Hành động |
+|---|---|---|
+| Chờ xử lý | Đã tìm thấy nguồn, chưa đủ điều kiện đăng. | Chọn theo lịch và quota. |
+| Đang chuẩn bị | Đang lưu, biên tập hoặc kiểm chứng nội dung. | Không tạo bài song song từ cùng bản ghi. |
+| Giữ | Lỗi nguồn, ảnh bìa, chất lượng, chính sách, thời hạn hoặc không rõ chủ đề. | Ghi lý do; thử ứng viên khác khi an toàn. Một số bản đã hết hạn chưa được tự chuẩn bị lại. |
+| Chưa rõ | Đã có khả năng gửi thao tác tạo nhưng chưa xác nhận kết quả. | Đối soát; chặn tạo lại khi chưa rõ. |
+| Đã xuất bản | Admin/public đã được đọc lại và xác nhận. | Lưu URL; tính vào quota workflow theo ngày xuất bản. |
+
+```mermaid
+stateDiagram-v2
+    [*] --> ChoXuLy: Tim thay bai
+    ChoXuLy --> DangChuanBi: Chon dung lich
+    DangChuanBi --> Giu: Thieu dieu kien
+    DangChuanBi --> ChuaRo: Gui tao chua xac nhan
+    DangChuanBi --> DaXuatBan: Dang va doc lai thanh cong
+    ChuaRo --> DaXuatBan: Doi soat thay bai
+    ChuaRo --> Giu: Doi soat khong du ket qua
+    Giu --> ChoXuLy: Duoc xu ly an toan
+```
+
+### Nguồn, thông báo và giới hạn
+
+- Các nội dung thuế/quy định/an toàn cần nguồn chính thức phù hợp, trích dẫn chính xác và phản ánh phạm vi, thời điểm áp dụng; không gán IRS/SBA/CDC khẳng định họ không đưa ra. Giữ đúng nội dung và trích dẫn là yêu cầu chất lượng, không phải bằng chứng mọi nguồn đã được nghiệm thu. MQM và kiểm tra tự động không phải xác nhận đã có chuyên gia hay cố vấn thuế duyệt.
+- Telegram dùng transport Nailhub hiện có theo lựa chọn Owner; workflow giữ lịch, state và quota riêng. Owner đã thử `/mirror status` ngày 30/10; thông báo slot đã được cài, nhưng không suy diễn mọi thông báo mới đã được gửi thành công. Lệnh URL hiện được ghi nhận cho phạm vi Scratch hỗ trợ; không khẳng định mọi domain được nhận qua lệnh này.
+- Khi kiểm tra lúc 22:19 ngày 31/10, worker, hai dịch vụ tạo bìa AI, hai broker Việt hóa/nguồn và các timer gốc đều active; dịch vụ cần thiết enabled. Timer chuẩn bị kế tiếp 22:30, intake nguồn chính thống kế tiếp 04:30 ngày 01/11. Máy THINKPAD là runtime; Windows không cần chạy thường trực.
+- Hai yêu cầu tạo ảnh thật qua các dịch vụ đã cài thành công sau triển khai; kiểm thử toàn bộ bản tích hợp 286 test, 26 skipped, cùng kiểm tra toàn vẹn DB và review độc lập. Đây là bằng chứng thành phần và cấu hình; **chưa quan sát được một lượt tự động Create → đọc lại bài công khai sau triển khai mới**. Không cam kết cả bốn slot ngày mai sẽ đăng thành công.
+- Ngày 31/10 workflow có bốn bài Published đã xác nhận, gồm hai bài đăng bù cho 08/12 trước thay đổi chủ đề và [bài 20:00](https://nailhub.ai/blog/cach-su-dung-he-thong-jellie-soft-gel-tips-cua-pure-nails) theo luồng cũ. Quy tắc ba slot kinh doanh áp dụng cho các lượt sau khi triển khai, không thay đổi lịch sử. Lần triển khai trước đó đã rollback do quota tạo ảnh của nhà cung cấp; lần triển khai 22:17 đã hoàn thành sau khi quota được khôi phục.
+- Bản sao lưu trước triển khai trên THINKPAD: `/opt/nailhub-source-mirror/backups/release-20261031-business-ai-tomorrow-final`; báo cáo kiểm ảnh: `runtime-validation.txt` trong thư mục này. Không khôi phục ngược DB chỉ để rollback mã. Policy cấp nguồn/ảnh hiện có hạn đến 31/10/2027 và cần được rà soát trước hạn.
+
 ## 1. Overview
 
 **Goal được Owner xác nhận:** crawl được một bài thực từ website nguồn, lưu đủ nội dung/media trên THINKPAD, rồi dùng Playwright đăng bài đó ở trạng thái **Published trên Nailhub PROD**. Bài phải có URL công khai và mở đọc được bằng phiên khách. Đây là mốc nghiệm thu end-to-end đầu tiên; crawl local, chạy test hoặc tạo Draft riêng lẻ chưa đạt goal.
@@ -34,7 +193,7 @@ approved_by: "Owner — ok proceed in chat"
 
 **Đầu vào Owner đã xác nhận:** một automation độc lập chạy trên THINKPAD, máy khác kết nối với AgentBuilder, lấy bài viết từ website chuyên về nail rồi đăng lại tương tự lên Nailhub PROD bằng Playwright thao tác trên giao diện. Sản lượng yêu cầu là **4 bài/ngày**. Owner yêu cầu làm rõ business DOCS trước khi thực hiện.
 
-Automation phục vụ việc đưa nội dung nail từ nguồn đã chọn lên Nailhub mà không cần người vận hành mở từng bài, nhập lại nội dung hoặc bấm đăng theo từng lượt. **Baseline đang chạy giữ nguyên văn nguồn, chưa dùng AI viết lại, dịch hoặc tạo ảnh.** Theo yêu cầu bổ sung ngày 29/10, phương án Việt hóa được phân tích tại §10.3; chưa triển khai hoặc đổi chế độ worker.
+Automation phục vụ việc đưa nội dung phù hợp từ nguồn đã chọn lên Nailhub mà không cần người vận hành nhập lại từng bài. Trạng thái Việt hóa, phân loại chủ đề và ảnh AI đang chạy được cập nhật tại §0; các phương án ban đầu tại §10.3 là lịch sử.
 
 Đây là yêu cầu mới, **độc lập hoàn toàn với hệ thống NailBlog**. Các tài liệu, cổng duyệt, trạng thái, quota và luồng AI của NailBlog không phải yêu cầu đầu vào của automation này.
 
@@ -70,7 +229,7 @@ Automation phục vụ việc đưa nội dung nail từ nguồn đã chọn lê
 - Mỗi bài nguồn tạo tối đa một bài đích trong flow này.
 - Chạy lần lượt; có lịch, hàng đợi, chống trùng, ghi kết quả và phục hồi sau gián đoạn.
 - Không đồng bộ bình luận, lượt thích, lượt xem; không sửa/xóa bài Nailhub khi nguồn thay đổi hoặc biến mất.
-- Baseline đang chạy chưa có AI/chuyển ngữ hoặc sản xuất ảnh mới. Mở rộng biên tập Việt hóa theo ngôn ngữ tại §10.3 là đề xuất riêng, không được coi là đã có trong runtime.
+- Baseline ban đầu chưa có AI/chuyển ngữ; trạng thái triển khai hiện tại và phạm vi ảnh AI xem §0.
 
 | Vai trò | Trách nhiệm |
 |---|---|
@@ -158,8 +317,8 @@ flowchart TD
 
 | ID | Quy tắc |
 |---|---|
-| BR-01 | Baseline mirror giữ tiêu đề, câu chữ, ngôn ngữ, thứ tự đoạn, danh sách và nội dung thuộc bài nguồn. Phương án Việt hóa §10.3 giữ bản gốc và các dữ kiện/thứ tự bước/media, cho phép biên tập câu chữ theo ngôn ngữ khi được triển khai riêng; chưa áp dụng vào baseline. |
-| BR-02 | Giữ media và vị trí/thứ tự tương ứng, chú thích/credit có sẵn. Không xóa watermark. Ảnh được tải rồi upload, không mặc định dùng hotlink. |
+| BR-01 | Giữ bản nguồn để đối chiếu; bản EN/VI được biên tập theo ngôn ngữ, giữ ý nghĩa, dữ kiện và trình tự cần thiết. Kiểm glossary và MQM trước đăng; chi tiết hiện hành xem §0. |
+| BR-02 | Giữ media và credit phù hợp khi dùng được; ảnh thân tải lỗi hoặc chưa rõ quyền có thể bỏ cùng chú thích, giữ phần chữ và trích dẫn. Bìa thiếu/không dùng được có thể tạo AI theo §0. Không mặc định hotlink. |
 | BR-03 | Video, embed, bảng hoặc định dạng đặc biệt chỉ được đăng khi Nailhub có cách thể hiện tương đương đã được xác minh. Nếu không đáp ứng, giữ bài và báo thành phần thiếu; không tự cắt bỏ. |
 | BR-04 | Không yêu cầu giao diện Nailhub giống từng pixel website nguồn. Mức tương tự được nghiệm thu bằng nội dung, cấu trúc và media. |
 | BR-05 | Bài được xuất bản dưới tài khoản Nailhub được cấp. Tác giả và ngày của nguồn chỉ là thông tin dẫn nguồn, không giả lập danh tính hoặc ngày xuất bản của tài khoản Nailhub. Đề xuất thêm tên website và link bài gốc cuối bài. |
@@ -182,7 +341,7 @@ flowchart TD
 
 **Khi lỡ lịch:** worker thử các slot đã đến trong ngày nếu còn quota và không còn kết quả đăng chưa rõ; xử lý từng bài, tối đa 3 lần thử mỗi slot, không dồn lượt ngày trước sang quota ngày mới. Slot đã giữ chỗ hoặc đã hết lượt thử không tự reset khi reconcile; cần lệnh phục hồi có kiểm soát nếu muốn bù thêm trong quota.
 
-**Điều khiển hiện có:** CLI status/pause/resume/reconcile và báo cáo JSON local. Không tích hợp giao diện AgentBuilder hoặc Telegram trong bản này.
+**Điều khiển hiện có:** CLI status/pause/resume/reconcile, báo cáo local và Telegram dùng transport Nailhub theo phạm vi đã xác minh tại §0 và §11.38–11.40. Chưa xác minh màn điều khiển AgentBuilder.
 
 **Thông báo đề xuất:** báo khi cần can thiệp hoặc không đạt sản lượng; lưu kết quả từng bài để xem lại. Kênh/người nhận chưa được cung cấp; chưa có ủy quyền gửi thông báo ra ngoài.
 
@@ -598,6 +757,42 @@ Done chỉ khi: tests thật và review độc lập đạt; broker chạy trong
 
 Bản v19 đã cài và worker cùng AGY broker active, unpaused. Cấu hình bắt buộc Gemini 3.8 Flash / medium và kiểm glossary/MQM; lỗi hoặc bất định kỹ thuật giữ bài trước reservation. Linux 38 tests PASS; review độc lập APPROVED. Form thật trên fixture đã qua guard VI/EN, Meta, hashtag; request cố ý chặn trước mạng nên không có bài thử PROD. Hai bài nguồn thật trên bản sao thử bị HOLD: thiếu thuật ngữ và JSON model không hợp lệ. Slot 12:00 chưa chạy ở thời điểm triển khai; chưa có bằng chứng bài Việt hóa publish hay public readback VI/EN. Đánh giá MQM tự động bằng model chỉ là heuristic. Không commit.
 
+## 10.6. Điều chỉnh chủ đề — yêu cầu Owner ngày 29/10
+
+Owner yêu cầu giảm Halloween và hướng các bài mới tới **luxury nail, xây dựng/vận hành tiệm, thuế Mỹ và nội dung liên quan sản phẩm Nexora**. Thuế ưu tiên thị trường Mỹ theo xác nhận trong chat. Lịch vẫn tối đa bốn bài/ngày; thiếu bài đủ điều kiện thì bỏ slot thay vì lấp bằng Halloween.
+
+Ưu tiên nội dung: mẫu nail cao cấp không theo mùa; quản lý chi phí/giá dịch vụ, vận hành và trải nghiệm khách; ghi nhận tiền tip và dữ liệu vận hành có liên hệ trực tiếp tới năng lực Nexora được xác thực. Halloween chỉ là ngoại lệ có giới hạn; không coi các mùa khác là Halloween. Nội dung thuế cần nguồn Mỹ có thẩm quyền, ghi rõ năm/phạm vi liên bang hoặc bang và được người có chuyên môn thuế duyệt trước publish. Không khẳng định Nexora tự khai thuế khi chưa có bằng chứng.
+
+Nguồn khảo sát: [Scratch — Baccarat crystal](https://www.scratchmagazine.co.uk/nail_art/crystal-nail-tutorial/); [Salon Today — định giá](https://www.salontoday.com/articles/the-price-of-progress-profitability-a-salon-professionals-guide-to-strategic-pricing); [IRS — ghi nhận và báo cáo tip](https://www.irs.gov/businesses/small-businesses-self-employed/tip-recordkeeping-and-reporting); [Nexora Touch](https://play.google.com/store/apps/details?id=net.vlinkgroup.nexora). Chỉ Scratch layout cụ thể đang được kiểm tra; các nguồn khác chưa được tích hợp hoặc chứng minh quyền tái sử dụng nội dung/ảnh.
+
+Slot 12:00 ngày 29/10 đăng bài Halloween đã Việt hóa; kiểm admin xác nhận 2 ngôn ngữ/Meta/hashtag và public 200, đủ 8 ảnh. Attempt 7 đã đối soát published, không đăng lại; lỗi readback ban đầu do ảnh trong admin chưa tải kịp. Worker đã bật lại sau thay đổi và kiểm thử v20.
+
+Kế hoạch: (1) gate chọn bài theo chủ đề, giới hạn Halloween và giữ bài thuế chưa duyệt; (2) kiểm thử mở rộng adapter luxury với dữ liệu nguồn thực; (3) review độc lập và regression; (4) triển khai trên THINKPAD; (5) xác nhận bài mới thực tế hoặc báo rõ bị giữ/thiếu nguồn. Không thay thế cổng Việt hóa, glossary, MQM, quota hoặc unknown.
+
+### Kết quả triển khai chủ đề — 29/10
+
+- v20 đã cài trên THINKPAD; service Source Mirror và AGY broker active, unpaused. Linux **49 test** đạt; review độc lập APPROVED. Ảnh admin được chờ tối đa 30 giây trước khi kết luận lỗi, không bỏ qua ảnh hỏng.
+- Bộ lọc phân tích tiêu đề/URL/nội dung/alt: ưu tiên business 08/16 và luxury 12/20, ưu tiên bài không Halloween và giới hạn Halloween tối đa 1 bài trong 7 ngày lịch Việt Nam. Phân loại là heuristic, không bảo đảm phát hiện mọi biến thể; không dùng một mình để xác nhận an toàn thuế.
+- Thuế Mỹ/payroll nhận diện được giữ bền vững trước reservation để chuyên gia duyệt. Adapter thuế mới khi bổ sung phải mặc định giữ, không dựa riêng keyword. Nguồn kinh doanh/thuế ngoài Scratch chưa tích hợp.
+- Đã thêm đúng một URL Scratch được chọn cho luxury và taxonomy “Step by Step” khi vượt các kiểm cấu trúc hiện có. [Bài luxury pha lê Baccarat đã publish](https://nailhub.ai/blog/huong-dan-ve-mong-nghe-thuat-7-buoc-tao-mau-mong-pha-le-baccarat): Việt hóa/đánh giá MQM tự động PASS, public HTTP 200, 8 ảnh hiển thị desktop 1440 và mobile 390. Đây là đăng thủ công qua CLI `once`, không coi là slot lịch.
+- Hôm nay có 3 bài Published bao gồm bài manual; còn tối đa 1 bài trong quota 4. Slot tiếp theo có thể bỏ qua nếu không có bài phù hợp/đủ điều kiện; không đảm bảo lúc nào cũng đủ 4 bài.
+- Khảo sát Salon Today: bài định giá có layout 11 khối xen quảng cáo, ảnh/credit riêng; ảnh trả 403 và trang ghi All rights reserved. Chưa ingest/vượt chặn/re-publish; cần xác minh quyền nội dung và ảnh cùng adapter riêng. [Kênh liên hệ cấp phép](https://www.salontoday.com/pages/contact-us).
+
+## 10.7. Nguồn chính thống và duyệt Owner — 29/10
+
+Owner yêu cầu tích hợp nội dung xây dựng/vận hành tiệm và thuế Mỹ liên quan Nexora, có kiểm duyệt trước PROD; Owner chọn nhận bài qua Telegram để tự duyệt. Cần định danh bot/kênh và cấu hình độc lập Source Mirror; chưa nhận thông tin bot. Không dùng phiên/queue NailBlog. Phê duyệt Owner là quyết định biên tập của con người; chưa có bằng chứng CPA hay chuyên gia kỹ thuật đã xác nhận nội dung. Bài về thuế/thông gió phải nêu nguồn, phạm vi áp dụng và điểm cần kiểm chuyên môn.
+
+Đã triển khai **intake chỉ HOLD** đối với nguồn IRS, OSHA, SBA, lưu nguồn/hash/thời gian/địa bàn vào hàng chờ riêng bằng timer; không ghi vào danh sách bài ready, không tạo post, không tự approve. Đây chỉ là chuẩn bị nguồn cho biên tập, chưa phải bản dịch/preview, chưa có Telegram hay cơ chế duyệt ràng buộc hash và chưa có đường publish. Lỗi fetch, quyền ảnh, tính thời sự, khác biệt quy định theo bang đều cần được xử lý trước triển khai đầy đủ.
+
+Ảnh do Owner gửi là kế hoạch NailBlog **15:00 ngày 30/10/2026, Asia/Ho_Chi_Minh** cho chủ đề thông gió. Dữ liệu NailBlog ghi chủ đề đã chọn nhưng lượt viết `auto-20261030-1500-t13` ở trạng thái `held`, lý do `text_held_by_worker`; receipt worker `cli_text_held_nonidentical_json`, không có post trong ledger. Không sửa hoặc tự retry NailBlog; Source Mirror vẫn độc lập và không có slot 15:00.
+
+### Kết quả thực tế — intake nguồn chính thống
+
+- Service `nailhub-source-mirror-official.service` và timer riêng `nailhub-source-mirror-official.timer` chỉ thu thập nguồn vào `/var/lib/nailhub-source-mirror/official-review-queue/`, chạy 04:30 Asia/Ho_Chi_Minh; lần tiếp theo 30/10/2026 04:30. Không ghi vào hàng đợi `articles` và không gọi publisher.
+- Lần chạy trên THINKPAD lưu 2 nguồn IRS và 1 nguồn SBA, tất cả `expert_review_required`; OSHA chemical-hazards trả HTTP 403, không vượt chặn. Service exit 1 do nguồn lỗi một phần; timer vẫn active, không được báo toàn bộ nguồn thành công. Nguồn đã lưu có HTML, văn bản trích để tham khảo, hash, URL, scope và thời gian; văn bản trích không phải bài hoàn chỉnh hay bản dịch.
+- Independent review APPROVED cho phạm vi intake; 57 test Windows và 8 test mục tiêu trên Linux đạt. Chưa có bài nháp VI/EN, hình hợp lệ, nút duyệt Telegram, xác thực Owner, duyệt ràng buộc hash hay cơ chế chuyển sang publisher. Không có bài thuế/an toàn nào từ queue này được phép đăng hiện tại.
+- Bước chưa hoàn tất: xác định bot/cấu hình Telegram độc lập và ID Owner; tạo bản reviewable, gửi Owner theo yêu cầu, ràng buộc quyết định với nguồn + payload + phiên bản; kiểm nội dung thuế/luật theo năm/bang và ghi nhận kiểm duyệt chuyên môn thực tế trước khi enable publish. Không kết luận Owner là CPA nếu chưa có xác nhận.
+
 ## 11. High-Level Timeline và trách nhiệm
 
 Không cam kết ngày go-live trước khi xác nhận nguồn, màn tạo bài và business.
@@ -653,9 +848,331 @@ Owner quyết business và phê duyệt. AlexChu giữ ownership điều phối/
 - Chỉ triển khai/chỉnh unit riêng của Source Mirror. Hai worker NailBlog và Triage giữ PID quan sát ban đầu; worker Nailhub cũ có thay PID trong thời gian theo dõi mà không có thao tác restart từ rollout này, nên không tuyên bố tất cả PID cũ giữ nguyên.
 - Evidence máy và ảnh thật nằm tại `C:/Users/AD/.codex/visualizations/2026/10/28/01a1820c-13c8-7641-9460-51a0f19a5d77`; báo cáo runtime nằm dưới `/var/lib/nailhub-source-mirror/reports/`.
 
+## 11.1. Điều chỉnh phạm vi ngày 29/10: loại chủ đề thuế
+
+- Owner yêu cầu bỏ các chủ đề nhạy cảm về thuế; chỉ đạo này thay thế định hướng thuế Mỹ/Nexora trong các ghi chép trước. Không thu thập mới từ IRS; hai snapshot IRS cũ giữ lại để kiểm toán, không đưa vào luồng đăng hoặc gửi duyệt.
+- Bộ lọc chủ đề thuế chặn ở đầu vào và khi kiểm payload Việt/Anh trước reservation và submit. Đây là bộ lọc từ khóa bảo thủ, không bảo đảm nhận diện mọi cách diễn đạt. Các nội dung pháp lý/quy định, bao gồm thông gió, vẫn phải giữ chờ Owner duyệt; không suy ra Owner đã duyệt chuyên môn.
+- Nguồn SBA và OSHA chỉ thu thập vào hàng chờ HOLD riêng, chưa có pipeline Việt hóa, gửi Telegram, nhận quyết định hoặc đăng tự động từ hàng chờ. Kiểm tra thực tế: SBA được lưu; OSHA trả HTTP 403, lượt intake báo lỗi một phần. Timer được bật lại.
+- Telegram trên THINKPAD có dịch vụ NailHub và NailBlog riêng, cấu hình cùng Owner `@SotaThao`, session riêng; dịch vụ NailHub dùng đăng nhập Telegram người dùng. Source Mirror chưa có kênh duyệt riêng; chưa gửi tin hay dùng session NailBlog. Không lưu token, ID hay thông tin đăng nhập trong tài liệu.
+- Thay đổi kiểm thử độc lập 60/60 trên THINKPAD, đã cài Source Mirror; worker và AI broker active. Ảnh slot 15:00 là NailBlog ngày 30/10, trạng thái viết held; chưa có bằng chứng bài được đăng.
+
+## 11.2. SBA, duyệt Telegram và nguồn an toàn — đang chuẩn bị
+
+- Owner yêu cầu đưa nội dung SBA qua Việt hóa rồi gửi Telegram cho Owner duyệt trước khi đăng PROD. Không sử dụng chủ đề thuế. Trang SBA đã lưu có cả nội dung thuế nên chỉ được chọn phần độc lập không chứa thuế, kiểm tra lại nguồn lẫn bản dịch; không giới thiệu là nguồn chuyên biệt về nail khi nguồn không nói vậy.
+- Phải phân biệt MQM tự động với quyết định Owner. Bản gửi duyệt cần chứa toàn bộ bản VI/EN, metadata, ảnh và nguồn; quyết định chỉ hợp lệ cho đúng bản nội dung, ảnh, nguồn và chính sách đã duyệt. Tin nhắn sai người, phát lại, cũ, sửa nội dung hoặc lỗi kết nối phải HOLD; kiểm tại reservation và ngay trước submit. An toàn/quy định cần sự thẩm định chuyên môn phù hợp, không suy diễn Owner có chứng chỉ chuyên gia.
+- Khảo sát thấy publisher đang ghi nhãn nguồn Scratch Magazine cố định; cần sửa theo nguồn thật trước khi đưa SBA vào đăng. Cơ chế Telegram NailHub hiện có xác thực Owner, nhưng chưa có cổng riêng cho Source Mirror; thiết kế kết nối phải giữ an toàn session và hoàn toàn độc lập NailBlog.
+- THINKPAD thử lại [CDC/NIOSH](https://www.cdc.gov/niosh/nail-technicians/about/index.html): HTTP 200, 51.929 byte, bộ đọc trích 5.221 ký tự. Đây là nguồn thay thế, không gọi là OSHA hay diễn đạt khuyến nghị thành quy định bắt buộc. OSHA hiện 403; nguyên nhân chưa xác định. Quyền dùng ảnh phải kiểm riêng.
+- **Trạng thái:** mới điều tra, chưa có triển khai SBA/Telegram/CDC, chưa gửi bài duyệt, chưa publish. Trình tự dự kiến: hoàn thiện adapter nguồn và quyền ảnh → Việt hóa/MQM → gửi bản gắn hash cho Owner → kiểm quyết định tại cả hai cổng → kiểm thử độc lập → triển khai.
+
+## 11.3. Owner loại SBA ngày 29/10
+
+- Owner yêu cầu bỏ SBA do nhạy cảm về luật; yêu cầu này thay thế phương án SBA trong §11.2. Không Việt hóa, gửi Owner duyệt hoặc đăng bài từ SBA. Bản SBA đã lưu chỉ giữ để kiểm toán, không xóa.
+- Trên THINKPAD đã stop và disable `nailhub-source-mirror-official.timer`, vì timer hiện chứa SBA và OSHA. Worker đăng hiện hữu và AGY broker vẫn active. `official.service` đã có trạng thái failed do OSHA 403 trước đó; thử mask không thành công vì file unit tồn tại. Source SBA vẫn còn trong code; không bật lại intake đến khi đã loại SBA và kiểm thử. Đã thêm systemd ConditionPathExists cho service với marker chưa tồn tại; chạy thử systemd cho ConditionResult=no, không khởi động thu thập. Chốt này không chặn lệnh Python chạy trực tiếp.
+- CDC/NIOSH mới chỉ được khảo sát, chưa tích hợp hay chạy định kỳ. Quy trình Telegram duyệt và kết nối nguồn phù hợp khác vẫn chưa triển khai; không tự khẳng định đã hoàn tất.
+
+## 11.4. Owner yêu cầu nguồn CDC/NIOSH
+
+- Owner yêu cầu xóa SBA khỏi mã và tích hợp [CDC/NIOSH: Nail Technicians](https://www.cdc.gov/niosh/nail-technicians/about/index.html). CDC là cơ quan y tế công cộng Mỹ; NIOSH là viện thuộc CDC nghiên cứu và khuyến nghị an toàn, sức khỏe nghề nghiệp. Hướng dẫn NIOSH không mặc nhiên là quy định bắt buộc.
+- Kế hoạch chờ thực hiện: xóa SBA khỏi danh mục và allowlist; thay nguồn OSHA lỗi 403 bằng CDC/NIOSH với nhãn nguồn đúng; giữ snapshot cũ để kiểm toán; kiểm thử allowlist/SSRF, lỗi mạng, tính toàn vẹn và HOLD. Duyệt độc lập, test trên THINKPAD rồi mới mở chốt systemd và lịch. Intake là HOLD-only: chưa có Việt hóa, duyệt Telegram hay publish bài CDC.
+- Nội dung CDC liên quan sức khỏe/an toàn phải được kiểm chuyên môn phù hợp, chỉ gửi Owner duyệt khi có luồng duyệt, và giữ nếu chưa rõ. Không suy diễn Owner là chuyên gia. Loại chủ đề thuế. Publisher phải sửa attribution cố định Scratch trước khi đăng từ nguồn khác.
+- Tại thời điểm ghi: timer vẫn disabled, điều kiện service không đạt, worker và AGY active. Chưa sửa mã hoặc triển khai; đang chờ lựa chọn executor theo quy tắc dispatch.
+
+## 11.5. Bám chủ đề thực tế trên NailHub ngày 29/10
+
+- Owner yêu cầu khảo sát https://nailhub.ai/blog/all-blog, bỏ các nội dung quảng bá/tổng hợp do project tạo, bám chủ đề để tìm bài bên ngoài. Đã đọc trang tổng và các mục “Việc làm nail” và “Bạn có biết” (ba trang). Trang có các bài về an toàn, thông gió, tư thế, vệ sinh, vật liệu, công nghệ làm nail, lịch sử cộng đồng và bằng nghề. Không coi bài quảng bá NEXORA/du lịch là nguồn crawl hoặc tự đưa thành chủ đề.
+- Danh sách tham khảo chưa tích hợp: [CDC/NIOSH — an toàn nghề nail](https://www.cdc.gov/niosh/nail-technicians/about/index.html); [Scratch — nhận diện khách hàng phù hợp](https://www.scratchmagazine.co.uk/feature/good-nail-client-pro-guide/); [Modern Salon — mở rộng menu dịch vụ](https://www.modernsalon.com/articles/how-beauty-professionals-can-evaluate-and-expand-their-service-menus); [Modern Salon — câu chuyện Essential Nail Bar](https://www.modernsalon.com/articles/on-the-road-essential-nail-bar); [Scratch — giữ khách quanh năm](https://www.scratchmagazine.co.uk/feature/keeping-clients-how-to-keep-your-nail-business-busy-all-year-long/). Nội dung lịch sử Tippi Hedren trên NailHub đã có, không đề xuất đăng trùng.
+- Ưu tiên nguồn phù hợp với thợ/chủ tiệm nail, thông tin thực tế, ít trùng bài đã đăng; giữ ưu tiên luxury/vận hành, giảm Halloween. Loại thuế, IRS, SBA; bài pháp lý/bằng cấp không tự đăng và chờ xác minh thẩm quyền trước khi xem xét. Nội dung sức khỏe/an toàn cần chuyên gia phù hợp và Owner duyệt. Tôn trọng quyền sử dụng lại văn bản/ảnh; link nguồn không tự xác lập quyền đăng lại.
+- Các gợi ý trên là khảo sát, chưa được thêm vào allowlist/crawler, chưa bật CDC/NIOSH, chưa sửa mã SBA, chưa có kết nối gửi duyệt Telegram; không báo như đã triển khai. Nguồn giới thiệu có bài tổng quát về salon, cần biên tập phù hợp và không tự bịa thông tin.
+
+## 11.6. Owner cập nhật chủ đề doanh nghiệp và thuế — ngày 29/10
+
+- Owner yêu cầu cập nhật lại các chủ đề doanh nghiệp và thuế với nguyên tắc dẫn nguồn chính thống. Chỉ đạo này thay thế việc loại toàn bộ chủ đề thuế trước đó: thuế được xem xét trong biên tập, nhưng không tự đăng. Loại trừ SBA theo chỉ đạo riêng vẫn giữ nguyên; không suy diễn đã cho phép thu thập SBA trở lại.
+- Phạm vi ưu tiên là doanh nghiệp và thuế Mỹ cho chủ tiệm/thợ nail. Mỗi khẳng định pháp lý hoặc thuế quan trọng cần link trực tiếp nguồn có thẩm quyền phù hợp (IRS cho liên bang; cơ quan thuế hoặc cấp phép tiểu bang/địa phương cho phạm vi tương ứng), tên cơ quan/tài liệu, thời điểm kiểm tra, năm thuế/ngày hiệu lực, đối tượng và địa bàn. Dùng nguồn gốc hiện hành, không lấy bài NailHub/tạp chí làm căn cứ pháp lý duy nhất; làm rõ trường hợp, ngoại lệ và thay đổi. Nguồn nền: https://www.irs.gov/businesses/small-businesses-self-employed .
+- Bản Việt và Anh giữ đúng dữ kiện, phủ định, điều kiện, số liệu và văn cảnh. Kiểm tra glossary/MQM; nếu mâu thuẫn nguồn, chưa rõ năm, địa bàn, đối tượng hay thiếu căn cứ thì HOLD. Cần chuyên gia thuế/pháp lý phù hợp thẩm định trước khi gửi Owner duyệt; ghi nhận danh tính/vai trò, phiên bản, ngày và kết quả duyệt; Owner duyệt không tự chứng minh trình độ chuyên môn. Chỉ đưa bài vào PROD sau khi cả hai bước duyệt thực tế hoàn tất. Trước publish và theo lịch rà soát, xác minh nguồn/hạn hiệu lực; có thay đổi thì HOLD hoặc đưa bài đã đăng vào quy trình cập nhật, không sửa lén.
+- Mẫu thông báo chung đề xuất cho mỗi bài: “Bài viết chỉ cung cấp thông tin chung, dựa trên các nguồn được dẫn tại thời điểm kiểm tra; không phải tư vấn thuế, pháp lý hoặc tài chính cho trường hợp cụ thể. Quy định có thể thay đổi và khác nhau theo địa bàn. Vui lòng đối chiếu cơ quan có thẩm quyền và tham khảo chuyên gia đủ năng lực trước khi quyết định.” Dẫn nguồn và thông báo này không bảo đảm miễn trừ trách nhiệm; văn bản cần luật sư phù hợp đánh giá trước khi dùng như chính sách pháp lý.
+- **Trạng thái thực tế:** thay đổi này chỉ ghi chính sách biên tập, chưa đổi mã, chưa mở lại IRS, chưa bỏ bộ lọc thuế đang hoạt động, chưa có pipeline thẩm định/gửi Telegram/đăng. Service official timer vẫn disabled; SBA vẫn ở mã cũ chờ xóa. Giữ gate HOLD hiện tại cho đến khi có implementation, review và kiểm thử; không báo đã tự đăng được bài thuế.
+
+## 11.7. Owner cho phép lại SBA — ngày 29/10
+
+- Owner xác nhận chủ đề SBA cũng được sử dụng và phải ghi rõ nguồn chính thống. Chỉ đạo này thay thế việc loại SBA ở §11.3–§11.6. Dẫn trực tiếp trang cụ thể của U.S. Small Business Administration, tên cơ quan, ngày kiểm tra và phạm vi; ví dụ https://www.sba.gov/counseling/plan-your-business/ . Không mặc định mọi hướng dẫn SBA là quy định pháp lý hoặc hướng dẫn riêng cho tiệm nail.
+- SBA và CDC/NIOSH được đưa vào hàng chờ tài liệu chính thức HOLD-only; trước khi xuất bản bài về thuế, pháp lý hoặc an toàn vẫn cần thẩm định chuyên môn phù hợp và Owner duyệt nội dung chính xác qua Telegram như §11.6. Bài chưa được thẩm định/duyệt phải giữ lại; các nội dung pháp lý và thuế phân biệt liên bang và tiểu bang, năm hiệu lực và đối tượng; link nguồn/đoạn miễn trừ không bảo đảm miễn trách nhiệm.
+- Đang thực hiện thay danh mục nguồn OSHA lỗi bằng CDC/NIOSH và giữ SBA; chưa mở lại service cho đến khi kiểm thử, review độc lập và triển khai. Tax gate cũ vẫn giữ, không coi chủ đề đã được cho phép biên tập là cho phép tự đăng.
+
+## 11.8. CDC/NIOSH và SBA: trạng thái triển khai 29/10
+
+- Theo quyết định Owner tại §11.7, danh sách thu thập hiện hành trên THINKPAD gồm https://www.cdc.gov/niosh/nail-technicians/about/index.html và https://www.sba.gov/counseling/plan-your-business/ . Cả hai snapshot có metadata `source_url`, tên tài liệu, hash và `expert_review_required`; CDC là nghiên cứu/khuyến nghị an toàn, không gán nhầm thành quy định OSHA.
+- Review độc lập và 63 test đạt trên THINKPAD; SHA256 mã cài đặt `b26df70355b10bd482ec5d8a0f0da9ea8ba3b021fd34505deb09d3bbaba66d18`. Smoke thật exit 0: CDC lưu bản mới, SBA nhận diện bản cũ không thay đổi. Timer active/enabled, lượt tới 30/10 04:30 VN. Hồ sơ cũ không xóa.
+- Chỉ intake vào hàng chờ. Chưa kết nối Việt hóa, duyệt chuyên môn, Telegram hoặc xuất bản; bài thuế vẫn bị giữ bởi gate runtime cũ. Không suy diễn Owner đã duyệt. Publisher còn attribution Scratch cố định nên không được đưa hai nguồn này qua đường đăng hiện tại. Kiểm tra DNS hiện tại không ghim IP, chưa chứng minh chống DNS rebinding; chỉ cho phép URL cố định và cần cải thiện riêng.
+
+## 11.9. Việt hóa và Telegram review: đang triển khai, chưa bật
+
+- Owner chọn executor Codex gpt-6.1-terra high. Đã viết module tạo bản nháp official với AGY, evidence MQM và HOLD; thêm transport Telegram dùng session NailHub hiện tại, kiểm Owner riêng tư và ràng buộc tin nhắn/file/nonce/hash; worker riêng và timer 05:30 không chạy bù. Thêm gate HOLD-only cho nguồn .gov và thuế trong mã chờ triển khai. Chưa có đường chuyển quyết định duyệt chuyên môn/Owner thành quyền publish, chưa có xử lý gallery/attribution official hoàn chỉnh.
+- CDC thử AGY thật trên THINKPAD: HOLD do ba điểm chưa chắc, gồm cách biểu diễn phạm vi, lỗi/footnote tài liệu tham chiếu và thuật ngữ bình nhấn. Không coi MQM tự động là chuyên gia, không nới gate. Snapshot SBA chứa nội dung thuế nên HOLD trước inference. Không có bài nào được gửi Telegram hoặc đăng từ hai nguồn.
+- Kiểm thử: bản Source Mirror 77 test trên Linux trước gate publisher mới, 82 test trên Windows cho bản gate; review độc lập HOLD-only PASS. Socket fixture Linux 7 test, thử thực hai UID Source Mirror được kết nối và nobody bị từ chối. `systemd-analyze verify` service/timer đạt. Cài 3 module Source Mirror cùng service/timer lên THINKPAD **disabled**; không thay config. Gate publisher và adapter Telegram vẫn chỉ nằm worktree, chưa cài/live.
+- Dịch vụ `tg-nailhub` có 4 hồ sơ uncertain cũ; đã rà: restart không tự retry 4 hồ sơ, nhưng scheduler lập tức quét mới và có thể gửi thông báo thủ công đến hạn. Không restart vì chưa xác nhận tác động tới workflow sẵn có; không sửa/reconcile hồ sơ của dịch vụ đó. Chưa có bằng chứng Telegram thực hoặc Owner approval.
+- Cần xác nhận ai kiểm chuyên môn (Owner hay chuyên gia trước Owner), hoàn thành hợp đồng publish và attribution/media, kiểm review/gate trên Linux, sắp xếp restart an toàn và test end-to-end thực trước bật. Source official intake timer vẫn hoạt động, timer review chưa bật; worker 4 slot không bị sửa bởi thay đổi này.
+
+## 11.10. Nguồn tham khảo chuyên môn và ảnh CDC/NIOSH
+
+- [Báo cáo NIOSH 2019 về tư thế, hóa chất và thông gió tại bốn tiệm nail](https://www.cdc.gov/niosh/hhe/reports/pdfs/2015-0139-3338.pdf) có Figure B1 (trang PDF 24) về bình nhấn; đưa cho người thẩm định đối chiếu thuật ngữ đang làm bản dịch HOLD. Không tự dùng tài liệu để tuyên bố đã xử lý hết mơ hồ.
+- Trang PDF 2 nói báo cáo có thể tái bản; Figure 1 trang PDF 6 ghi ảnh NIOSH và mô tả tư thế nguy cơ. Ảnh là ứng viên, phải ghi nguồn/tên báo cáo/năm/số hình, giữ đúng chú thích, xác minh quyền cá nhân và phạm vi sử dụng trước dùng; không mặc nhiên áp quyền đó cho mọi ảnh trên trang CDC. Chưa trích ảnh, chưa đưa vào gallery hoặc bài đăng.
+- Tình trạng xử lý tiếp theo không thay đổi: bản CDC HOLD, Telegram adapter chưa bật, người thẩm định chuyên môn chưa được xác nhận và official publisher chưa hoàn chỉnh.
+
+## 11.11. Kết nối Telegram review trên THINKPAD — 29/10
+
+- Đã triển khai adapter opt-in vào process `tg-nailhub` hiện có và worker review riêng. Trước restart đã kiểm `running=0`, không có notice cũ đến hạn; 4 hồ sơ `uncertain` cũ không tự requeue. Không sửa các hồ sơ đó. Sau restart service active, socket chỉ khởi tạo sau xác minh Owner; IPC thật cho UID Source Mirror trả HOLD với request cố tình không hợp lệ, UID nobody bị PermissionError. Không gửi tin thử; bảng review ban đầu 0 record.
+- `nailhub-source-mirror-official.timer` active: lượt tiếp theo 30/10 04:30 VN. `nailhub-source-mirror-review.timer` active: lượt đầu 30/10 05:30 VN, không chạy bù (`Persistent=false`), không khởi động review sau 05:40 và không bắt đầu inference sau 05:50. Nếu máy tắt vào lượt 05:30, ngày đó bị bỏ qua. Worker chặn kết quả gửi không rõ để tránh gửi trùng; lỗi draft HOLD có status/requeue thủ công.
+- Gói gửi chỉ tạo sau quality gate, có nguồn, bản dịch, MQM, hash, file gốc và nonce; Owner reply đúng tin nhắn ghi nhận quyết định, KHÔNG cấp quyền đăng. Bản CDC thử thật vẫn HOLD vì 3 điểm model chưa chắc; SBA đang HOLD trước inference do nội dung thuế. Chưa có gói thực đạt để gửi; chưa chứng minh Telegram end-to-end với bài thực.
+- Gate publisher mới chỉ trong worktree, chưa deploy; official queue không nối vào article/publisher. Còn thiếu xác thực chuyên gia, nguồn ảnh/quyền, source freshness, attribution đúng và hợp đồng publish gắn chính xác nội dung được duyệt. Không tuyên bố tự đăng official hoặc bài thuế. Owner đã được hỏi ai thẩm định chuyên môn; chờ phản hồi.
+- 77 test Source Mirror trên Linux trước gate publisher mới, 82 test Windows với gate mới, 7 test adapter Linux và review độc lập; kiểm UID thực trên service live, systemd verify đạt. Kiểm ngôn ngữ/MQM/thuế vẫn heuristic, không thể thay chuyên môn. Backup trước thay đổi `/var/backups/nailhub-source-mirror/before-review-bridge-20261029-161456`; không lưu credential trong tài liệu.
+
+## 11.12. Bản Telegram dễ đọc và ranh giới duyệt
+
+- Adapter live được cập nhật: file review UTF-8 hiển thị bản Việt, nội dung tham khảo tiếng Anh, tên nguồn, URL, phạm vi và MQM; không gửi HTML base64 hoặc model envelope. Caption gắn hash bản đọc, artifact và nonce; trước khi ghi quyết định phải xác minh lại file/tin nhắn và Owner. Artifact đầy đủ giữ trong DB riêng; không đồng nghĩa Owner đã duyệt media hay payload xuất bản.
+- Review độc lập PASS trong phạm vi bản đọc. THINKPAD: 7/7 test adapter Linux, service hoạt động và IPC request không hợp lệ trả HOLD; không gửi tin thật. Các bài CDC và SBA vẫn HOLD. Backup adapter `/var/backups/nailhub-source-mirror/before-readable-review-20261029-161819`.
+- Prototype contract hash/policy chỉ trả HOLD, chưa nối publisher; còn thiếu đối chiếu quan hệ nguồn→bản dịch→payload, chuyên gia được xác thực, quyền media và freshness/revocation. Người thẩm định chuyên môn vẫn đang chờ Owner xác nhận. Không được coi Owner reply trên bản đọc là đồng ý cho payload/ảnh chưa nhìn thấy.
+
+## 11.13. Owner cho phép tự đăng bài có nguồn chính thống
+
+- Owner trả lời “Nếu có nguồn chính thống thì không cần duyệt trực tiếp cho đăng” đối với bài thuế và an toàn. Điều này thay thế yêu cầu phải chờ thẩm định chuyên gia hoặc Owner trực tiếp trong các mục lịch sử trước: bài có nguồn chính thống, đáp ứng mọi gate có thể tự đăng. Không đánh dấu đã có chuyên gia/Owner duyệt nếu không có; những bài không đủ điều kiện vẫn HOLD.
+- Gate bắt buộc: nguồn/cơ quan và URL cụ thể trong allowlist; snapshot bất biến và dấu thời gian, kiểm nguồn hiện hành, phạm vi liên bang/bang, năm và ngoại lệ; đối chiếu toàn bộ dữ kiện, số, phủ định và liên kết; Việt hóa/glossary/MQM đạt, không mơ hồ; nguồn, hình ảnh và quyền sử dụng có bằng chứng; metadata, attribution và nội dung phù hợp; kiểm lại payload/media/source trước reservation và Create. Khi không thể kiểm chứng hoặc còn mơ hồ, HOLD, không tự suy diễn.
+- Bài thuế/pháp lý dùng thông báo thông tin chung như §11.6, nhưng không cam kết rằng dẫn nguồn hay disclaimer tạo miễn trách nhiệm. SBA và CDC/NIOSH được phép làm nguồn; IRS được xem xét theo policy thuế mới, nhưng chưa bật trong mã hiện tại. Tin cậy nguồn chính thống không bảo đảm mọi bản tóm tắt hay bản dịch chính xác.
+- Thay đổi chính sách này chưa triển khai: Telegram adapter còn sẵn, nhưng review timer đã dừng/disable theo quyết định mới; current tax/.gov gate vẫn HOLD, publisher official chưa có đường an toàn và chưa đăng. Executor được điều hướng lại sang implement/review/test gate tự động trước bất kỳ thay đổi PROD.
+
+## 11.14. IRS intake trở lại — 29/10
+
+- Đã cài collector gồm CDC/NIOSH, SBA và hai nguồn IRS: [tip recordkeeping](https://www.irs.gov/businesses/small-businesses-self-employed/tip-recordkeeping-and-reporting), [independent contractor or employee](https://www.irs.gov/businesses/small-businesses-self-employed/independent-contractor-self-employed-or-employee). Nguồn URL cụ thể lưu metadata; smoke thật exit 0, hai snapshot IRS mới, CDC/SBA giữ nguyên. Không xóa dữ liệu cũ.
+- Review độc lập intake, 96 test Source Mirror trên THINKPAD đạt; hash mã cài `3139ab592d25f3b725ceef12a848dd4b5092cc8b09f6e07e34f74936959adfab`. Timer intake vẫn active; timer Telegram review inactive/disabled theo §11.13.
+- Nhãn kỹ thuật snapshot `expert_review_required` là di sản schema, không phải chính sách buộc Owner duyệt hiện hành. Bài vẫn HOLD vì gate tự động cho nguồn/tính mới, tính chính xác, phạm vi, quyền media và native Create chưa hoàn tất. Khi HTML không đổi, collector chưa lưu timestamp lần xác minh mới; diagnostic freshness 24h hiện có thể HOLD dù nguồn được refetch, không được bỏ qua. Không tuyên bố đã tự đăng.
+
+## 11.15. Thử nghiệm auto gate nguồn chính thống
+
+- Đã dựng trong worktree prototype eligibility kiểm URL/snapshot/refetch, phạm vi/ngày, factual MQM cho content+SEO, media validator tách UID và policy quyền ảnh root-owned, lưu evidence và native request mock. Chưa nối vào Store/Create PROD; .gov/tax vẫn HOLD trong runtime. Review độc lập có phát hiện và đã xử lý một số lỗi TOCTOU/binding; bản mock không chứng minh native Create hoặc quyền ảnh. Không dùng test mock làm bằng chứng xuất bản.
+- Thử AGY thật trong scratch trên THINKPAD: nguồn CDC/NIOSH 2026 HOLD 3 uncertainty; bulletin NIOSH 2015 HOLD 4, sau prompt fidelity sửa tiếp tục HOLD 5 (terminology, lịch sử); IRS employee classification HOLD 4 (thuật ngữ pháp lý và phạm vi). Không tự xóa uncertainty, không gửi bài hay publish; log HOLD riêng tư. Cho phép tax chính thống không đồng nghĩa mặc định chất lượng PASS.
+- Report NIOSH 2019 chính thức [HHE 2015-0139-3338](https://www.cdc.gov/niosh/hhe/reports/pdfs/2015-0139-3338.pdf) ghi report không copyright và có thể tái bản, Figure B1 ghi Photo by NIOSH. Đã trích ảnh bình nhấn không thấy người để làm ứng viên, lưu scratch; chưa cấu hình media policy, chưa upload và chưa kết luận quyền mọi phạm vi. Bulletin 2015 yêu cầu ghi năm trong title/summary/meta/body; phải tránh trình bày số liệu 2008–2009 như hiện hành.
+- Bộ test worktree 115 test Windows; bản trước đó 114 test Linux trên THINKPAD. Chưa chạy bản mới nhất Linux; chưa deploy auto gate/publisher. Official intake 4 nguồn CDC/SBA/IRS vẫn active; Telegram review timer disabled theo quyết định Owner, worker hiện hữu active. Chưa có bài official publish.
+
+## 11.16. Kết quả thử nguồn thực, policy không duyệt trực tiếp
+
+- Thử riêng trên THINKPAD, không đụng PROD: bulletin NIOSH 2015 lần đầu HOLD 4 uncertainty, sau đổi prompt fidelity HOLD 5; IRS worker classification HOLD 4 uncertainty về thuật ngữ pháp lý và phạm vi; IRS tip reporting HOLD vì output model không phải JSON hợp lệ. Không nới gate, không đăng hay gửi duyệt. Bằng chứng HOLD nằm trong scratch riêng, không đính dữ liệu model vào doc.
+- Bản bulletin 2015 chưa đưa vào runtime; phải giữ ngày trong title/summary/meta/body và không biến số liệu cũ thành hiện hành. CDC/NIOSH 2026 vẫn HOLD. Owner cho phép auto khi nguồn chính thống đủ gate, không yêu cầu chuyên gia/Owner duyệt trực tiếp; thiếu bằng chứng/chưa rõ vẫn HOLD.
+- Trích thử Figure B1 (bình nhấn, không thấy người) từ [báo cáo NIOSH 2019](https://www.cdc.gov/niosh/hhe/reports/pdfs/2015-0139-3338.pdf) vào scratch: ảnh gốc SHA `cc8564a2e4de59ed8013c0c7b3475eea79879b19382d31cb58cba0482d0e5cc3`; report ghi Photo by NIOSH và có thể tái bản. Chưa upload, chưa gắn vào bài; cần policy về phạm vi/quyền và đối chiếu nội dung CDN sau upload.
+- Thử network cũ đã chặn Create cho thấy categoryId/coverImage/images/translations và thumbnail có shape xác định; upload bìa và gallery là hai object khác nhau. Bytes CDN trước đây re-encode khác nguồn; mock exact SHA có thể HOLD. Không dùng dHash/RMS làm chứng minh quyền hay fidelity đầy đủ. Native guard và auto gate còn trong worktree, chưa nối PROD.
+
+## 11.17. Đối soát tiếp chính sách tự đăng — 29/10
+
+- Worker chính đang active; lượt 16:00 giữ bài vì bản Việt hóa còn mơ hồ kỹ thuật, không publish. Official intake timer active, lần kế tiếp 04:30 ngày 30/10; review timer disabled. Việc thu thập nguồn không đồng nghĩa đã nối xuất bản nguồn chính thống.
+- Thử lại IRS tip reporting đã có JSON hợp lệ nhưng HOLD 3 điểm chưa rõ; thử bài vệ sinh móng CDC cũng HOLD 4 điểm. Bản dịch không được làm nhẹ nghĩa “sterilize” thành chỉ “vệ sinh”; các liên kết nguồn cần giữ nguyên và kiểm đúng.
+- Test tích hợp offline mới xác nhận mock/evidence qua boundary nhưng Store thật vẫn chặn `.gov` trước khi chiếm slot; evidence bị sửa bị từ chối và bài thông thường vẫn lấy được slot. 76 test official trên worktree PASS. Publisher thực vẫn chưa nhận payload official bất biến, chưa xác minh serialization native và ảnh CDN; chưa bật tự đăng official.
+- [Ảnh minh họa Pexels](https://www.pexels.com/photo/cosmetics-for-manicure-4677843/) được trang nguồn ghi free, tác giả Leeloo The First; là ứng viên, chưa tải lên hoặc áp dụng policy media. Quyền, nội dung ảnh và biểu đạt không gây hiểu nhầm cần kiểm riêng trước sử dụng.
+
+## 11.18. Đối soát slot 08:00 ngày 30/10
+
+- Slot 08:00 thử ba lần, chưa tạo intent hoặc chiếm quota; bài nguồn OPI đánh số Step 2 hai lần, bị giữ vì bất định. Worker và AGY broker active. Slot 12:00 theo lịch Asia/Ho_Chi_Minh không bị chặn bởi bộ đếm slot 08:00; test Store kiểm riêng điều này, không bảo đảm có bài đạt.
+- Xác định lỗi chặn nhầm anchor chung trong bản dịch, sau review độc lập đã triển khai whitelist rất hẹp; tên riêng, URL và cấu trúc vẫn kiểm như cũ. Bổ sung glossary `top coat` → `lớp phủ` vào prompt, không nới validator. Bản cài SHA256 `1886a9b86dab9ef5452356077d63204f80cd9749a8509d7f1b0f755642b5946c`; 19 test localization đạt trên Linux và Windows, reviewer độc lập chấp thuận. Bản cũ lưu tại `/var/backups/nailhub-source-mirror/anchor-fix-20261030/`.
+- Chỉ bài b844 từng bị chặn nhầm được đưa lại vào hàng chờ bằng CAS dưới worker lock, kiểm quota/intent, rồi tạo bản dịch và MQM mới; MQM tiếp tục HOLD vì nguồn chưa rõ thông số đèn và thứ tự thao tác. Những bài khác còn lỗi thuật ngữ hoặc kỹ thuật mơ hồ cũng HOLD; không xóa bằng chứng.
+- Đã thử các đợt crawl và đăng bù, chưa có bài pass vào thời điểm ghi. Đề xuất retry response sai JSON chưa triển khai: review phát hiện nguy cơ bỏ qua uncertainty trong response và thời gian giữ lock dài; phải sửa và kiểm lại độc lập trước khi dùng. Ưu tiên duy trì worker và cổng chất lượng cho slot 12:00.
+
+## 11.19. Đăng bù và chính sách chất lượng mới — 30/10
+
+- Owner yêu cầu ưu tiên chất lượng Việt hóa và nguồn xác định, không kiểm kỹ thuật trong bài nail-art quá chặt. Đã cài prompt mới: không HOLD chỉ vì nguồn thiếu thông số đèn/thời gian, không bịa thông số; vẫn giữ khi sai nghĩa, số liệu, mâu thuẫn hoặc không thể chuyển ngữ trung thực. Bộ nguồn thuế/chính phủ chưa mở đường publish, không thay gate nguồn chính thống. Retry response rỗng ở code mặc định tắt; không tự retry nội dung lỗi hoặc cảnh báo.
+- Đã publish bù [5 bước tạo kiểu móng French acrylic L&P hồng và trắng](https://nailhub.ai/blog/5-buoc-tao-kieu-mong-french-acrylic-lp-hong-va-trang), nguồn Scratch Magazine, ngày 30/10. Gate Việt hóa/MQM PASS; admin xác nhận 1 record Published id `eae77333-ac85-46af-bfe9-2890d591bb83`; public có năm bước, 6 ảnh tải và dẫn nguồn. Attempt 10 được reconcile published sau lỗi hậu kiểm selector; attempt 9 trước đó bị guard chặn và xác nhận không tạo, đã release. Quota hiện 1/4, không có unknown.
+- Đã sửa guard chỉ chuẩn hóa class editor `blog-standalone-image` khi serializer bỏ class; giữ kiểm URL/thứ tự ảnh và chặn thuộc tính lạ. Sau đó sửa selector admin/guest sang `.blog-article-content.ql-editor` duy nhất, vẫn giữ kiểm nội dung/ảnh. Linux 27 test PASS; review độc lập PASS; kiểm read-only thực admin VI/EN và guest thấy đúng selector và 6 ảnh tải. SHA256 publisher cài `40ec52b0540d6976cb1500ec4ac9fe4c7262e7a116704121c00a290e147c5853`; localization `e295baa7720be3dfec0b3499fddf2ea434ab31e2fbb1759993b5b0f9653daf18`.
+- Worker active, không paused; slot 12:00 chưa diễn ra, không thể xác nhận trước sẽ publish. Đã crawl thêm ứng viên để tăng lựa chọn; bài vẫn phải qua quality gate. Việc hậu kiểm selector trên bài thật không thay thế nghiệm thu một lần đăng mới hoàn toàn qua code vừa cài.
+
+## 11.20. Tiếp tục nguồn chính thống và kiểm slot — 30/10
+
+- Owner yêu cầu hoàn tất đường tự đăng nguồn CDC, SBA và IRS và kiểm slot 12:00. Đến 09:20 VN, intake timer, worker và AGY active; có 1 bài Source Mirror published hôm nay và không có intent/unknown. Đã đặt kiểm tra trong chat sau 12:00; tại thời điểm này slot chưa diễn ra.
+- Review độc lập phát hiện extraction bỏ hyperlink quan trọng, policy media scope US không đủ chứng minh quyền phân phối toàn cầu, và native guard prototype nhận kết quả kiểm từ caller chưa đáng tin. Source `.gov` vẫn HOLD khi đang sửa; chưa đưa prototype lên PROD. CDC yêu cầu attribution, không ngụ ý chứng thực, giữ nội dung, ghi nguồn miễn phí và link mở cửa sổ mới ([CDC](https://www.cdc.gov/other/agencymaterials.html)); nguồn SBA cũng không cấp quyền cho nội dung từ site liên kết ([SBA](https://www.sba.gov/about-sba/open-government/about-the-sba-gov-website/)).
+- Ảnh ứng viên [Pexels](https://www.pexels.com/photo/cosmetics-for-manicure-4677843/) SHA `7dd7145d4f4f5104b918eae4a8b55d96130e6501fa1184d5135f11bd751a6f36`, credit Leeloo The First; là ảnh stock minh họa chung, không minh họa kỹ thuật an toàn CDC. [License](https://www.pexels.com/license/) cho sử dụng trên blog theo các điều kiện của nguồn. Canary native upload (không Create) cho JPEG CDN SHA `d015af9ab11bad99f20801e2291b7b418e4647900933c00d6d9f271b28a7f34e`, khác gốc; việc pin output chỉ chứng minh tính không đổi từ lúc lấy, không tự chứng minh provenance hay semantic fidelity. Chưa áp dụng policy hoặc đăng nguồn official.
+
+## 11.21. Đối soát kỹ thuật official — 30/10
+
+- Link contract prototype đã parse/roundtrip năm trang CDC/NIOSH, SBA, IRS thật; review độc lập 24 test và 5.000 fixture, nhưng chưa xác nhận semantics của bản dịch hay Create thật. NCEZID vẫn HOLD riêng. Content và media phải bind tới trusted boundary, không dùng mock/caller tự khai làm quyền đăng.
+- Native canary chọn ảnh Pexels qua file chooser: multipart có một part `file`, SHA bytes khớp gốc; response ảnh CDN khác SHA sau chuyển mã, thumbnail không phải URL tuyệt đối. Chưa nối request-response thật vào controller hay chứng minh fidelity; không nhấn Create. Root-policy `WORLDWIDE` chỉ là điều kiện kỹ thuật, không tự chứng minh quyền thực tế.
+- Source fetch ghim IP/TLS trong scratch trên THINKPAD: SBA và hai IRS tải thành công, cả ba CDC trả HTTP 403; không thay collector hiện tại. AGY thử bản IRS worker classification với link contract trả response rỗng, HOLD; chưa có draft để đăng.
+- 171 test worktree đạt theo executor; review cho thấy canary browser vẫn cần chứng minh cô lập startup/profile trước khi kết luận an toàn, và native guard có khoảng trống thay đổi CDN giữa lần kiểm và POST. Không enable `.gov` hay tuyên bố đã publish. Slot 12:00 đã đặt lịch đối soát một lần trong chat; cần xác nhận kết quả thật sau giờ chạy.
+
+## 11.22. Kiểm thử nối nguồn official — 30/10
+
+- Trên THINKPAD, 204 test full worktree đạt trong thư mục thử đủ cấu trúc (skip 1 dành riêng Windows); 7 test scanner Chromium đạt, review độc lập 25 test. Source Mirror production chưa cài nhánh official mới; scheduler/publisher `.gov` trong worktree còn cờ tắt.
+- AGY thử IRS sau bổ sung chỉ dẫn text-only đã trả JSON nhưng HOLD 5 uncertainty; SBA trả JSON và HOLD, trong đó source hướng dẫn chi phí hàng quý chia 4 để tính theo tháng có mâu thuẫn. Chưa xóa uncertainty hay đăng bài. Chỉ dẫn no-tools không phải sandbox hay bảo đảm model luôn đúng.
+- Quét admin thật hai lượt qua UI, 132 bài/14 trang, không thấy URL SBA được kiểm, kết quả `SOURCE_ABSENT_NONATOMIC`: không có bảo đảm nguyên tử khi luồng khác ghi đồng thời. URL cũ `even.vlinkpay.com` không có scheme được xử lý hẹp trong bản thử; nguồn/đường dẫn mơ hồ vẫn HOLD.
+- Upload thử ảnh Pexels native có multipart bytes khớp nguồn; CDN resize 3802×5695 → 1281×1920, SHA `d015af9ab11bad99f20801e2291b7b418e4647900933c00d6d9f271b28a7f34e`. Đã xem cả hai ảnh, bố cục giữ nguyên; comparator chạy `nobody` tại 512 MiB/10 s đạt theo policy thử riêng cặp hash. Bộ kiểm là heuristic, chưa chứng minh provenance/backend hay quyền ảnh; chưa cài socket/policy production.
+- Phần còn lại: nối controller upload/đăng/hậu kiểm thực và scanner/quota vào runtime sau review, chứng minh service so ảnh và timeout, xử lý CDC 403 trong fetch ghim IP, có ít nhất một draft đạt từ nguồn chính thống, rồi mới xem xét enable. Không dùng fixture làm bằng chứng đã đăng. Slot 12:00 được đặt kiểm tra sau 12:15 trong chat.
+
+
+## 11.23. Thử bản dịch IRS và đối chiếu độc lập — 30/10
+
+- IRS Tip Recordkeeping and Reporting được AGY tạo nháp thật trên THINKPAD; MQM tự động báo PASS, không uncertainty, nhưng review độc lập phát hiện vẫn có cụm và cả câu tiếng Anh trong liên kết, cách viết ngày như `10 th`/`10th` và `8 percent` chưa Việt hóa. Nháp vẫn HOLD; kết quả MQM PASS không đồng nghĩa đủ chất lượng đăng. Không sửa trực tiếp nội dung nháp hay publish; cần sửa khâu tạo/kiểm tra và chạy lại từ nguồn.
+- Thử trước đó HOLD do so khớp token số nhận `0.9%` → `0,9%`, các tháng và `zero` viết bằng chữ được chuyển thành số. Prompt thử yêu cầu giữ chữ số và dịch số/tháng viết bằng chữ, không nới gate số; review 18 test đạt nhưng kiểm đếm số không chứng minh số gắn đúng ngữ cảnh. MQM thực đã bỏ sót lỗi ngôn ngữ, do đó phải đánh giá độc lập tiếp.
+- Official runtime vẫn chưa bật: thiếu runner tạo editorial VI/EN, metadata/hashtag, ràng buộc ảnh/quyền và policy thực, kiểm nguồn/factual và hậu kiểm Create thực. CDC fetch prototype còn 403. Worker hiện tại vẫn chạy các nguồn cũ; kiểm slot 12:00 đã đặt lịch một lần lúc 12:15, không thể xác nhận kết quả trước khi diễn ra.
+
+
+## 11.24. Thử kiểm Việt hóa và tự chuẩn bị nguồn — 30/10
+
+- Bổ sung tại worktree kiểm cách viết ngày, `percent`, `tip credit` và một số anchor mô tả tiếng Anh chưa dịch; giữ tên cơ quan/văn bản phù hợp, không thay nội dung draft. Review độc lập 22 test PASS; full suite Windows 254 test PASS, skip 4 tại thời điểm đóng băng localization. Đây là heuristic, không chứng minh toàn bộ bản dịch chính xác. Lượt AGY thật sau thay đổi trả `QualityHold: invalid model JSON`, chưa có bản mới đạt; không publish.
+- Prototype worker tự chuẩn bị đã nối nguồn được cấu hình → draft → editorial → media policy → staging, có timer riêng nhưng flags còn tắt, chưa cài. Trên THINKPAD trong thư mục thử độc lập, 13 test Linux PASS gồm kill một child và nhả lock; `systemd-analyze verify` service/timer exit 0. Chưa chạy service thật; chưa chứng minh xử lý descendants hoặc AGY broker độc lập khi client bị kill. Kiểm thử rights/runner dùng mock, không coi là nghiệm thu quyền ảnh.
+- Audit phát hiện worker cần ghi trạng thái HOLD bền vững, tránh lặp inference, và chỉ chạy một URL cấu hình không đủ cấp 4 bài khác nhau; cần hoàn thiện lựa chọn nguồn, factual/rights policy, test trên môi trường thật và hậu kiểm Create. Runtime official chưa bật. Lịch thật trong config THINKPAD là 08:00, 12:00, 16:00, 20:00 Asia/Ho_Chi_Minh.
+
+
+## 11.25. Trạng thái và giới hạn worker thử — 30/10
+
+- Trong worktree đã thêm trạng thái bền vững theo snapshot và luân phiên tối đa một nguồn mỗi lượt trong danh mục sáu URL cố định. Cả phase có lỗi thì HOLD, không tự retry: audit phát hiện retry riêng lỗi kết nối bước sau có thể chạy lại prompt bước trước đã hoàn thành. Test regression bổ sung; Windows full 269 PASS, 6 skip trước review Linux lại.
+- Chưa tự phục hồi bài staged lỡ slot; HOLD hiện ngăn tự dò snapshot nguồn mới. Sáu URL cố định không phải cơ chế khám phá bài mới hàng ngày. Cần nghiệm thu rights/source policy, broker và service thực, đăng thử và hậu kiểm; chưa deploy/enable. AGY trial mới `invalid model JSON`, không có draft mới được thông qua.
+
+
+## 11.26. Rà soát phiên bản nguồn và lịch — 30/10
+
+- Worktree có refetch-only khi hết nguồn có thể chạy: giữ HOLD cũ, chỉ xét SHA mới ở lượt sau; policy nhiều nguồn yêu cầu category từng nguồn. Windows full 272 test PASS/6 skip; Linux isolated 28 test PASS/0 skip (các test dùng mock). Audit phát hiện SHA toàn HTML có thể thay do analytics/menu dù nội dung bài không đổi, dẫn đến gọi lại AGY cho cùng bài: chưa bật, cần khóa theo fingerprint nội dung có ý nghĩa hoặc giữ fail-closed. Lượt fetch lỗi không tạo snapshot mới.
+- Bài đã staged lỡ slot chưa được tự đưa sang slot khác; cần đối soát tránh trùng giữa state và attempts trước khi thiết kế phục hồi. Chưa có policy ảnh/category thực đã được kiểm, bằng chứng dịch IRS mới hoặc đăng nguồn chính thống thật. Worker đăng hiện tại active; kết quả slot 12:00 chưa xảy ra và đã đặt kiểm một lần lúc 12:15 VN.
+
+
+## 11.27. Đối chiếu nội dung nguồn đã HOLD — 30/10
+
+- Worktree thêm fingerprint title, text, link theo thứ tự và metadata nguồn, đối chiếu lại trước inference. Review Linux isolated 33 test PASS/0 skip; Windows full 277 PASS/6 skip. Bộ này không chứng minh mọi thay đổi ngữ nghĩa; `HELD_CONTENT_CHANGE_VERIFIED=False`, vì vậy bản nguồn đã HOLD vẫn không tự mở dù nội dung khác. Probe B rồi fetch C không bind SHA B; cần test B→A/B→C nếu sau này mở cờ.
+- Chưa triển khai hay bật đường official: cần hoàn thiện phục hồi slot lỡ, rights/category policy thực, xử lý CDC 403 và kiểm thử Create/readback thật. IRS trial mới lỗi JSON, draft MQM PASS trước đó bị review phát hiện chưa Việt hóa đầy đủ. Worker cũ và lịch kiểm slot 12:15 tiếp tục như trước.
+
+
+## 11.28. Tiếp tục hoàn tất và bật official — 30/10
+
+Owner yêu cầu tiếp tục hoàn tất và bật đường tự đăng CDC/SBA/IRS, dẫn nguồn chính thống và báo cáo lỗi AGY thường gặp. Không yêu cầu Owner duyệt từng bài khi nguồn chính thống và bài vượt kiểm chất lượng.
+
+- [ ] Rà trạng thái THINKPAD, nhật ký AGY và nguồn CDC thực; giữ worker hiện tại hoạt động.
+- [ ] Hoàn thiện staging, phục hồi slot và publisher; test/review độc lập policy nguồn, quyền ảnh, chống trùng, nguồn dẫn cụ thể.
+- [ ] Thử AGY và chất lượng Việt hóa trên bản nguồn thật; giữ lại bản lỗi và trường hợp không xác minh được.
+- [ ] Triển khai/bật khi vượt kiểm thử cần thiết; nghiệm thu kết quả thật và ghi rõ nếu còn chặn.
+- [ ] Báo lỗi AGY theo bằng chứng, phân biệt lỗi công cụ, kết nối, chất lượng nội dung.
+
+
+## 11.29. Điều tra nguồn và AGY — 30/10
+
+- Prototype pinned HTTPS thêm `Connection: close` sau thử nghiệm có đối chứng CDC 403/200; trên THINKPAD cả 6 URL CDC/SBA/IRS trả 200 và trích xuất, Windows 17 test PASS và independent Linux 17 PASS. Sửa chỉ trong worktree, collector PROD cũ vẫn active và chưa thay.
+- Nhật ký broker chỉ có 6 dòng lifecycle nên không suy ra tần suất lỗi AGY; 5 generation HOLD được lưu tại trial gồm 4 uncertainty và 1 invalid envelope/JSON, chưa đại diện mọi lượt. Một draft MQM PASS bị audit phát hiện còn tiếng Anh. Latest review invalid JSON được xác định AGY bọc Markdown fence; thử `--json-schema` generic thực báo SUCCESS nhưng `structured_output={}` và response vẫn fenced, không coi là sửa. Lượt generation mới JSON hợp lệ nhưng HOLD vì cụm thuế chưa Việt hóa. Không bỏ HOLD hay sửa bản nháp.
+- IRS HTML cũ và mới khác, nhưng title/reference/ordered links bằng. Tìm thấy một giá trị `ajaxPageState.theme_token` trong JSON Drupal thay đổi; đang thử comparator hẹp, chưa thay freshness gate. Không in/lưu token.
+- Restage prototype dùng `official_preparing` và finalize trong Store transaction; independent Linux 31 PASS gồm SIGKILL sau commit không cho reserve. Vẫn chưa enable, cần review toàn luồng/policy thực/hậu kiểm; bài crash có thể cần đối soát.
+
+
+## 11.30. Khắc phục định dạng AGY và media — 30/10
+
+- Lượt AGY 1.4.9 dùng schema MQM đầy đủ trả `structured_output` đủ trường, nhưng response lặp hai JSON tương đương; schema object tổng quát trước đó trả `{}` rỗng dù SUCCESS. Codec thử giữ toàn bộ phản hồi gốc, từ chối schema thiếu, xung đột/cảnh báo lạ và giữ HOLD; review Linux 34 test codec+localization PASS. Không coi codec là kiểm chất lượng hoặc factual; chưa nối broker PROD. Một bản generation thật vẫn HOLD vì cụm `tip credit` chưa dịch.
+- Đã tách validator ảnh Source Mirror thành module/socket/service riêng, không import NailBlog hoặc Telegram. Sửa unit sau audit systemd warning; verify trên THINKPAD không warning, activation thử socket riêng nhận worker/từ chối UID khác, test validator Linux 3/3, test EOF 15 giây. Chưa cài account hay service thật; phải kiểm account/group thực và policy media trước dùng.
+- Comparator IRS thử chỉ bỏ qua đúng `ajaxPageState.theme_token` 43 ký tự, mọi byte khác phải khớp; nội dung/31 liên kết trên Chromium chặn mạng giống nhau. Audit scoped và 4 test Linux PASS; chưa chứng minh AJAX online và chưa nối freshness gate.
+
+
+## 11.31. Slot 12:00 và thành phần official — 30/10
+
+- Slot 12:00 đã published lúc 12:06:13 [Hướng dẫn vẽ móng hoạt hình Mickey và Minnie Mouse](https://nailhub.ai/blog/huong-dan-ve-mong-hoat-hinh-mickey-va-minnie-mouse), Scratch Magazine; guest HTTP 200, 9/9 ảnh tải khi cuộn, link nguồn có thật. Trước khi chọn bài thành công, ba ứng viên HOLD: invalid model JSON, glossary thiếu, MQM/uncertainty. Các lượt đó chưa tạo intent; worker/AGY vẫn active.
+- Đã cài validator media độc lập trên THINKPAD sau slot: tài khoản không login UID 985, không groups phụ; socket active/enabled, worker UID 991 được phép, root peer bị từ chối, policy sandbox hiển thị active; validator digest ảnh thật + rights evidence đúng. Independent audit xác nhận. Worker PROD chưa cài client hoặc nối service; validation chỉ kiểm file/digest, không chứng nhận quyền ảnh.
+- Broker AGY structured v2 trong scratch qua thử thật: draft ngắn thành công, MQM độc lập PASS; mẫu sai số HOLD major1; peer sai UID bị từ chối, broker thử đã dừng và live broker không restart. Codec giữ envelope gốc; chưa tích hợp/bật PROD, không chứng minh bản IRS dài đạt.
+- Category Nail Salon UUID được auditor đối chiếu API/UI thực qua profile copy read-only. Evidence Pexels là tóm tắt có nguồn chính thức, không giả raw snapshot; THINKPAD fetch Pexels 403. Policy media IRS 24h là hạn rà soát nội bộ, không phải hạn license. Việc bật official còn chờ hoàn chỉnh và kiểm publisher, rights, freshness, AGY thực trên bài dài.
+
+
+## 11.32. Dịch vụ AGY riêng và policy ba nguồn — 30/10
+
+- Đã cài broker official riêng active/enabled, socket và process riêng, runtime v2 root-owned; worker legacy và 5 file cấu hình/binary đã đối chiếu không đổi. Dùng cùng UID 990 và tài khoản AGY nên không phải isolation về principal/quota. HOME riêng, `useG1Credits=false`, `useAiCredits=false`, hai file cấu hình read-only; AGY models thực mở hai file này. Không suy ra chứng minh thanh toán/facturation. Smoke thực qua peer UID 991 schema MQM PASS, response gốc được giữ; root peer bị từ chối. Không bật publisher.
+- Media policy live SHA `f76818f669e223de83fdb545e27a1507a59906850c4e49c05523682647d40721` gồm IRS tip, CDC/NIOSH nail technicians, SBA business plan; IRS giữ nguyên, backup có sẵn; hết hạn rà soát nội bộ 31/10/2026 12:10 VN. Auditor kiểm quyền và validator thực theo digest. Là ảnh stock minh họa, không hàm ý cơ quan cung cấp hay chứng thực.
+- Source Mirror live vẫn chưa có official scheduler/publisher, client media chưa nối. Bắt đầu thử CDC/NIOSH thật tại scratch, source SHA `68ee11e813244d9d8202bdfbfba2ae48d0eb760ba1e1df440f0efcb33a581b1b`; kết quả chờ kiểm chất lượng. Các bản demo/schema ngắn không chứng minh bản dài đạt. IRS freshness exact-byte đang HOLD khi chỉ Drupal token đổi; comparator chưa nối gate.
+
+
+## 11.33. Việt hóa CDC và ranh giới trích dẫn — 30/10
+
+- CDC trial v1 qua AGY structured HOLD: giữ thuật ngữ pressure-sensitive dispenser, ba URL citation và lỗi chữ có trong nguồn; review độc lập không thấy suy diễn cơ chế, cần dịch N95 respirator rõ hơn. Kiểm số còn phát hiện extractor cũ ghép hai citation riêng `1` và `2` thành `12`; không nới gate số hoặc sửa draft cũ.
+- Worktree thêm extractor versioned: snapshot v1 cũ vẫn đọc/kiểm nguyên vẹn, nếu khác cách đọc mới thì HOLD trước inference; bản v2 tạo root riêng giữ ranh giới citation. Review độc lập 52 test Linux PASS, kiểm snapshot live v1 không đổi và v2 36 links. Root v2 chưa nối scheduler/Store/publisher production; hiện chỉ dùng trial scratch. Windows full 318 PASS/8 skip ở freeze tương ứng.
+- Prompt mới giữ URL hiển thị gốc trong marker, tên nguồn nguyên bản và diễn đạt N95; đang thử AGY CDC v2 thật, chưa có kết quả. Official publisher và autostage vẫn chưa deploy/bật, policy media 3 nguồn đã cài hạn rà soát nội bộ 31/10 12:10 VN.
+
+
+## 11.34. CDC draft thực qua AGY structured — 30/10
+
+- Trial structured đầu thiếu response do broker trả lỗi; session dữ liệu cho thấy text và native có 2 parenthetical khác nhau, codec sẽ reject; class gốc không được lưu nên không khẳng định nguyên nhân duy nhất. Prompt structured tách khỏi legacy, yêu cầu một native finalization; whitelist error code, không retry. Review 48 test Linux PASS.
+- Trial mới một generation + MQM thật: CDC draft SHA `b99302a0c54774b8d4ee2720dd8a9932d6dadc720f7acb97637cee32d586c092`, MQM PASS/0 uncertainty, status vẫn HOLD. Audit độc lập đối chiếu nội dung chính, N95, số liệu, 36 marker/link/paragraph PASS trong phạm vi đối chiếu; 400,000 trích dẫn tài liệu ngành 2017–2018, phải giữ references để tránh hiểu là số mới. Câu lọc/thoát khí có thể viết rõ hơn; chưa có chứng nhận chuyên môn hay hậu kiểm publish.
+- Thử staging thật trong scratch root v2: refetch CDC exact SHA khớp, validator thật kiểm ảnh/rights digest, bản SQLite backup live read-only qua quiet-slot. Chuẩn bị slot 16:00 chỉ trong scratch; chưa có evidence stage/publish thật hoặc deploy scheduler official.
+
+
+## 11.35. Staging CDC thực trong môi trường thử — 30/10
+
+- Sau hai lỗi metadata vượt 500 ký tự hoặc thay dấu phân cách số, prompt được bổ sung soft targets/giữ số; các gate không nới. Bản thứ tư đạt độ dài và numeric, factual lần đầu HOLD vì lẫn trạng thái intake với planned publish, factual lần hai JSON có Markdown fence; các HOLD vẫn giữ.
+- Đã tách nội dung nguồn khỏi platform wrapper trong prompt factual, giữ các kiểm stale numbers/scope/causation/endorsement; factual v2 dùng AGY structured schema MQM, native envelope được lưu và xác thực. Audit 30 test Linux PASS. Lượt CDC sau đó factual + boundary thực PASS và STAGED_NOT_PUBLISHABLE trong scratch; record SHA `89f1e33c462c3727a553d5c4c8a25615ebd370abd31b227aeda12e6737deea9d`, payload `d77e1f89356933f642797cce00dd7d9e5a5c73a6afc3c08e2abe1c40a2f00bb8`.
+- Audit record: bản thử Published dự kiến 16:00 gồm 2 locale, 36 links nguồn + 1 footer mỗi ngôn ngữ, stock credit/disclosure không endorsement; policy hash và evidence khớp. Scratch có 0 intent/unknown và không dựa vào quota scratch để tuyên bố quota PROD. Chưa có create/readback hay publish; chuẩn bị canary profile copy và chặn Create trong UI.
+
+
+## 11.36. Owner điều chỉnh vận hành — 30/10
+
+- THINKPAD là máy vận hành tự động; Windows chỉ hỗ trợ phát triển/kiểm thử và không được là điều kiện chạy hàng ngày. Owner yêu cầu nhận lệnh và phản hồi qua Telegram; Source Mirror phải độc lập state/worker/logic NailBlog, có thể dùng transport Telegram hiện có qua ranh giới riêng nếu xác thực owner và không xung đột session.
+- Audit THINKPAD: `tg-nailhub` và `tg-triage` active; `/nailhub` hiện điều khiển service khác, còn review transport Source Mirror cũ chỉ phục vụ approve/reject và timer tắt. Chưa có lệnh `nailblog <URL>` hoặc phản hồi kết quả tự động cho Source Mirror. Cần implement + test owner-only, idempotence, queue, pause/resume rõ nghĩa, output status/HOLD/URL và chống trùng/quota; không tự nhận đã tích hợp.
+- Owner yêu cầu **bỏ qua bài/lượt vướng CORS, không tiếp tục sửa CORS, tìm bài khác**. Canary v9 dừng và kiểm PID0; không tạo bài/intent mới; v7 đã upload một ảnh nhưng không Create và không xác định receipt, lưu dấu vết không xóa. Không tuyên bố bài CDC đã đăng. Tìm bài khác qua nguồn và flow hiện đang được phép; không nới kiểm dịch/nguồn.
+
+
+## 11.37. Bài thay thế và Telegram độc lập — 30/10
+
+- Đã capture và đưa ba URL Scratch không Halloween vào queue thật trên THINKPAD lúc 14:53: [How to perfect a French tip](https://www.scratchmagazine.co.uk/nail_art/how-to-perfect-a-french-tip/) (8 ảnh), [The double French](https://www.scratchmagazine.co.uk/nail_art/the-double-french/) (7 ảnh), [Chrome nails](https://www.scratchmagazine.co.uk/nail_art/chrome-nails-2/) (7 ảnh). Hai lượt scan admin 133 bài/14 trang không thấy trùng URL nguồn hoặc title EN; check không nguyên tử với writer khác. Cả ba `ready`, snapshot hash khớp, chưa có attempt; intent/unknown tổng 0. Chưa Việt hóa hoặc đăng, worker quyết định theo ưu tiên/chất lượng ở slot.
+- User hỏi Source Mirror là gì: đây là tên kỹ thuật của workflow độc lập trên THINKPAD lấy/lưu/Việt hóa/đăng nguồn; Windows là máy điều phối triển khai, không phải runtime dự kiến. Telegram Source Mirror độc lập chưa có credential riêng; `/nailblog` do NailBlog sử dụng. Đã hỏi Owner chọn bot/session riêng hoặc cho phép dùng gateway chung, chưa nhận lựa chọn. Không sao chép session hoặc gửi Telegram.
+- Prototype Telegram standalone trong worktree có queue, owner-only, status/pause/resume, text `nailblog <URL>` cho Scratch; Linux 14 test mock PASS trong audit, xử lý processing mồ côi sang unknown để tránh retry. Chưa deploy, chưa kiểm Bot API thật/DNS isolation/reconciliation; chưa nói nhận lệnh hoạt động. Đường chính thống vẫn chưa bật và bài CDC lỗi CORS đã skip theo yêu cầu.
+
+
+## 11.38. Owner chọn Telegram dùng chung — 30/10
+
+- Owner chọn dùng chung dịch vụ Telegram hiện có; Source Mirror giữ worker, DB, scheduler và queue riêng, nhưng khả năng nhận/gửi Telegram phụ thuộc `tg-nailhub.service`. Không dùng thêm bot token hay copy session. Lệnh `/mirror status|pause|resume` và text `nailblog <URL>` nối riêng vào handler, không nhận `/nailblog` của NailBlog; URL prototype hiện chỉ Scratch `/nail_art/`.
+- Đã triển khai stage tối thiểu sau review trên THINKPAD: `nailhub-source-mirror.service`, `tg-nailhub.service`, command socket active/enabled; UID peer & Owner mapping đối chiếu, worker command flag true, paused=0, 0 intent/unknown, 2 published hôm nay. Independent review 49 current-policy tests, 14 Telegram tests và 7 navigation/dispatch tests PASS. Probe IPC sai từ chối; chưa gửi lệnh Telegram thực hoặc nghiệm thu URL→published thực. Ghi rõ shared transport phụ thuộc availability của tg-nailhub, không claim độc lập hoàn toàn.
+- Trạng thái mới nhất ngày 31/10: xem §11.43–§11.44; các mô tả vận hành ở mục cũ là lịch sử tại thời điểm kiểm tra.
+
+
+## 11.39. Telegram được Owner thử — 30/10
+
+- Owner gửi `/mirror status` và báo nhận `Source Mirror: đã tiếp tục Hàng đợi: {}`: xác nhận đường nhận/trả Telegram thực hoạt động. Status chỉ đọc, không resume; wording gây hiểu nhầm được sửa thành `đang hoạt động`/`đang tạm dừng`, Linux 6/6 test và review, đã triển khai adapter tối thiểu.
+- Status hiện phân biệt hàng đợi lệnh với số bài `ready`, `held` và số bài Source Mirror published hôm nay; code+tests review Linux 13/13, đã deploy. Dữ liệu thô không bảo đảm ready sẽ vượt gate. Lúc kiểm có 9 ready, 174 held, 2 published, 0 intent/unknown; không đồng nghĩa số bài toàn PROD.
+- Notifications hiện có cho yêu cầu URL; thông báo tự động cho slot định kỳ đang là prototype chưa triển khai. Trước rollout cần xử lý atomically claim + journal, giữ outcome và không spam/retry mù; Source Mirror dùng chung transport Telegram theo lựa chọn Owner.
+
+
+## 11.40. Bật thông báo slot — 30/10
+
+- Sau review và 13 test Linux, đã deploy thông báo slot qua Telegram trên THINKPAD: claim+journal atomic, event thứ tự, supersede pending cũ, giữ unknown nếu gửi đang mơ hồ; chỉ restart Source Mirror. Auditor xác nhận worker/tg/socket active, journal/outbox ban đầu rỗng, owner IPC khớp, worker có group comparator sau restart.
+- 15:38:51 ba bài thay thế ready, tổng DB 9 ready, không intent/unknown, slot 16 chưa chạy. Chưa có bằng chứng thông báo Telegram slot thật hay bài publish slot 16; không hứa chắc thành công. Telegram text lệnh URL chỉ hỗ trợ Scratch `/nail_art/`, CDC/SBA/IRS publisher vẫn chưa bật. Thông báo có thể unknown nếu kết nối hỏng khi gửi, không tự retry mù.
+
+
+## 11.41. Dùng thao tác tải ảnh Scratch cho nguồn chính thống — 30/10
+
+- Owner yêu cầu kiểm và triển khai dùng cùng cách upload ảnh Scratch cho CDC/SBA/IRS trên THINKPAD; không tiếp tục nhánh xử lý CORS prototype trước đó. Audit live: thao tác Playwright dùng cùng các nút upload, nhưng Scratch publisher gắn cứng attribution `Scratch Magazine`; không thể đưa bài official qua nguyên đường này vì sẽ sai nguồn và disclosure.
+- Plan: tách/chia sẻ thao tác chooser upload đã chạy của Scratch, adapter official giữ nguồn/link, ảnh stock/credit/không endorsement, chất lượng, quota và đối soát trùng; kiểm native UI/create và guest readback trước khi bật. Giữ slot 16:00 worker hiện tại hoạt động; chưa tuyên bố official đã publish. Theo dõi Telegram như cấu hình Owner chọn.
+
+## 11.42. Đường đăng nguồn chính thống và ảnh — 30/10
+
+- THINKPAD dùng lại thao tác chọn và tải ảnh của Scratch trong trình duyệt, với adapter riêng cho nguồn chính thống để không gắn nhầm tên Scratch. Bài giữ liên kết cơ quan phát hành, thông tin ảnh và ghi công phù hợp; kiểm tra Việt hóa, glossary/MQM, nội dung, nguồn, quyền ảnh, trùng bài và hạn mức trước khi đăng.
+- Đã bật luồng CDC và IRS trên THINKPAD; worker, lịch chuẩn bị và dịch vụ Telegram đang hoạt động khi kiểm tra. Thử nghiệm trình duyệt đã tải ảnh và kiểm tra yêu cầu tạo bài nhưng chặn trước khi gửi tạo bài: đây là bằng chứng thao tác, **chưa phải** bằng chứng bài official đã đăng PROD.
+- Sau khi khắc phục lỗi khóa lồng nhau khi chuẩn bị, bài CDC/NIOSH đã sẵn sàng cho slot 20:00 ngày 30/10 theo giờ Việt Nam; bản Việt hóa và kiểm tra nội dung tự động đạt, nguồn CDC và ảnh Pexels có ghi công. Đến giờ đăng, hệ thống vẫn kiểm tra lại các điều kiện; trạng thái sẵn sàng không bảo đảm chắc chắn sẽ publish. Thông báo kết quả qua dịch vụ Telegram dùng chung.
+- IRS đã tạo bản Việt hóa và kiểm tra nội dung tự động đạt; bản ghi đang `official_ready` nhưng chứng cứ ảnh chưa khớp snapshot nguồn nên chưa đủ điều kiện đăng. Hai bài CDC và IRS cùng target 20:00; CDC được xét trước, quota còn một lượt và bài không được chọn chưa tự dời lịch vì restaging đang tắt. SBA chưa bật: trang SBA cũ có phép tính chi phí hàng tháng không nhất quán; trang SBA khác về kế hoạch kinh doanh đã qua MQM và factual tự động trong môi trường thử, có dẫn nguồn, ngày 13/11/2025 và liên kết đến ba trang mẫu. Record chỉ cho phép kiểm tra giao diện tiếp, chưa được phép publish hay triển khai; quyền đăng lại các tệp mẫu chưa được kiểm chứng. Không sửa chính sách ảnh đang ràng buộc với bài CDC khi chưa xác minh tác động.
+- Đã sửa thêm lỗi khóa lồng nhau tại bước kiểm tra admin trước khi đăng, cài trên THINKPAD sau review độc lập và 22 kiểm thử; thử nghiệm dùng browser/network mô phỏng, chưa chứng minh publish PROD. Worker và timer đã bật lại sau cài.
+- Bằng chứng quyền ảnh/chính sách hiện tại hết hạn lúc 12:10 ngày 31/10/2026 (giờ Việt Nam); chưa có cơ chế tự gia hạn được xác nhận. Sau hạn phải kiểm tra và cập nhật chứng cứ trước khi đăng nguồn áp dụng.
+- Bài Scratch slot 16:00 đã publish thành công; Owner xác nhận tự chuyển bài về Draft để QA. Không tự thay đổi trạng thái Draft đó.
+- Kiểm thử tại thời điểm triển khai: 171 kiểm thử đạt; canary upload và đối chiếu màn hình, yêu cầu cùng nguồn ảnh được kiểm tra độc lập. Chưa có bài CDC, SBA hoặc IRS nào được xác nhận publish bằng đường mới ở thời điểm ghi.
+
+## 11.43. Đối soát slot CDC và chẩn đoán ảnh — 31/10
+
+- Lượt CDC 20:00 ngày 30/10 dừng trong bước tải ảnh bìa với timeout; log và trình tự code cho thấy bước tạo bài chưa đến. Tra quản trị PROD theo tiêu đề Anh và Việt ở mọi trạng thái không thấy bài tương ứng. Attempt 13 đã được đối soát `released` vào ngày 31/10; giữ nguyên upload intent vì tệp ảnh có thể đã được tải lên, không xóa dữ liệu.
+- Slot 08:00 và 12:00 ngày 31/10 bị giữ khi attempt chưa rõ. Sau đối soát không còn attempt `unknown`/`intent`; worker, AGY, lịch chuẩn bị và Telegram active tại thời điểm kiểm tra. Không xem là đã đăng bù hoặc tự động thành công.
+- Thử trên THINKPAD với phiên đăng nhập riêng được sao chép an toàn, chặn các thao tác ghi trừ upload: tải ảnh bìa nhận HTTP 200, không bấm Create. Đây là một lượt thử ảnh, không chứng minh nguyên nhân timeout tối hôm trước; ảnh thử có thể tồn tại trên hệ thống.
+- Đã kiểm độc lập 6 test và triển khai bản sửa chẩn đoán để HTTP lỗi không bị biến thành timeout; worker/timer khởi động lại thành công, có backup. Bản này chưa triển khai chuyển sang bài khác tự động sau upload lỗi hoặc mơ hồ; cần transition có lịch sử, chặn Create và kiểm crash/trùng/quota.
+- Bằng chứng policy ảnh hết hạn 12:10 ngày 31/10: chưa gia hạn. Ảnh Pexels tải lại trên THINKPAD khớp hash cũ và được mở xem; còn kiểm visual rendition/CDN trước khi dùng làm căn cứ mới. Trang ảnh nguồn trả 403 trên THINKPAD nhưng đọc được từ nguồn web công khai.
+- IRS có snapshot nguồn mới khác các bản đã lưu, cần tạo lại bản Việt hóa và chứng cứ; SBA legacy mới chỉ qua thử nghiệm tách biệt và chưa bật PROD. Bản chuẩn bị tại `/tmp/source-mirror-prep-20261031-codex` đã lưu bản backup `/var/backups/nailhub-source-mirror/prep-20261031-diagnostic.tar.gz`; không ghi credentials.
+
+- Kiểm tra bổ sung: IRS tải HTTP 200 nhưng cần tạo bản dịch/chứng cứ mới. CDC và trang Pexels/license trả 403 trực tiếp từ THINKPAD tại lượt kiểm; cần bỏ qua nguồn không tải được, không suy ra lỗi CORS. Bài SBA legacy có bốn liên kết nguồn HTTP 404 và một 403, ba trang mẫu HTTP 200; chưa đủ điều kiện bật. Một trang SBA về [vận hành doanh nghiệp](https://www.sba.gov/counseling/manage-your-business/) tải HTTP 200 từ THINKPAD và có thể được đánh giá thêm, chưa tích hợp.
+- Checkpoint kiểm nguồn lưu `/var/backups/nailhub-source-mirror/prep-20261031-source-review.tar.gz`. Ghi nhận 4/4 test SBA và 8 test chẩn đoán/Chromium cục bộ; chưa có thử nghiệm tự chuyển bài, crash/concurrency hoặc publish official mới. Cần tiếp tục tạo evidence và kiểm định độc lập trước khi áp dụng policy mới.
+
+## 11.44. Ảnh bìa AI khi nguồn thiếu ảnh — 31/10
+
+- Owner cho phép dùng AI tạo ảnh bìa khi bài thiếu ảnh bìa dùng được; prompt phải mô tả sát tiêu đề và tóm tắt. Ảnh bên trong không có tại nguồn thì có thể bỏ qua. Nếu ảnh nguồn hợp lệ vẫn giữ; không mặc định trường thumbnail trong response rỗng đồng nghĩa ảnh bìa hiển thị thiếu.
+- Thiết kế dự kiến: tạo ảnh trên THINKPAD, lưu provenance/hash, kiểm định dạng, kích thước, chất lượng và quyền; không dùng logo/chân dung giả mạo hay hàm ý cơ quan nguồn chứng thực. Tải ảnh bìa qua giao diện, kiểm hiển thị; lỗi tạo/tải ảnh phải giữ hoặc chuyển bài khác theo cơ chế an toàn đã được kiểm thử. Không tự gắn nhãn ảnh nguồn cho ảnh AI.
+- **Đính chính probe 15:04:** ảnh không nằm ở thư mục làm việc mà được AGY lưu trong `brain/<conversation-id>`. Transcript con ghi tool call `generate_image`, result có MIME `image/jpeg` và đường dẫn thực; tệp 711.749 byte, 1376×768 đã được mở xem. Kết luận cũ “không tạo ra tệp ảnh” là sai; không suy luận thiếu subscription từ MCP/plugin rỗng.
+- **Probe theo title + summary, 15:10 VN:** chạy `/opt/nailhub-source-mirror-agy/agy` 1.2.11 dưới UID `nailhub-source-mirror-agy`, HOME/XDG riêng, sandbox, `gemini-3.8-flash-medium`; yêu cầu `image-generator` tạo 16:9 cho “Healthy ventilation in nail salons” và summary về phơi nhiễm hóa chất. Conversation `0c86d1cc-aeb0-4d89-93a0-e39db9f1ee74`, subagent `c78f50ce-c5c6-4b37-86a9-dc86be4d7c13`; transcript subagent ghi `generate_image` và media trả về trong brain của conversation cha. File JPEG 792.952 byte, 1376×768, SHA-256 `108dcdb53b294c9d52584e0de128a01009cdc266d1deac0e2b735a5d9baea264`; đã mở và thấy bàn manicure với hệ thống hút khí, không thấy chữ/logo. Bản evidence: ảnh probe được lưu ngoài Git. Thư mục probe riêng trên THINKPAD `/var/lib/nailhub-source-mirror-agy/source-mirror-thumb-probe-z5eczouu`; artifact gốc trong brain conversation trên. Không tạo bài, không sửa live DB/service/policy.
+- `agy agent`, `mcp list`, `plugin list` rỗng không chứng minh thiếu tool; stream `init` có `generate_image` và `invoke_subagent`, nhưng quyền/tool hiện với root agent có thể khác subagent. CLI `SUCCESS` hoặc lời model không chứng minh tạo ảnh: phải ghép conversation cha, subagent và `generate_image` media với file thật. Lượt `startechai` cấm subagent nên không tạo ảnh; không kết luận entitlement riêng tài khoản đó. Broker hiện chỉ nhận prompt và trả envelope text, không xuất binary/nguồn gốc ảnh.
+- **Chưa triển khai integration:** `official_draft_stager.py` và `official_auto_eligibility.py` hiện yêu cầu stock và policy quyền được tin cậy theo hash, không thể xem record ảnh AI như stock hoặc bỏ qua gate. Cần stage riêng opt-in, prompt từ title+summary, bind ID phiên/subagent + tool output + hash/MIME/kích thước, kiểm tính toàn vẹn/quyền, giữ nguồn hợp lệ, bỏ ảnh thân thiếu, HOLD khi lỗi hoặc quyền chưa được chứng minh; `thumbnail` response rỗng không tự chứng minh thiếu cover. Cần test giả lập lỗi/path traversal/phiên lẫn, chạy probe worker độc lập, controller review và rollback trước rollout. Chưa có test integration, chưa kết nối pipeline, chưa rollout.
+- Đã chọn AGY subscription hiện có; đang nối pipeline trong stage và kiểm quyền trước khi triển khai. Không chọn API trả phí thay Owner.
+
 ## 12. Related Documents
 
 - Master / Business: tài liệu hiện tại.
+- Dành cho agent: [Tham chiếu vận hành và điều tra](research/nailhub-source-mirror-noissue_agent-reference_261101_v1.0.0.md) — snapshot có đường dẫn runtime, SQL chỉ đọc và guard đối soát.
+- Hướng dẫn vận hành: [Bộ lọc và cách xử lý](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md) — snapshot code/config và sự cố 01/11.
 - Nghiên cứu nguồn: [SEO công khai và lựa chọn nguồn](research/nailhub-source-mirror-noissue_seo-audit_261029_v1.0.0.md), snapshot ngày 29/10/2026; đề xuất chưa tự bật trên PROD.
 - Task vận hành: `.agent-tasks/T-261028-nailhub-source-article-mirror-on-thinkpa.md` trong checkout chính AgentBuilder.
 - Product: [Product Doc](../01-product/nailhub-source-mirror-noissue_product_261028_v1.0.0.md).
@@ -684,6 +1201,71 @@ Owner quyết business và phê duyệt. AlexChu giữ ownership điều phối/
 
 | Version | Date | Time (VN) | Author | Nội dung | Status |
 |---|---|---|---|---|---|
+| v1.0.77 | 2026-11-01 | 22:20 | AlexChu / Codex | Ghi khảo sát parser, guard và entrypoint; không xóa. | Assessed / no deletion |
+| v1.0.76 | 2026-11-01 | 22:16 | AlexChu / Codex | Ghi thống nhất slot, probe và kiểm kê không xóa. | Live / slot slice |
+| v1.0.75 | 2026-11-01 | 22:11 | AlexChu / Codex | Ghi scanner helper và probe admin chỉ đọc sau triển khai. | Live / scan slice |
+| v1.0.74 | 2026-11-01 | 22:05 | AlexChu / Codex | Triển khai filter slice theo evidence, audit trùng và xác minh an toàn. | Live / filter slice |
+| v1.0.73 | 2026-11-01 | 21:52 | AlexChu / Codex | Ghi kết quả refactor helper IPC đã cài, test và giới hạn canary. | Live / first slice |
+| v1.0.72 | 2026-11-01 | 21:44 | AlexChu / Codex | Ghi kế hoạch đơn giản hóa Python từng lát, kiểm kê và bất biến. | Plan / implementation starting |
+| v1.0.71 | 2026-11-01 | 21:16 | AlexChu / Codex | Liên kết tham chiếu agent chỉ đọc, điều tra sự cố và đối soát UNKNOWN. | Docs / no runtime change |
+| v1.0.70 | 2026-11-01 | 21:00 | AlexChu / Codex | Liên kết hướng dẫn bộ lọc, bổ sung kết quả 16:00/20:00 và giới hạn chứng cứ. | Current / no new filter changes |
+| v1.0.69 | 2026-11-01 | 13:30 | AlexChu / Codex | Ghi triển khai bài gốc AI dự phòng, nguồn, canary và giới hạn chưa có Publish E2E. | Live / E2E pending |
+| v1.0.68 | 2026-11-01 | 10:02 | AlexChu / Codex | Ghi sự cố 08:00, đối soát attempt 18 và thay kiểm ảnh CDN bằng HTTP 200 theo yêu cầu Owner. | Live / 12:00 pending |
+| v1.0.67 | 2026-10-31 | 22:19 | AlexChu / Codex | Ghi trạng thái mới: lịch chủ đề, bìa AI, nguồn, chất lượng, Telegram, kiểm thử và giới hạn sau triển khai. | Live / first unattended publication pending |
+| v1.0.66 | 2026-10-31 | 15:10 | AlexChu / Codex | Đính chính probe, xác minh ảnh AGY thật từ subscription và ghi giới hạn tích hợp. | Probe passed / integration pending |
+| v1.0.65 | 2026-10-31 | 15:06 | AlexChu / Codex | Ghi quyết định ảnh bìa AI, cách dùng title/summary và kết quả probe AGY chưa có công cụ ảnh. | Blocked / provider needed |
+| v1.0.64 | 2026-10-31 | 14:26 | AlexChu / Codex | Ghi kết quả kiểm nguồn IRS/CDC/SBA và checkpoint tiếp tục. | Partial / official auto-publish pending |
+| v1.0.63 | 2026-10-31 | 14:20 | AlexChu / Codex | Đối soát CDC, thử upload HTTP 200 và cài chẩn đoán; IRS/SBA và policy còn dở. | Partial / official auto-publish pending |
+| v1.0.62 | 2026-10-30 | 17:51 | AlexChu / Codex | Ghi thử SBA qua MQM/factual, vẫn chờ kiểm giao diện và policy. | Trial / publication disabled |
+| v1.0.61 | 2026-10-30 | 17:48 | AlexChu / Codex | Ghi IRS chưa đủ bằng chứng ảnh và sửa khóa ở bước kiểm tra trước khi đăng. | Live / official publish pending |
+| v1.0.60 | 2026-10-30 | 17:37 | AlexChu / Codex | Ghi triển khai CDC/IRS, canary ảnh, CDC sẵn sàng 20:00, SBA và hạn chứng cứ. | Live / official publish pending |
+| v1.0.59 | 2026-10-30 | 15:57 | AlexChu / Codex | Owner yêu cầu dùng upload Scratch cho nguồn official, ghi plan và phân biệt attribution. | Work in progress |
+| v1.0.58 | 2026-10-30 | 15:39 | AlexChu / Codex | Bật thông báo slot trên THINKPAD và ghi hậu kiểm trước 16:00. | Live / first slot pending |
+| v1.0.57 | 2026-10-30 | 15:33 | AlexChu / Codex | Owner thử status Telegram, sửa wording và thống kê trạng thái. | Telegram verified / slot notifications pending |
+| v1.0.56 | 2026-10-30 | 15:24 | AlexChu / Codex | Owner chọn Telegram chung; triển khai tối thiểu và xác minh services/IPC. | Telegram installed / E2E pending |
+| v1.0.55 | 2026-10-30 | 14:56 | AlexChu / Codex | Thêm ba bài non-Halloween vào queue và ghi Telegram độc lập chờ cấu hình. | Work in progress |
+| v1.0.54 | 2026-10-30 | 14:42 | AlexChu / Codex | Owner yêu cầu THINKPAD tự vận hành qua Telegram; skip CORS, tìm bài khác. | Work in progress |
+| v1.0.53 | 2026-10-30 | 13:34 | AlexChu / Codex | CDC staging scratch qua factual thật; audit record và chuẩn bị native canary. | Work in progress |
+| v1.0.52 | 2026-10-30 | 13:00 | AlexChu / Codex | Ghi CDC draft thật MQM PASS/audit và thử staging scratch. | Work in progress |
+| v1.0.51 | 2026-10-30 | 12:40 | AlexChu / Codex | Ghi CDC HOLD, lỗi citation extractor, versioning và thử lại; official chưa bật. | Work in progress |
+| v1.0.50 | 2026-10-30 | 12:27 | AlexChu / Codex | Cài AGY official riêng và policy media ba nguồn; thử CDC thật, publisher chưa bật. | Work in progress |
+| v1.0.49 | 2026-10-30 | 12:15 | AlexChu / Codex | Kiểm slot 12, cài validator riêng và smoke broker structured, tiếp tục official. | Work in progress |
+| v1.0.48 | 2026-10-30 | 11:56 | AlexChu / Codex | Ghi chẩn đoán AGY, codec, validator riêng và comparator IRS thử nghiệm. | Work in progress |
+| v1.0.47 | 2026-10-30 | 11:44 | AlexChu / Codex | Ghi thử CDC 200, chẩn đoán AGY JSON, IRS token và restage; chưa triển khai official. | Work in progress |
+| v1.0.46 | 2026-10-30 | 11:34 | AlexChu / Codex | Owner yêu cầu hoàn tất, bật official và báo lỗi AGY; ghi plan tiếp tục. | Work in progress |
+| v1.0.45 | 2026-10-30 | 11:32 | AlexChu / Codex | Ghi fingerprint, review Linux và fail-closed; luồng official chưa deploy. | Work in progress |
+| v1.0.44 | 2026-10-30 | 11:29 | AlexChu / Codex | Rà refetch-only, 28 test Linux và rủi ro HTML động; official chưa deploy. | Work in progress |
+| v1.0.43 | 2026-10-30 | 11:26 | AlexChu / Codex | Ghi worker thử luân phiên và fail-closed, giới hạn phục hồi và catalogue cố định. | Work in progress |
+| v1.0.42 | 2026-10-30 | 11:19 | AlexChu / Codex | Thử lại IRS bị lỗi JSON, kiểm Linux prototype tự chuẩn bị và ghi blockers còn lại; chưa deploy official. | Work in progress |
+| v1.0.41 | 2026-10-30 | 11:10 | AlexChu / Codex | Ghi MQM PASS nháp IRS nhưng review độc lập phát hiện lỗi Việt hóa; tiếp tục HOLD, chưa bật nguồn official. | Work in progress |
+| v1.0.40 | 2026-10-30 | 10:49 | AlexChu / Codex | Đối soát AGY thật, scanner admin và ảnh CDN, ghi rõ luồng official còn chưa bật. | Work in progress |
+| v1.0.39 | 2026-10-30 | 09:36 | AlexChu / Codex | Ghi link contract, canary upload, CDC 403 và AGY IRS HOLD; source official chưa publish. | Verification in progress |
+| v1.0.38 | 2026-10-30 | 09:23 | AlexChu / Codex | Owner yêu cầu hoàn tất official và kiểm 12:00; ghi review blockers và canary ảnh, không bật publish official. | Work in progress |
+| v1.0.37 | 2026-10-30 | 09:16 | AlexChu / Codex | Owner nới kiểm kỹ thuật nail-art; publish bù và đối soát; sửa guard ảnh và hậu kiểm selector, chuẩn bị 12:00. | Published / next slot pending |
+| v1.0.36 | 2026-10-30 | 09:02 | AlexChu / Codex | Điều tra 08:00 HOLD, sửa liên kết và glossary, thử đăng bù; retry JSON chưa triển khai. | Worker active / publication pending |
+| v1.0.35 | 2026-10-29 | 17:30 | AlexChu / Codex | Đối soát slot 16:00 HOLD, thử lại CDC/IRS, bổ sung test boundary và giới hạn đường publish official. | Worker active / official publish pending |
+| v1.0.34 | 2026-10-29 | 17:03 | AlexChu / Codex | Thử IRS và NIOSH thực đều HOLD; ghi bằng chứng ảnh NIOSH và giới hạn native/CDN. | Real drafts held / publish pending |
+| v1.0.33 | 2026-10-29 | 17:02 | AlexChu / Codex | Thử AGY CDC/IRS thật đều HOLD; xây gate tự động prototype, ghi nguồn ảnh; chưa triển khai/publish. | Auto gate prototype / live drafts held |
+| v1.0.32 | 2026-10-29 | 16:37 | AlexChu / Codex | Khôi phục IRS intake có nguồn và kiểm smoke thật, review/96 test; auto publish chưa có. | Four sources HOLD / auto gate pending |
+| v1.0.31 | 2026-10-29 | 16:33 | AlexChu / Codex | Dừng/disable lịch gửi duyệt trực tiếp; giữ intake và các slot cũ; tự đăng official chưa triển khai. | Review timer disabled |
+| v1.0.30 | 2026-10-29 | 16:32 | AlexChu / Codex | Owner cho phép tự đăng bài có nguồn chính thống khi qua gate; điều chỉnh phạm vi, runtime chưa đổi. | Policy updated / implementation pending |
+| v1.0.29 | 2026-10-29 | 16:18 | AlexChu / Codex | Cài adapter Telegram bản dễ đọc, review và Linux socket tests; contract publish vẫn HOLD. | Readable review live / publish pending |
+| v1.0.28 | 2026-10-29 | 16:14 | AlexChu / Codex | Bật adapter và timer review, kiểm IPC/Owner service thật không gửi; CDC/SBA vẫn HOLD, publisher official chưa hoàn chỉnh. | Review transport live / end-to-end pending |
+| v1.0.27 | 2026-10-29 | 16:12 | AlexChu / Codex | Xác minh báo cáo NIOSH để người thẩm định đối chiếu thuật ngữ và đánh giá ảnh; chưa sử dụng ảnh. | Source evidence / pending review |
+| v1.0.26 | 2026-10-29 | 16:11 | AlexChu / Codex | Tạo và kiểm thử nháp/adapter HOLD-only, thử CDC thật HOLD; cài module review nhưng chưa bật, chờ chuyên môn/đường publish/restart Telegram. | Partial / not enabled |
+| v1.0.25 | 2026-10-29 | 15:51 | AlexChu / Codex | Cài CDC/NIOSH + SBA HOLD-only trên THINKPAD, review độc lập, 63 test, smoke thật và bật timer. | Intake active / approval integration pending |
+| v1.0.24 | 2026-10-29 | 15:49 | AlexChu / Codex | Owner cho phép lại SBA, bắt buộc dẫn nguồn chính thống; cập nhật hướng executor CDC/SBA HOLD-only. | Implementation in progress |
+| v1.0.23 | 2026-10-29 | 15:47 | AlexChu / Codex | Owner mở lại hướng doanh nghiệp/thuế dưới điều kiện nguồn chính thống, thẩm định chuyên môn và Owner duyệt; giữ SBA loại trừ, chưa đổi runtime. | Editorial policy / implementation pending |
+| v1.0.22 | 2026-10-29 | 15:43 | AlexChu / Codex | Khảo sát chủ đề blog NailHub và đề xuất nguồn độc lập; chưa triển khai runtime. | Research / candidate sources |
+| v1.0.21 | 2026-10-29 | 15:38 | AlexChu / Codex | Owner yêu cầu xóa SBA trong mã, thay bằng CDC/NIOSH; ghi plan và giới hạn HOLD, chưa triển khai. | Executor selection pending |
+| v1.0.20 | 2026-10-29 | 15:34 | AlexChu / Codex | Thêm chốt systemd ConditionResult=no cho official service; vẫn cần xóa SBA khỏi mã trước khi bật lại. | Official intake guarded |
+| v1.0.19 | 2026-10-29 | 15:33 | AlexChu / Codex | Owner loại SBA; dừng và disable official timer; giữ hồ sơ cũ, ghi rõ unit thủ công chưa bị chặn và CDC chưa tích hợp. | SBA auto-intake stopped |
+| v1.0.18 | 2026-10-29 | 15:24 | AlexChu / Codex | Ghi yêu cầu SBA qua Owner Telegram, rủi ro attribution, CDC thay thế OSHA và kế hoạch gate; chưa triển khai. | Investigation / executor selection pending |
+| v1.0.17 | 2026-10-29 | 15:20 | AlexChu / Codex | Owner bỏ chủ đề thuế; loại IRS, thêm gate, kiểm 60 test, áp dụng THINKPAD; xác định Owner Telegram; SBA HOLD, OSHA 403. | Deployed / Telegram approval pending |
+| v1.0.16 | 2026-10-29 | 15:14 | AlexChu / Codex | Cài intake timer HOLD-only; IRS/SBA 3 nguồn lưu, OSHA 403, Telegram/approval/publish còn chờ. | Partial / owner review integration pending |
+| v1.0.15 | 2026-10-29 | 15:11 | AlexChu / Codex | Ghi Owner chọn Telegram duyệt; chuẩn bị intake IRS/OSHA/SBA HOLD-only; đối chiếu 15:00 NailBlog là ngày 30/10 và đang held. | Implementation in progress |
+| v1.0.14 | 2026-10-29 | 12:22 | AlexChu / Codex | Cài topic gate, kiểm 49 tests, publish bài luxury và xác nhận ảnh desktop/mobile; nguồn salon/thuế mới còn chờ adapter và kiểm duyệt. | v20 active / 3 published today |
+| v1.0.13 | 2026-10-29 | 12:14 | AlexChu / Codex | Owner ưu tiên luxury, vận hành tiệm, thuế Mỹ/Nexora; đối soát slot 12 đã publish; chuẩn bị topic gate và nguồn luxury. | Implementation in progress |
 | v1.0.12 | 2026-10-29 | 10:40 | AlexChu / Codex | Triển khai v19, 38 test, native Create guard fixture đạt và chặn mạng; hai dịch vụ active, chờ slot thật. | Deployed / first localized publish pending |
 | v1.0.11 | 2026-10-29 | 10:15 | AlexChu / Codex | Owner authorized integration AGY Flash medium + strict glossary/MQM/ambiguity HOLD; stopped old worker, implementation/review/runtime checks in progress. | Integration active / not yet deployed |
 | v1.0.10 | 2026-10-29 | 10:06 | AlexChu / Codex | Chạy AGY Flash medium thành công sau đăng nhập; lưu bản Việt và MQM 2 Minor, 1 source hold; 16 check đạt, chưa tích hợp PROD. | Trial completed / revision required |
