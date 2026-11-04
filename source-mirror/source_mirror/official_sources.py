@@ -24,7 +24,6 @@ SOURCES = (
     {'id':'cdc-niosh-nail-technicians', 'url':'https://www.cdc.gov/niosh/nail-technicians/about/index.html', 'category':'us-workplace-safety', 'scope':'US CDC/NIOSH research and workplace safety guidance; not mandatory OSHA law; applicable federal, state and local requirements require separate review'},
     {'id':'cdc-niosh-2015-bulletin', 'url':'https://www.cdc.gov/niosh/bulletin/2015/nail-salon-workers.html', 'category':'us-workplace-safety', 'scope':'Historical US NIOSH science bulletin posted 2015-05-13; past statistics and guidance are not evidence of current law or current conditions'},
     {'id':'sba-business-plan', 'url':'https://www.sba.gov/counseling/plan-your-business/', 'category':'us-business', 'scope':'General US small-business background; salon context requires human review'},
-    {'id':'sba-legacy-business-plan-2025', 'url':'https://legacy.sba.gov/business-guide/plan-your-business/write-your-business-plan', 'category':'us-business', 'scope':'SBA legacy business planning guide last updated 2025-11-13; general US business information, not individualized legal, tax, or financial advice'},
     {'id':'irs-tip-reporting', 'url':'https://www.irs.gov/businesses/small-businesses-self-employed/tip-recordkeeping-and-reporting', 'category':'us-tax', 'scope':'US federal IRS guidance on tip recordkeeping and reporting; state and local requirements may differ'},
     {'id':'irs-worker-classification', 'url':'https://www.irs.gov/businesses/small-businesses-self-employed/independent-contractor-self-employed-or-employee', 'category':'us-tax', 'scope':'US federal IRS guidance on worker classification; state and local requirements may differ'},
     {'id':'cdc-ncezid-nail-hygiene-2024', 'url':'https://www.cdc.gov/hygiene/about/nail-hygiene.html', 'category':'us-general-hygiene', 'scope':'US CDC NCEZID general nail hygiene guidance reviewed 2024-04-16; not a statement of state or local law'},
@@ -154,22 +153,6 @@ def source_title(data):
 
 def verify_source_date(item,data):
     """Bind this historical bulletin's visible posted date to its HTML."""
-    if item['id']=='sba-legacy-business-plan-2025':
-        class FooterDate(HTMLParser):
-            def __init__(self):super().__init__(convert_charrefs=True);self.depth=0;self.parts=[];self.matches=[]
-            def handle_starttag(self,tag,attrs):
-                if tag=='footer' and 'basic-page__footer' in (dict(attrs).get('class') or '').split():
-                    if self.depth:raise ValueError('nested SBA footer')
-                    self.depth=1;self.parts=[]
-            def handle_data(self,text):
-                if self.depth:self.parts.append(text)
-            def handle_endtag(self,tag):
-                if tag=='footer' and self.depth:self.matches.append(' '.join(''.join(self.parts).split()));self.depth=0
-        parser=FooterDate();parser.feed(data.decode('utf-8-sig',errors='strict'));parser.close()
-        if (len(parser.matches)!=1 or not re.search(r'\bLast updated November 13, 2025\b',parser.matches[0])
-                or source_title(data)!='Write your business plan | U.S. Small Business Administration'):
-            raise ValueError('SBA legacy source identity or update date changed')
-        return
     if item['id']=='cdc-ncezid-nail-hygiene-2024':
         class HygieneMarkers(HTMLParser):
             def __init__(self):
@@ -221,7 +204,7 @@ def fetch(item):
     if item not in SOURCES: raise ValueError('source not allowlisted')
     from urllib.parse import urlsplit
     url=item['url']; parsed=urlsplit(url)
-    if parsed.scheme!='https' or parsed.hostname not in {'www.cdc.gov','www.sba.gov','legacy.sba.gov','www.irs.gov'} or parsed.port not in (None,443) or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if parsed.scheme!='https' or parsed.hostname not in {'www.cdc.gov','www.sba.gov','www.irs.gov'} or parsed.port not in (None,443) or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError('invalid source URL')
     addresses=socket.getaddrinfo(parsed.hostname,443,type=socket.SOCK_STREAM)
     if not addresses: raise ValueError('source DNS unavailable')

@@ -5,7 +5,7 @@ import unicodedata
 
 def source_is_tax(item,title,reference_text):
     if item['category']=='us-tax': return True
-    return item['id'] in ('sba-business-plan','sba-legacy-business-plan-2025') and item['category']=='us-business' and classify(title+' '+reference_text)=='tax_review'
+    return item['id']=='sba-business-plan' and item['category']=='us-business' and classify(title+' '+reference_text)=='tax_review'
 
 
 def reject_absolute_tax_exemptions(text):

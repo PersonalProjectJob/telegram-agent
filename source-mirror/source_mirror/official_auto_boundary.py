@@ -50,6 +50,14 @@ def validate_at_boundary(root, evidence_path, expected_record_sha, config, *, ev
     if review!=record.get('factual_review'): raise ValueError('factual evidence changed')
     images={item['id']:data[f'media/{i:02d}'] for i,item in enumerate(media,1)}
     rights={item['id']:data[f'rights/{i:02d}.txt'] for i,item in enumerate(media,1)}
+    from .official_generated_media import is_generated,check as check_generated,load_policy as load_generated_policy
+    if any(is_generated(item) for item in media):
+        generated_policy=load_generated_policy()
+        if generated_policy!=record.get('generated_policy') or digest(generated_policy)!=record.get('generated_policy_sha256') or relative.parts[0] not in generated_policy['source_ids']:raise ValueError('generated policy changed')
+        from .official_draft import source_snapshot
+        snapshot=source_snapshot(root,relative.parts[0],relative.parts[1])
+        for item in media:
+            if is_generated(item):check_generated(item,images[item['id']],rights[item['id']],snapshot,record['draft_sha256'],data['payload.json'],generated_policy)
     if relative.parts[0]=='sba-business-plan':
         from .official_draft import source_snapshot
         from .official_tax import source_is_tax
@@ -76,10 +84,12 @@ def validate_at_boundary(root, evidence_path, expected_record_sha, config, *, ev
         path=folder/name
         if path.is_symlink() or path.parent.is_symlink() or path.read_bytes()!=original:
             raise ValueError('evidence changed during evaluation')
+    if any(is_generated(item) for item in media) and load_generated_policy()!=record['generated_policy']:raise ValueError('generated policy changed during evaluation')
     policy=policy_loader()
     if digest(policy)!=record['media_policy_sha256']: raise ValueError('policy changed during evaluation')
     current=datetime.now(timezone.utc)
     for item in media:
+        if is_generated(item):continue
         matches=[entry for entry in policy['entries'] if isinstance(entry,dict) and entry.get('source_id')==relative.parts[0] and entry.get('image_sha256')==item['sha256']]
         if len(matches)!=1: raise ValueError('media policy changed')
         try: expiry=datetime.fromisoformat(matches[0]['valid_until_utc'].replace('Z','+00:00'))

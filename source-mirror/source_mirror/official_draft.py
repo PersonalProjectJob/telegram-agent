@@ -21,7 +21,7 @@ from .official_source_links import marked_source, validate_translation
 from . import official_link_contract as link_contract
 
 VERSION = 'official-review-v1'
-LABELS = {'cdc-niosh-nail-technicians': 'CDC/NIOSH', 'sba-business-plan': 'U.S. Small Business Administration (SBA)', 'sba-legacy-business-plan-2025':'U.S. Small Business Administration (SBA)',
+LABELS = {'cdc-niosh-nail-technicians': 'CDC/NIOSH', 'sba-business-plan': 'U.S. Small Business Administration (SBA)',
           'cdc-niosh-2015-bulletin': 'CDC/NIOSH',
           'cdc-ncezid-nail-hygiene-2024': 'CDC/NCEZID',
           'irs-tip-reporting': 'Internal Revenue Service (IRS)', 'irs-worker-classification': 'Internal Revenue Service (IRS)'}

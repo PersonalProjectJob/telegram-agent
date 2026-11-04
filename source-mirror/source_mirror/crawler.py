@@ -98,12 +98,13 @@ EXTRACT=r'''() => {
  if (!panels.length) throw Error('step panels missing');
  const hero=main.querySelector('.fl-module-photo img');
  const rich=[...main.querySelectorAll('.fl-module-rich-text .fl-rich-text')].filter(x=>!x.closest('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form'));
- if (!hero || rich.length!==2) throw Error('unexpected article text modules');
+ if (rich.length!==2) throw Error('unexpected article text modules');
  if (!['Autumn/Winter, Seasonal & Occasions, Step by Step, Themed','Step by Step'].includes(rich[0].textContent.trim()) || rich[0].querySelector('a,img,video,iframe,table,h1,h2,h3,h4,ul,ol')) throw Error('unrecognized taxonomy module');
  const articlePhotos=[...main.querySelectorAll('.fl-module-photo img')].filter(x=>!x.closest('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form'));
- if(articlePhotos.length!==1 || articlePhotos[0]!==hero) throw Error('unhandled article photo module');
- if (hero.closest('.fl-module-photo').querySelector('figcaption,.fl-photo-caption')) throw Error('unhandled hero caption');
- if (!(hero.compareDocumentPosition(rich[1]) & Node.DOCUMENT_POSITION_FOLLOWING)) throw Error('unexpected hero order');
+ if(articlePhotos.length>1 || (hero && articlePhotos[0]!==hero)) throw Error('unhandled article photo module');
+ if (!hero && [...main.querySelectorAll('.fl-module-photo')].some(x=>!x.closest('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form'))) throw Error('unrecognized empty photo module');
+ if (hero && hero.closest('.fl-module-photo').querySelector('figcaption,.fl-photo-caption')) throw Error('unhandled hero caption');
+ if (hero && !(hero.compareDocumentPosition(rich[1]) & Node.DOCUMENT_POSITION_FOLLOWING)) throw Error('unexpected hero order');
  const stepModule=panels[0].closest('.fl-module-html');
  if (!stepModule || panels.some(x=>x.closest('.fl-module-html')!==stepModule)) throw Error('multiple step modules');
  const remainder=stepModule.cloneNode(true); remainder.querySelectorAll('.panel.panel-default,script,style').forEach(n=>n.remove());
@@ -134,39 +135,69 @@ EXTRACT=r'''() => {
    if (['div','span'].includes(tag)) return children;
    throw Error('unsupported element '+tag);
  };
- const img = x => ({url:x.dataset.src || x.currentSrc || x.src,alt:x.alt || ''});
- const blocks=[{type:'image',media:0}, {type:'html',html:clean(rich[rich.length-1])}];
- const media=[img(hero)];
+ const img = x => { if (!(x.getAttribute('src') || x.dataset.src || x.getAttribute('srcset'))) throw Error('image source missing'); return {url:x.dataset.src || x.currentSrc || x.src,alt:x.alt || ''}; };
+ const blocks=[]; const media=[];
+ if (hero) { media.push(img(hero)); }
+ blocks.push({type:'html',html:clean(rich[rich.length-1])});
  for (const panel of panels) {
    const image=panel.querySelector('.step-by-step-image img');
    const number=panel.querySelector('.step-by-step-number');
    const row=panel.querySelector('.row');
    const description=row && [...row.children].find(x=>!x.classList.contains('step-by-step-image'));
-   if (!image || !number || !description || !description.textContent.trim()) throw Error('incomplete step');
-   if (!(number.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING) || !(image.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING)) throw Error('unexpected step order');
-   if (panel.querySelectorAll('img').length!==1 || panel.querySelector('video,iframe,table,figcaption')) throw Error('unhandled step media');
+   if (!number || !description || !description.textContent.trim()) throw Error('incomplete step');
+   if (!(number.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING) || (image && (!(number.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING) || !(image.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING)))) throw Error('unexpected step order');
+   if (panel.querySelectorAll('img').length!==(image ? 1 : 0) || panel.querySelector('video,iframe,table,figcaption,picture,svg,object,embed')) throw Error('unhandled step media');
+   const imageBox=panel.querySelector('.step-by-step-image');
+   if (panel.querySelectorAll('.step-by-step-image').length>1 || (!image && imageBox && (imageBox.textContent.trim() || imageBox.querySelector('*')))) throw Error('unhandled step image structure');
    const panelRemainder=panel.cloneNode(true); panelRemainder.querySelectorAll('.step-by-step-number,.step-by-step-image img').forEach(n=>n.remove());
    const remainingText=panelRemainder.textContent.replace(/\s+/g,' ').trim();
    if (remainingText!==description.textContent.replace(/\s+/g,' ').trim()) throw Error('unhandled step text');
    blocks.push({type:'html',html:'<h3>'+number.textContent.trim().replaceAll('&','&amp;').replaceAll('<','&lt;')+'</h3>'});
-   blocks.push({type:'image',media:media.length}); media.push(img(image));
+   if (image) { blocks.push({type:'image',media:media.length}); media.push(img(image)); }
    blocks.push({type:'html',html:clean(description)});
  }
  const date=document.querySelector('meta[property="article:published_time"]')?.content || null;
  const evidence=main.cloneNode(true); evidence.querySelectorAll('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form,script,style').forEach(n=>n.remove());
- return {canonical:document.querySelector('link[rel=canonical]')?.href || location.href, title:h.innerText.trim(), date, author:document.querySelector('meta[name=author]')?.content || null, raw_html:evidence.outerHTML, blocks, media};
+ return {canonical:document.querySelector('link[rel=canonical]')?.href || location.href, title:h.innerText.trim(), date, author:document.querySelector('meta[name=author]')?.content || null, raw_html:evidence.outerHTML, has_hero:!!hero, blocks, media};
 }'''
 
 class IneligibleArticle(ValueError): pass
 
 def validate_eligibility(title, media, *, downloaded=False):
     if not isinstance(title,str) or not 5<=len(title.strip())<=200: raise IneligibleArticle('title outside destination limits')
-    if not 1<=len(media)<=10: raise IneligibleArticle('media count outside destination limits')
+    if not 0<=len(media)<=10: raise IneligibleArticle('media count outside destination limits')
     if downloaded:
         for item in media:
             data=item['bytes']
             if not (data.startswith(b'\xff\xd8\xff') or data.startswith(b'\x89PNG\r\n\x1a\n') or (data[:4]==b'RIFF' and data[8:12]==b'WEBP')):
                 raise IneligibleArticle('destination image format unsupported')
+
+def download_article_media(page, article):
+    # Omit failed images and preserve text; a failed cover uses the generated-cover path.
+    from playwright.sync_api import Error as PlaywrightError
+    from PIL import Image, UnidentifiedImageError
+    import io
+    files=[]; remap={}; omitted=[]; source_had_hero=article['has_hero']
+    for index, media in enumerate(article['media']):
+        url=download_url(media['url'])
+        try:
+            data=download(page,url)
+            validate_eligibility(article['title'],[{'bytes':data}],downloaded=True)
+            if not data or len(data)>MAX_MEDIA: raise IneligibleArticle('media size limit')
+            with Image.open(io.BytesIO(data)) as image: image.verify()
+            with Image.open(io.BytesIO(data)) as image: image.load()
+        except (PlaywrightError, IneligibleArticle, UnidentifiedImageError, OSError, SyntaxError) as exc:
+            role='cover' if source_had_hero and index==0 else 'body'
+            if role=='cover':article['has_hero']=False
+            omitted.append({'role':role,'original_url':media['url'], 'reason':type(exc).__name__})
+            continue
+        remap[index]=len(files)
+        files.append({'original_url':media['url'],'download_url':url,'alt':media['alt'],'bytes':data})
+    blocks=[]
+    for block in article['blocks']:
+        if block['type']!='image': blocks.append(block)
+        elif block['media'] in remap: blocks.append(dict(block,media=remap[block['media']]))
+    return files, blocks, omitted
 
 MAX_LISTING_PAGES=5
 FIRST_LISTING='https://www.scratchmagazine.co.uk/step-by-step/'
@@ -257,9 +288,9 @@ def crawl_url(config, store, url):
             found=known(article_url)
             if found: return found
             validate_eligibility(article['title'],article['media'])
-            files=[{'original_url':m['url'],'download_url':download_url(m['url']),'alt':m['alt'],'bytes':download(page,download_url(m['url']))} for m in article['media']]
+            files, article['blocks'], omitted=download_article_media(page,article)
             validate_eligibility(article['title'],files,downloaded=True)
-            meta={'source_url':article_url,'title':article['title'],'source_date':article['date'],'author':article['author']}
+            meta={'source_url':article_url,'title':article['title'],'source_date':article['date'],'author':article['author'],'source_cover_present':article['has_hero'],'source_cover_separate':True,'omitted_body_images':[x for x in omitted if x['role']=='body'],'omitted_cover':next((x for x in omitted if x['role']=='cover'),None)}
             html='\n'.join(b['html'] for b in article['blocks'] if b['type']=='html')
             aid=save(store.root,meta,article['blocks'],html,files,{'html':article['raw_html'],'screenshot':page.screenshot(full_page=True)})
             store.add_ready(article_url,article['title'],article['date'])
@@ -298,9 +329,9 @@ def crawl(config,store):
                         if canonical_parts.scheme!='https' or canonical_parts.hostname not in SOURCE_HOSTS or not canonical_parts.path.startswith('/nail_art/'): raise ValueError('canonical URL outside source')
                         if skip_known(store,article_url): continue
                         validate_eligibility(article['title'],article['media'])
-                        files=[{'original_url':m['url'],'download_url':download_url(m['url']),'alt':m['alt'],'bytes':download(page,download_url(m['url']))} for m in article['media']]
+                        files, article['blocks'], omitted=download_article_media(page,article)
                         validate_eligibility(article['title'],files,downloaded=True)
-                        meta={'source_url':article_url,'title':article['title'],'source_date':article['date'],'author':article['author']}
+                        meta={'source_url':article_url,'title':article['title'],'source_date':article['date'],'author':article['author'],'source_cover_present':article['has_hero'],'source_cover_separate':True,'omitted_body_images':[x for x in omitted if x['role']=='body'],'omitted_cover':next((x for x in omitted if x['role']=='cover'),None)}
                         html='\n'.join(b['html'] for b in article['blocks'] if b['type']=='html')
                         evidence={'html':article['raw_html'],'screenshot':page.screenshot(full_page=True)}
                         aid=save(store.root,meta,article['blocks'],html,files,evidence)

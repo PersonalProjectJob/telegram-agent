@@ -1,0 +1,33 @@
+[Unit]
+Description=Isolated official generated cover broker for Nailhub Source Mirror
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=nailhub-source-mirror-agy
+Group=nailhub-source-mirror
+WorkingDirectory=/var/lib/nailhub-source-mirror-official-agy/official-cover-work
+Environment=HOME=/var/lib/nailhub-source-mirror-official-agy
+Environment=XDG_CONFIG_HOME=/var/lib/nailhub-source-mirror-official-agy/.config
+Environment=XDG_CACHE_HOME=/var/lib/nailhub-source-mirror-official-agy/.cache
+Environment=XDG_DATA_HOME=/var/lib/nailhub-source-mirror-official-agy/.local/share
+Environment=PYTHONPATH=/opt/nailhub-source-mirror
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -m source_mirror.official_cover_entry --policy /etc/nailhub-source-mirror-generated/official-ipc.json
+RuntimeDirectory=nailhub-source-mirror-official-cover
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nailhub-source-mirror-official-agy
+MemoryMax=2G
+TasksMax=128
+KillMode=control-group
+TimeoutStopSec=15
+[Install]
+WantedBy=multi-user.target

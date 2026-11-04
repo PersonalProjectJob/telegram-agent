@@ -13,7 +13,7 @@ from .localization import digest
 
 def mock_request(payload_bytes, cover, images, category_mapping):
     payload=json.loads(payload_bytes)
-    if not isinstance(images,list) or len(images)!=len(payload['media']) or not images:
+    if not isinstance(payload.get('media'),list) or not payload['media'] or not isinstance(images,list) or len(images)!=len(payload['media'])-1:
         raise ValueError('invalid media URL mapping')
     keys={'id','imageUrl','imageRelativePath','thumbnailUrl','thumbnailRelativePath'}
     for item in [cover,*images]:
@@ -63,7 +63,7 @@ def mock_route(payload_bytes, cover, images, category_mapping, remote_assets, ac
             or result.get('category_mapping_sha256')!=digest(category_mapping)):
         raise ValueError('boundary not revalidated')
     payload=json.loads(payload_bytes)
-    objects=[cover,*images]; source_media=[payload['media'][0],*payload['media']]
+    objects=[cover,*images]; source_media=[payload['media'][0],*payload['media'][1:]]
     expected_urls={item[key] for item in objects for key in ('imageUrl','thumbnailUrl') if item[key]}
     if not isinstance(remote_assets,dict) or set(remote_assets)!=expected_urls: raise ValueError('media readback unavailable')
     for expected_media,item in zip(source_media,objects):

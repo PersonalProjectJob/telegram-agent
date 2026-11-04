@@ -11,12 +11,12 @@ from .official_draft import LABELS, GLOSSARY, validate_retained_legal_labels, va
 from .official_sources import SOURCES, extract, source_title, verify_source_date, MAX_BYTES
 from .agy_broker import MODEL, EFFORT
 from .topics import classify
-from .source_disclosures import CDC_DISCLOSURE, IRS_DISCLOSURE, SBA_DISCLOSURE, SBA_TAX_DISCLOSURE, SBA_LEGACY_DISCLOSURE
+from .source_disclosures import CDC_DISCLOSURE, IRS_DISCLOSURE, SBA_DISCLOSURE, SBA_TAX_DISCLOSURE
 from .official_tax import source_is_tax, reject_absolute_tax_exemptions
 from .official_stock_policy import is_candidate as is_stock_candidate
+from .official_generated_media import is_generated,validate_descriptor
 from .official_source_links import marked_source, render_marked, validate_translation
 from . import official_link_contract as link_contract
-from .official_sba_examples import examples as sba_examples
 
 
 def build(draft_bytes, media, editorial, allow_official_tax=False):
@@ -115,12 +115,15 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
     if published.tzinfo is None: raise ValueError('publication time requires timezone')
     references=[]
     for item in media:
-        if not isinstance(item,dict) or set(item)!={'id','sha256','provenance_url','credit','rights_basis','rights_evidence_sha256','alt'}:
+        if not isinstance(item,dict) or (not is_generated(item) and set(item)!={'id','sha256','provenance_url','credit','rights_basis','rights_evidence_sha256','alt'}):
             raise ValueError('invalid media descriptor')
+        if is_generated(item): validate_descriptor(item)
         if any(not isinstance(item[k],str) or not item[k].strip() for k in item): raise ValueError('invalid media descriptor')
         if not tax_allowed and classify(item['alt']+' '+item['credit'])=='tax_review': raise ValueError('tax remains held')
         if tax_source: reject_absolute_tax_exemptions(item['alt']+' '+item['credit'])
-        references.append({'id':item['id'],'sha256':item['sha256'],'alt':item['alt'],'credit':item['credit']})
+        reference={'id':item['id'],'sha256':item['sha256'],'alt':item['alt'],'credit':item['credit']}
+        if is_generated(item): reference.update({'kind':'generated','rights_evidence_sha256':item['rights_evidence_sha256']})
+        references.append(reference)
     if len({item['id'] for item in references})!=len(references): raise ValueError('duplicate media')
     def body(text,language):
         if meta['source_id']=='cdc-ncezid-nail-hygiene-2024':
@@ -131,18 +134,11 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
             paragraphs=text.strip().split('\n\n')
             content=''.join('<p>'+html.escape(p,quote=True).replace('\n','<br>')+'</p>' for p in paragraphs)
         credit_label='Ảnh: ' if language=='vi' else 'Image: '
-        content+=''.join('<p>'+html.escape(credit_label+item['credit'],quote=True)+'</p>' for item in references)
+        content+=''.join('<p>'+html.escape(credit_label+item['credit'],quote=True)+'</p>' for item in references if item.get('kind')!='generated')
         if meta['source_id']=='cdc-niosh-2015-bulletin':
             notice=('Nguồn xuất bản ngày 13/05/2015; số liệu và hướng dẫn phản ánh thời điểm đó.'
                     if language=='vi' else 'Source published May 13, 2015; figures and guidance reflect that time.')
             content='<p>'+html.escape(notice,quote=True)+'</p>'+content
-        if meta['source_id']=='sba-legacy-business-plan-2025':
-            content='<p>'+html.escape(SBA_LEGACY_DISCLOSURE[language],quote=True)+'</p>'+content
-            links=sba_examples(raw)
-            labels=(('Mẫu truyền thống của Rebecca','Mẫu truyền thống của Andrew','Mẫu tinh gọn của Andrew') if language=='vi'
-                    else ('Rebecca’s traditional example','Andrew’s traditional example','Andrew’s lean example'))
-            heading='Mẫu kế hoạch từ SBA:' if language=='vi' else 'SBA business plan examples:'
-            content+='<p>'+html.escape(heading,quote=True)+'</p>'+''.join('<p><a href="'+html.escape(url,quote=True)+'">'+html.escape(label,quote=True)+'</a></p>' for label,(_,url) in zip(labels,links))
         for image in media:
             if is_stock_candidate(image):
                 label=('Ảnh stock minh họa chung; tác giả: ' if language=='vi' else 'General stock illustration; credit: ')
@@ -156,9 +152,9 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
             return content+'<p>Source: '+source_link+'</p><p>'+html.escape(CDC_DISCLOSURE[language],quote=True)+'</p>'
         if meta['category']=='us-tax':
             content+='<p>'+html.escape(IRS_DISCLOSURE[language],quote=True)+'</p>'
-        elif tax_source and meta['source_id'] in ('sba-business-plan','sba-legacy-business-plan-2025'):
+        elif tax_source and meta['source_id']=='sba-business-plan':
             content+='<p>'+html.escape(SBA_TAX_DISCLOSURE[language],quote=True)+'</p>'
-        if meta['source_id'] in ('sba-business-plan','sba-legacy-business-plan-2025'):
+        if meta['source_id']=='sba-business-plan':
             content+='<p>'+html.escape(SBA_DISCLOSURE[language],quote=True)+'</p>'
         return content+'<p>Source: <a href="'+html.escape(meta['source_url'],quote=True)+'">'+html.escape(source['source_label'],quote=True)+'</a></p>'
     payload={'version':'official-payload-v1','source':{'id':meta['source_id'],'url':meta['source_url'],'label':source['source_label'],'scope':meta['geographic_scope']},

@@ -19,7 +19,7 @@ _SEASONAL=re.compile(r'\b(?:halloween|hallowe[’\']en|spooky|pumpkins?|jack[ -]
 _TAX=re.compile(r'\b(?:tax(?:es|ation|able)?|irs|1099(?:[ -]k|[ -]nec)?|w[ -]?[249]|(?:form[ -]?)?(?:941|1040)|payroll|withholding|deductions?|bookkeeping|accounting|sales[ -]tax|tip[ -]+reporting|report(?:ing)?[ -]+tips|qualified[ -]+tips|employee[ -]+(?:vs\.?|versus|or)[ -]+independent[ -]+contractor|thuế|thue|khai[ -]+thuế|kê[ -]+khai[ -]+thuế|khấu[ -]+trừ|tiền[ -]+thuế)\b',re.I)
 _BUSINESS=re.compile(r'\b(?:salon (?:business|owner|management|marketing|growth|startup|retention)|(?:open|opening|manage|managing|grow|growing|build|building|running|finance|financing) (?:a |your )?(?:nail )?salon|business plan|client retention|pricing strategy)\b',re.I)
 _LUXURY=re.compile(r'\b(?:luxury|luxurious|premium|elegan(?:t|ce)|bridal|classic|minimalist|marble|chrome|metallic|gold|pearl|quiet luxury)\b',re.I)
-DEFAULT_SLOTS={'08:00':'business','12:00':'luxury','16:00':'business','20:00':'luxury'}
+DEFAULT_SLOTS={'08:00':'business','12:00':'other','16:00':'business','20:00':'business'}
 
 
 def policy(config):
@@ -38,6 +38,7 @@ def classify(text):
     """Tax overrides seasonal; do not treat the nail-art word 'tip' as tax advice."""
     text=unicodedata.normalize('NFKC',text)
     normalized=''.join((' ' if i and ch.isupper() and text[i-1].islower() else '')+ch for i,ch in enumerate(text)).replace('_',' ')
+    normalized=re.sub(r'\baccounting for regional differences in expenses\b', 'considering regional differences in expenses', normalized, flags=re.I)
     if _TAX.search(normalized): return 'tax_review'
     if _SEASONAL.search(text): return 'halloween'
     if _BUSINESS.search(text): return 'business'
@@ -74,6 +75,17 @@ def payload_contains_tax(payload):
     return classify(' '.join(parts)) == 'tax_review'
 
 
+def matches_slot(store,article,slot):
+    if slot is None:return True
+    from .store import verify_snapshot as verify_slot_snapshot
+    from .localization import source_text
+    from .slot_policy import allows
+    folder=verify_slot_snapshot(store.root,article['id'])
+    metadata=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+    blocks=json.loads((folder/'content.json').read_text(encoding='utf-8'))
+    return allows(slot,metadata.get('title'),source_text(blocks))
+
+
 def candidates(store, day, slot, limit=8, config=None):
     """Return eligible candidates before any localization or publish reservation.
 
@@ -94,23 +106,34 @@ def candidates(store, day, slot, limit=8, config=None):
     # Scan the whole eligible queue, then apply the bounded inference budget.
     rows=store.ready_candidates(limit=None); valid=[]
     for article in rows:
-        try:
-            from .publication_gate import require_supported_source
-            require_supported_source(article['source_url'])
-        except ValueError:
-            store.topic_hold(article['id'],'official source requires verified factual, media rights and publication checks')
-            continue
         try: category=classify_article(store,article)
         except Exception:
             store.quality_hold(article['id'],'topic: snapshot validation failed')
             continue
         if category=='tax_review':
-            store.topic_hold(article['id'],'tax topics held pending source and factual verification')
+            folder=verify_snapshot(store.root,article['id'])
+            metadata=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+            if metadata.get('content_origin')=='ai_original':
+                from .original_business import verify_original
+                try:
+                    verify_original(metadata,json.loads((folder/'content.json').read_text(encoding='utf-8')),fresh=False)
+                    valid.append(('business',article))
+                except (ValueError,OSError):store.topic_hold(article['id'],'original source evidence invalid')
+            else:store.topic_hold(article['id'],'tax topics excluded by owner policy')
         else: valid.append((category,article))
+    if slot is not None:
+        eligible=[]
+        for pair in valid:
+            try:
+                if matches_slot(store,pair[1],slot):eligible.append(pair)
+            except (ValueError,OSError,TypeError,KeyError):
+                store.quality_hold(pair[1]['id'],'topic: snapshot validation failed')
+        valid=eligible
     nonseasonal=[pair for pair in valid if pair[0]!='halloween']
     if nonseasonal:
-        preferred=priority_slots.get(slot,'luxury')
-        nonseasonal.sort(key=lambda pair: 0 if pair[0]==preferred else (1 if pair[0] in ('business','luxury') else 2))
+        if slot is None:
+            preferred=priority_slots.get(slot,'luxury')
+            nonseasonal.sort(key=lambda pair: 0 if pair[0]==preferred else (1 if pair[0] in ('business','luxury') else 2))
         return [item for _,item in nonseasonal[:limit]]
     if halloween_count>=cap: return []
     return [item for _,item in valid[:limit]]

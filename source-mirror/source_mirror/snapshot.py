@@ -2,13 +2,13 @@
 import hashlib, json, os, shutil, tempfile, io
 from PIL import Image
 from pathlib import Path
-from .store import identity, sha, verify_snapshot
+from .store import snapshot_identity, sha, verify_snapshot
 
 MAX_MEDIA=20*1024*1024
 MAX_TOTAL=100*1024*1024
 
 def save(root, metadata, blocks, html, media, evidence=None):
-    root=Path(root).resolve(); aid=identity(metadata['source_url'])
+    root=Path(root).resolve(); aid=snapshot_identity(metadata)
     (root/'tmp').mkdir(parents=True,exist_ok=True); (root/'articles').mkdir(parents=True,exist_ok=True)
     target=root/'articles'/aid
     if target.exists():

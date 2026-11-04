@@ -1,0 +1,13 @@
+# REVIEW ONLY — not installed
+[Unit]
+Description=Isolated pre-reservation body image upload socket
+[Socket]
+ListenStream=/run/nailhub-body-preupload/uploader.sock
+SocketUser=nailhub-source-mirror
+SocketGroup=nailhub-source-mirror
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=1
+[Install]
+WantedBy=sockets.target

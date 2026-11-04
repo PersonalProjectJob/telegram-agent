@@ -60,4 +60,6 @@ def recover(store):
     """Call only while holding worker_lock, before scheduled work restarts."""
     schema(store.db)
     for row in store.db.execute("SELECT day,slot FROM slot_runs WHERE state='running'").fetchall():
-        finish(store,row['day'],row['slot'],'unknown')
+        closed=store.db.execute("SELECT 1 FROM attempts a JOIN attempt_phases p ON p.attempt_id=a.id WHERE a.reserved_day=? AND p.slot=? AND a.state='precreate_failed' AND p.phase='upload_failed' ORDER BY a.id DESC LIMIT 1",(row['day'],row['slot'])).fetchone()
+        unresolved=store.db.execute("SELECT 1 FROM attempts WHERE state IN ('intent','unknown') LIMIT 1").fetchone()
+        finish(store,row['day'],row['slot'],'held' if closed and not unresolved else 'unknown')

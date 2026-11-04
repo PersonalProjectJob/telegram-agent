@@ -24,10 +24,39 @@ def load_policy():
         if stat.S_ISLNK(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o022: raise ValueError('untrusted comparison policy')
     if not path.is_file() or path.stat().st_size>1_000_000: raise ValueError('invalid comparison policy')
     value=strict_json(path.read_text(encoding='utf-8'))
-    if not isinstance(value,dict) or set(value)!={'version','entries'} or value['version']!='official-image-comparison-policy-v1' or not isinstance(value['entries'],list):
+    if not isinstance(value,dict) or set(value)!={'version','entries'} or value['version'] not in ('official-image-comparison-policy-v1','official-image-comparison-policy-v2') or not isinstance(value['entries'],list):
         raise ValueError('invalid comparison policy schema')
     return value
 
+
+def select_rule(policy,source_id,source_sha,descriptor):
+    """Generated rules scope the algorithm to a source; stock stays hash-pinned."""
+    from .official_generated_media import is_generated
+    from .official_sources import SOURCES
+    generated=is_generated(descriptor)
+    if source_id not in {x['id'] for x in SOURCES}:raise ValueError('unsupported comparison source')
+    if generated:
+        if policy.get('version')!='official-image-comparison-policy-v2':raise ValueError('generated comparison policy unavailable')
+        entries=[x for x in policy['entries'] if isinstance(x,dict) and x.get('source_id')==source_id and x.get('kind')=='generated']
+        fields={'source_id','kind','mode','max_rms','max_channel_delta','max_aspect_error','min_scale','resample','valid_until_utc'}
+    else:
+        entries=[x for x in policy['entries'] if isinstance(x,dict) and x.get('source_id')==source_id and x.get('source_sha256')==source_sha and x.get('image_sha256')==descriptor['sha256']]
+        fields={'source_id','source_sha256','image_sha256','mode','max_rms','max_channel_delta','max_aspect_error','min_scale','resample','valid_until_utc'}
+    if len(entries)!=1 or set(entries[0])!=fields:raise ValueError('scoped image policy unavailable')
+    rule=entries[0]
+    try: expiry=datetime.fromisoformat(rule['valid_until_utc'].replace('Z','+00:00'))
+    except (KeyError,AttributeError,ValueError):raise ValueError('invalid comparison policy expiry') from None
+    if expiry.tzinfo is None or expiry<=datetime.now(timezone.utc):raise ValueError('comparison policy expired')
+    return rule
+
+def receipt_url(receipt,key):
+    """Reject arbitrary addresses and require exact native receipt path binding."""
+    pathkey={'imageUrl':'imageRelativePath','thumbnailUrl':'thumbnailRelativePath'}[key]
+    url=receipt.get(key);relative=receipt.get(pathkey)
+    if not isinstance(url,str) or not isinstance(relative,str) or not url or not relative:raise ValueError('missing upload URL')
+    u=urlsplit(url)
+    if (u.scheme!='https' or u.hostname!='vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com' or u.username or u.password or u.port not in (None,443) or u.query or u.fragment or not u.path.startswith('/') or '%' in u.path or chr(92) in u.path or any(x in ('.','..') for x in u.path.split('/')) or u.path.lstrip('/') not in (relative.lstrip('/'),'vlink-storages-prod/thenailhub/'+relative.lstrip('/'))):raise ValueError('invalid upload URL')
+    return url
 
 def inspect(root,evidence_path,record_sha,observer):
     """Revalidate source, compare exact observed output, then reread its bytes."""
@@ -42,19 +71,10 @@ def inspect(root,evidence_path,record_sha,observer):
     descriptor=matches[0];binding=proof.get('binding')
     if not isinstance(binding,dict) or binding.get('source_sha256')!=descriptor['sha256'] or hashlib.sha256(originals[media_id]).hexdigest()!=descriptor['sha256']:
         raise ValueError('observed source media changed')
-    policy=load_policy(); entries=[entry for entry in policy['entries'] if isinstance(entry,dict)
-        and entry.get('source_id')==value['source']['id'] and entry.get('source_sha256')==Path(evidence_path).parent.name
-        and entry.get('image_sha256')==descriptor['sha256']]
-    if len(entries)!=1: raise ValueError('reviewed comparison policy unavailable')
-    rule=entries[0]
-    if set(rule)!={'source_id','source_sha256','image_sha256','mode','max_rms','max_channel_delta','max_aspect_error','min_scale','resample','valid_until_utc'}:
-        raise ValueError('invalid comparison policy entry')
-    try: expiry=datetime.fromisoformat(rule['valid_until_utc'].replace('Z','+00:00'))
-    except (AttributeError,ValueError): raise ValueError('invalid comparison policy expiry') from None
-    if expiry.tzinfo is None or expiry<=datetime.now(timezone.utc): raise ValueError('comparison policy expired')
+    policy=load_policy(); rule=select_rule(policy,value['source']['id'],Path(evidence_path).parent.name,descriptor)
     receipt=binding.get('response')
     if not isinstance(receipt,dict): raise ValueError('upload receipt missing')
-    url=receipt.get('imageUrl'); output=readback(url)
+    url=receipt_url(receipt,'imageUrl'); output=readback(url)
     threshold={key:rule[key] for key in ('mode','max_rms','max_channel_delta','max_aspect_error','min_scale','resample')}
     review=compare(originals[media_id],output,threshold)
     if review.get('status')!='VISUAL_QA_NOT_PUBLISHABLE': raise ValueError('visual comparison unavailable')

@@ -1,0 +1,25 @@
+# REVIEW ONLY — same trusted UID/profile as cover; separate socket, service and cgroup
+[Unit]
+Description=Isolated single-request body illustration producer
+[Service]
+Type=exec
+User=nailhub-source-mirror-agy
+Group=nailhub-source-mirror
+WorkingDirectory=/var/lib/nailhub-source-mirror-official-agy/body-image-work
+Environment=HOME=/var/lib/nailhub-source-mirror-official-agy
+Environment=XDG_CONFIG_HOME=/var/lib/nailhub-source-mirror-official-agy/.config
+Environment=XDG_CACHE_HOME=/var/lib/nailhub-source-mirror-official-agy/.cache
+Environment=XDG_DATA_HOME=/var/lib/nailhub-source-mirror-official-agy/.local/share
+Environment=PYTHONPATH=/opt/nailhub-source-mirror
+ExecStart=/usr/bin/python3 -B -m source_mirror.body_socket_service
+RuntimeMaxSec=75s
+TimeoutStopSec=2s
+KillMode=control-group
+SendSIGKILL=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/nailhub-source-mirror-official-agy
+LimitFSIZE=16M
+LimitNOFILE=128

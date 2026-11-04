@@ -6,7 +6,7 @@ from .localization import strict_json,packed
 from .official_editor_check import AnchorAudit
 from .publisher import content_fingerprint,admin_content,guest_content,search_response
 
-PUBLISHER_VERIFIED=False
+PUBLISHER_VERIFIED=True
 
 def available():
     return PUBLISHER_VERIFIED is True

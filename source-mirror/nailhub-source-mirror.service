@@ -4,6 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/nailhub-source-mirror
 Type=simple
 User=nailhub-source-mirror
 Group=nailhub-source-mirror

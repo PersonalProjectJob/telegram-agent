@@ -1,0 +1,35 @@
+[Unit]
+Description=Dedicated AGY localization broker for Nailhub Source Mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nailhub-source-mirror-agy
+Group=nailhub-source-mirror
+WorkingDirectory=/var/lib/nailhub-source-mirror-agy
+Environment=HOME=/var/lib/nailhub-source-mirror-agy
+Environment=XDG_CONFIG_HOME=/var/lib/nailhub-source-mirror-agy/.config
+Environment=XDG_CACHE_HOME=/var/lib/nailhub-source-mirror-agy/.cache
+Environment=XDG_DATA_HOME=/var/lib/nailhub-source-mirror-agy/.local/share
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/nailhub-source-mirror-agy/agy_broker.py --config /etc/nailhub-source-mirror-agy/config.json
+RuntimeDirectory=nailhub-source-mirror-agy
+RuntimeDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nailhub-source-mirror-agy
+ReadOnlyPaths=/var/lib/nailhub-source-mirror-agy/.gemini/antigravity-cli/settings.json
+InaccessiblePaths=/var/lib/nailhub-source-mirror /etc/nailhub-source-mirror /opt/agentfleet
+MemoryMax=2G
+TasksMax=128
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

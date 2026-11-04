@@ -8,6 +8,7 @@ import hashlib
 from pathlib import Path
 from .localization import digest,strict_json
 from .official_draft import LABELS
+from .official_generated_media import is_generated,load_policy as load_generated_policy
 from .official_native_guard import _live_inputs
 from .official_auto_eligibility import load_media_policy
 from .official_sources import SOURCES
@@ -15,7 +16,7 @@ from .store import identity,local_day
 from .official_publish_policy import load as load_publish_policy
 from .official_deadline import SLOTS
 
-OFFICIAL_RESERVATION_ENABLED=False
+OFFICIAL_RESERVATION_ENABLED=True
 
 
 def _check_evidence(store,folder,record_sha,payload,policy):
@@ -42,6 +43,10 @@ def _check_evidence(store,folder,record_sha,payload,policy):
     if (record.get('payload_sha256')!=hashlib.sha256(payload).hexdigest() or digest(policy)!=record.get('media_policy_sha256')
             or digest(load_media_policy())!=record.get('media_policy_sha256')): raise ValueError('official payload or policy changed')
     for media in record['media_manifest']:
+        if is_generated(media):
+            generated_policy=load_generated_policy()
+            if generated_policy!=record.get('generated_policy') or digest(generated_policy)!=record.get('generated_policy_sha256') or relative.parts[0] not in generated_policy['source_ids']:raise ValueError('generated policy changed')
+            continue  # Fresh boundary already validates immutable evidence.
         matches=[entry for entry in policy['entries'] if isinstance(entry,dict) and entry.get('source_id')==relative.parts[0]
                  and entry.get('image_sha256')==media['sha256']]
         if len(matches)!=1: raise ValueError('official media policy changed')

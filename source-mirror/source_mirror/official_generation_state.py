@@ -101,10 +101,22 @@ class GenerationState:
             if row is None:
                 self.db.execute("INSERT INTO generation VALUES (?,?,'generating',1,NULL,NULL)",(source_id,source_sha));result=('generate',None)
             elif row[0]=='ready' and _digest(row[2]):result=('ready',row[2])
+            elif row[0]=='deferred':
+                self.db.execute("UPDATE generation SET state='generating',attempts=attempts+1,reason=NULL WHERE source_id=? AND source_sha=?",(source_id,source_sha));result=('generate',None)
             elif row[0]=='generating':
                 self.db.execute("UPDATE generation SET state='held',reason='interrupted' WHERE source_id=? AND source_sha=?",(source_id,source_sha));result=('held',None)
             else:result=('held',None)
             self.db.execute('COMMIT');return result
+        except BaseException:
+            self.db.execute('ROLLBACK');raise
+
+    def defer(self,source_id,source_sha):
+        # No external generation or upload happened after the stage claim.
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            changed=self.db.execute("UPDATE generation SET state='deferred',reason='window_elapsed' WHERE source_id=? AND source_sha=? AND state='generating'",(source_id,source_sha)).rowcount
+            if changed!=1:raise ValueError('stage claim unavailable')
+            self.db.execute('COMMIT')
         except BaseException:
             self.db.execute('ROLLBACK');raise
 

@@ -12,6 +12,11 @@ approved_by: "Owner — ok proceed in chat"
 
 # Tự động đăng lại bài nguồn lên Nailhub PROD
 
+## Lịch hiện hành — 04/11/2026
+
+Theo giờ Việt Nam, **08:00, 16:00 và 20:00** dành cho kinh doanh, vận hành và marketing; **12:00** dành cho mẫu nail. Đây là chính sách chọn chủ đề, không bảo đảm mỗi slot có bài được đăng: ứng viên vẫn phải đạt kiểm tra nội dung, nguồn, trùng lặp, quota và thời hạn. Các mốc phân bổ khác trong những cập nhật cũ bên dưới là lịch sử tại thời điểm ghi, không phải lịch hiện hành.
+
+
 ## Cập nhật 04/11/2026, 10:50 ICT — Ảnh trong bài gốc
 
 - **Phạm vi:** với bài gốc do AI tạo và đã được duyệt nội dung, hệ thống lập kế hoạch **3–5 ảnh minh họa** từ tiêu đề bài, tiêu đề từng mục H2 và nội dung liên quan. Prompt hướng ảnh phù hợp bối cảnh tiệm nail, không đưa số liệu tài chính, kết luận pháp lý, điều trị y khoa, logo hoặc chữ giả. Đây là mục tiêu theo điều kiện chạy; không cam kết đủ 3 ảnh. Bản cũ không đủ cấu trúc mục phù hợp có thể đăng không có ảnh bổ sung.

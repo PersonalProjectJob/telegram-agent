@@ -277,8 +277,8 @@ class LocalizationTests(unittest.TestCase):
                 with self.assertRaisesRegex(QualityHold, 'tax topics held'):
                     load_approved(self.store, article)
                 self.store.set_paused(False)
-                with patch('source_mirror.localization.generate_revision',return_value=revision), patch('source_mirror.publisher.publish') as publish:
-                    with self.assertRaises(QualityHold): once(self.config, self.store, '2026-10-29', '12:00')
+                with patch('source_mirror.localization.generate_revision',return_value=revision), patch('source_mirror.publisher.preflight'), patch('source_mirror.topics.candidates',return_value=[article]), patch('source_mirror.topics.matches_slot',return_value=True), patch('source_mirror.publisher.publish') as publish:
+                    with self.assertRaises(QualityHold): once(self.config, self.store, '2026-10-29', '12:00', requested_article_id=article['id'])
                     publish.assert_not_called()
                 self.assertEqual(self.store.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
                 self.assertEqual(self.store.db.execute('SELECT count(*) FROM slots').fetchone()[0], 0)
@@ -346,7 +346,7 @@ class LocalizationTests(unittest.TestCase):
         runtime.chromium.launch_persistent_context.side_effect=RuntimeError('stop before browser navigation')
         manager=MagicMock();manager.__enter__.return_value=runtime
         approved={'locales':{'Vietnamese':{'summary':'Bản thử'}}}
-        with patch('source_mirror.publisher.verify_snapshot',return_value=folder), patch('source_mirror.localization.load_approved',return_value=approved), patch('playwright.sync_api.sync_playwright',return_value=manager):
+        with patch('source_mirror.publisher.verify_snapshot',return_value=folder), patch('source_mirror.localization.load_approved',return_value=approved), patch('source_mirror.scratch_cover.validate_cover'), patch('source_mirror.publisher.media_layout',return_value=('cover.png',[],0)), patch('playwright.sync_api.sync_playwright',return_value=manager):
             with self.assertRaisesRegex(RuntimeError,'stop before browser navigation'):
                 prepare(self.config,self.store,{'id':'test'},1)
         launch=runtime.chromium.launch_persistent_context

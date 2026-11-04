@@ -31,18 +31,25 @@ def _response(response,number):
                 and q.get('pageSize')==['10'] and not (set(q)-{'pageNumber','pageSize'}))
     except (TypeError,ValueError): return False
 
+def _scan_timeout(deadline,error_type,message):
+    remaining=deadline-time.monotonic()
+    if remaining<=0:raise error_type(message)
+    return min(15000,max(1,int(remaining*1000)))
+
+
+def _scan_decode(response,number,matcher,parser,limit,error_type,bad_response,too_large,non_object):
+    if not response.ok or not matcher(response,number):raise error_type(bad_response)
+    body=response.body()
+    if len(body)>limit:raise error_type(too_large)
+    result=parser(body.decode('utf-8'))
+    if not isinstance(result,dict):raise error_type(non_object)
+    return result
+
+
 def _one(page,deadline):
-    def timeout():
-        remaining=deadline-time.monotonic()
-        if remaining<=0:raise ValueError('source list scan timed out')
-        return min(15000,max(1,int(remaining*1000)))
+    def timeout():return _scan_timeout(deadline,ValueError,'source list scan timed out')
     def decode(response,number):
-        if not response.ok or not _response(response,number): raise ValueError('source list response invalid')
-        body=response.body()
-        if len(body)>MAX_BODY:raise ValueError('source list response too large')
-        result=strict_json(body.decode('utf-8'))
-        if not isinstance(result,dict):raise ValueError('source list response invalid')
-        return result
+        return _scan_decode(response,number,_response,strict_json,MAX_BODY,ValueError,'source list response invalid','source list response too large','source list response invalid')
     with page.expect_response(lambda r:_response(r,1),timeout=timeout()) as first:
         navigation=page.goto('https://nailhub.ai/admin/blogs',wait_until='domcontentloaded',timeout=timeout())
     if not navigation or navigation.status!=200 or page.url!='https://nailhub.ai/admin/blogs':raise ValueError('admin list unavailable')
@@ -71,7 +78,10 @@ def _one(page,deadline):
             if 'externalSourceUrl' not in item:raise ValueError('source list source missing')
             url=item['externalSourceUrl']
             if url is not None and not isinstance(url,str):raise ValueError('source list source invalid')
-            identifiers.add(item['id']);current.append((item['id'],url))
+            status=item.get('status')
+            if status not in ('Published','Draft','Archived'):raise ValueError('source list status invalid')
+            identifiers.add(item['id'])
+            if status=='Published':current.append((item['id'],url))
         records.append(tuple(current))
         if number>=pages:break
     if len(identifiers)!=expected[0]:raise ValueError('source list incomplete')

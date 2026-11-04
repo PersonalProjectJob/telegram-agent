@@ -184,6 +184,16 @@ def validate_candidate(source, candidate):
         rules = [('blooming gel', 'gel loang'), ('gel polish', 'sơn gel'), ('fine liner nail art brush', 'cọ nét mảnh'), ('top coat', 'phủ'), ('index', 'trỏ'), ('middle', 'giữa'), ('ring finger', 'áp út')]
         for english, vietnamese in rules:
             if english in a.text.lower() and vietnamese not in b.text.lower():
+                if english in ('top coat','gel polish'):
+                    suffix=r'Top\s+Coat' if english=='top coat' else r'Gel\s+Polish'
+                    applied=re.search(r"\b(?:apply|use)\s+([A-Za-z0-9][A-Za-z0-9&'’.-]*(?:\s+[A-Za-z0-9&'’.-]+){0,5}\s+"+suffix+r")\b",a.text,re.I)
+                    if applied:
+                        source_prefix=a.text[max(0,applied.start()-40):applied.start()]
+                        source_negative=re.search(r"\b(?:do\s+not|don['’]t|must\s+not|never|avoid)\s+(?:ever\s+)?$",source_prefix,re.I)
+                        application_match=re.search(r'\b(?:sơn|quét|thoa)\s+'+re.escape(applied.group(1))+r'\b',b.text,re.I)
+                        prefix=b.text[max(0,application_match.start()-40):application_match.start()] if application_match else ''
+                        target_negative=re.search(r'\b(?:không|chưa|đừng)(?:\s+(?:nên|được|vội|cần)){0,2}\s*$',prefix,re.I)
+                        if application_match and not source_negative and not target_negative:continue
                 raise QualityHold('glossary term missing')
         if re.search(r'\bcur(?:e|ing|ed)\b', a.text, re.I) and 'hơ đèn' not in b.text.lower():
             raise QualityHold('curing glossary term missing')
@@ -236,6 +246,7 @@ def generation_prompt(source):
             'Preserve every fact, negation, number, step, image ID, HTML structure, href and linked entity name exactly. '
             'Generic link text "Read about the collaboration here" may be translated as "Đọc về sự hợp tác tại đây"; never translate or change linked names. '
             'Keep number words as Vietnamese number words. Keep standalone names, product labels, brands, awards, places and dates unchanged. '
+            'Write a clear, specific search-friendly Vietnamese title, summary, SEO title and description that reflect the article, without keyword stuffing or ranking promises. Hashtags must be meaningful and relevant to the article. For cybersecurity, a hidden Wi-Fi network is mạng Wi-Fi ẩn, not mạng ẩn danh; preserve conditions and do not imply security is guaranteed. Preserve headings and lists exactly in count, order and meaning. '
             'Do not retain English marketing puns in Vietnamese titles. Do not add steps, cure durations, lamp types, products or safety promises. '
             'Do not invent missing technical details. A nail-art source omitting lamp type, duration or equipment does not by itself require an uncertainty: translate only what the source says. '
             'If source statements conflict, numbering is inconsistent, or meaning cannot be translated faithfully without guessing, return a nonempty uncertainties array. '
@@ -245,10 +256,14 @@ def generation_prompt(source):
             'GLOSSARY=' + packed(GLOSSARY) + '\nSOURCE=' + packed(source))
 
 
-def model_response(envelope):
+def model_response(envelope, *, allow_fenced=False):
     if not isinstance(envelope, dict) or envelope.get('status') != 'SUCCESS' or not isinstance(envelope.get('response'), str) or not envelope['response'].strip():
         raise QualityHold('invalid inference success envelope')
-    return strict_json(envelope['response'])
+    response = envelope['response'].strip()
+    fenced = re.fullmatch(r'```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*', response, flags=re.IGNORECASE)
+    if fenced and allow_fenced:
+        response = fenced.group(1)
+    return strict_json(response)
 
 
 def review_prompt(source, candidate):
@@ -286,7 +301,7 @@ def generate_revision(config, store, article, inference=None):
         audit[stage+'_prompt_sha'] = digest(prompt)
         audit[stage+'_output_sha'] = digest(raw)
         try:
-            return model_response(raw)
+            return model_response(raw, allow_fenced=(stage == 'review'))
         except QualityHold as error:
             # Never discard a nonempty response, even malformed or fenced: it
             # might carry an uncertainty or HOLD that a retry would hide.
@@ -306,7 +321,7 @@ def generate_revision(config, store, article, inference=None):
             write(stage+'.json',raw)
             audit[stage+'_prompt_sha']=digest(retry_prompt)
             audit[stage+'_output_sha']=digest(raw)
-            return model_response(raw)
+            return model_response(raw, allow_fenced=(stage == 'review'))
     try:
         validate_step_numbering(source['blocks'])
         infer = inference or (lambda prompt: call(cfg['socket_path'], prompt))
@@ -352,7 +367,7 @@ def load_approved(store, article):
         raise QualityHold('approved revision hash or policy mismatch')
     generation = strict_json((revision/'generation.json').read_text(encoding='utf-8'))
     review = strict_json((revision/'review.json').read_text(encoding='utf-8'))
-    if audit.get('generation_output_sha') != digest(generation) or audit.get('review_output_sha') != digest(review) or model_response(review) != audit.get('automated_mqm'):
+    if audit.get('generation_output_sha') != digest(generation) or audit.get('review_output_sha') != digest(review) or model_response(review, allow_fenced=True) != audit.get('automated_mqm'):
         raise QualityHold('model output evidence differs')
     if payload.get('article_id') != article['id'] or payload.get('version') != VERSION or any(payload.get(k) != audit.get(k) for k in ('source_sha','source_manifest_sha','glossary_sha')):
         raise QualityHold('payload source binding differs')

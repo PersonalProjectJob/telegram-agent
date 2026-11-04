@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from .localization import digest, strict_json, packed
 from .official_native_mock import mock_request
+from .official_generated_media import is_generated
 
 CDN='vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com'
 MAX_BYTES=20*1024*1024
@@ -68,11 +69,13 @@ def verify(payload_bytes, boundary, category_mapping, cover_receipt, gallery_rec
     if not isinstance(actual,dict) or packed(actual)!=packed(expected):
         raise ValueError('native request differs from checked payload or upload receipts')
     payload=json.loads(payload_bytes)
-    objects=[cover_receipt,*gallery_receipts]; media=[payload['media'][0],*payload['media']]
+    objects=[cover_receipt,*gallery_receipts]; media=payload['media']
     seen={}
     for descriptor,receipt in zip(media,objects):
         for url_key,path_key in (('imageUrl','imageRelativePath'),('thumbnailUrl','thumbnailRelativePath')):
-            url=receipt[url_key]; parsed=urlsplit(url)
+            url=receipt[url_key]
+            if not url and not receipt[path_key]: continue
+            parsed=urlsplit(url)
             if (parsed.scheme!='https' or parsed.hostname!=CDN or parsed.username or parsed.password
                     or parsed.port not in (None,443) or parsed.query or parsed.fragment
                     or parsed.path.lstrip('/')!=receipt[path_key].lstrip('/')):
@@ -88,16 +91,18 @@ def verify(payload_bytes, boundary, category_mapping, cover_receipt, gallery_rec
 
 
 def _receipt_objects(payload, cover, gallery):
-    if not isinstance(gallery,list) or len(gallery)!=len(payload['media']) or not gallery:
+    if not isinstance(payload.get('media'),list) or not payload['media'] or not isinstance(gallery,list) or len(gallery)!=len(payload['media'])-1:
         raise ValueError('invalid output receipt count')
     objects=[cover,*gallery]
     for receipt in objects:
         if not isinstance(receipt,dict) or set(receipt)!={'id','imageUrl','imageRelativePath','thumbnailUrl','thumbnailRelativePath'}:
             raise ValueError('invalid output receipt schema')
-        if any(not isinstance(value,str) or not value for value in receipt.values()):
+        if (any(not isinstance(value,str) for value in receipt.values()) or not receipt['id'] or not receipt['imageUrl'] or not receipt['imageRelativePath'] or bool(receipt['thumbnailUrl'])!=bool(receipt['thumbnailRelativePath'])):
             raise ValueError('invalid output receipt value')
         for url_key,path_key in (('imageUrl','imageRelativePath'),('thumbnailUrl','thumbnailRelativePath')):
-            url=receipt[url_key]; parsed=urlsplit(url); path=receipt[path_key]
+            url=receipt[url_key]; path=receipt[path_key]
+            if not url: continue
+            parsed=urlsplit(url)
             if (parsed.scheme!='https' or parsed.hostname!=CDN or parsed.username or parsed.password
                     or parsed.port not in (None,443) or parsed.query or parsed.fragment
                     or not parsed.path.startswith('/') or parsed.path=='/'
@@ -105,7 +110,7 @@ def _receipt_objects(payload, cover, gallery):
                     or '%' in parsed.path or '\\' in parsed.path
                     or path not in (parsed.path,parsed.path[1:])):
                 raise ValueError('output receipt URL or path mismatch')
-    return list(zip([payload['media'][0],*payload['media']],objects))
+    return list(zip(payload['media'],objects))
 
 
 def _policy_originals(payload, original_media, policy):
@@ -120,6 +125,9 @@ def _policy_originals(payload, original_media, policy):
         data=original_media[item['id']]
         if not isinstance(data,bytes) or not data or len(data)>MAX_BYTES or hashlib.sha256(data).hexdigest()!=item['sha256']:
             raise ValueError('original media hash mismatch')
+        if is_generated(item):
+            if not isinstance(item.get('rights_evidence_sha256'),str) or len(item['rights_evidence_sha256'])!=64 or item.get('credit')!='AI-generated illustration':raise ValueError('generated payload missing provenance')
+            continue  # Authenticated boundary revalidates bound generated evidence.
         # The full source/rights assessment is still performed by the live
         # boundary. This check prevents binding an unrelated image or policy
         # after that boundary; .gov provenance alone never grants permission.
@@ -156,6 +164,7 @@ def capture_outputs(payload_bytes,boundary,category_mapping,cover_receipt,galler
         outputs={}
         for url_key,path_key in (('imageUrl','imageRelativePath'),('thumbnailUrl','thumbnailRelativePath')):
             url=receipt[url_key]
+            if not url: continue
             if url in source_by_url and source_by_url[url]!=descriptor['sha256']:
                 raise ValueError('output URL reused across different originals')
             source_by_url[url]=descriptor['sha256']

@@ -58,14 +58,16 @@ def main():
             while True:
                 from .slot_notifications import recover
                 try:
-                    with worker_lock(store.root): recover(store)
+                    with worker_lock(store.root):
+                        store.recover_closed_uploads(scheduled_now=datetime.now(ZONE))
+                        recover(store)
                 except OSError:
                     time.sleep(60); continue
                 now=datetime.now(ZONE); day=now.date().isoformat(); minute=now.strftime('%H:%M')
                 if not store.paused():
                     for slot in cfg['slots']:
                         if slot > minute: break
-                        if store.db.execute('SELECT 1 FROM slots WHERE day=? AND slot=?',(day,slot)).fetchone(): continue
+                        if not store.slot_available(day,slot,now): continue
                         try:
                             with worker_lock(store.root):
                                 from .slot_notifications import claim_begin, finish
@@ -73,9 +75,11 @@ def main():
                                 previous_attempt=store.db.execute('SELECT COALESCE(MAX(id),0) FROM attempts').fetchone()[0]
                                 from .crawler import crawl
                                 try:
-                                    try: crawl(cfg,store)
-                                    finally: store.safe_export_reports()
-                                    url=once(cfg,store,day,slot)
+                                    def prepare():
+                                        try: crawl(cfg,store)
+                                        finally: store.safe_export_reports()
+                                    from .scheduled_assignments import run_slot
+                                    url=run_slot(cfg,store,day,slot,once,before=prepare)
                                 except Exception:
                                     uncertain=store.db.execute("SELECT 1 FROM attempts WHERE state IN ('intent','unknown') LIMIT 1").fetchone()
                                     published=store.db.execute("SELECT target_url FROM attempts WHERE id>? AND state='published' ORDER BY id DESC LIMIT 1",(previous_attempt,)).fetchone()
@@ -96,14 +100,14 @@ def main():
                 time.sleep(60)
     finally: store.close()
 
-def once(cfg,store,day=None,slot=None,requested_article_id=None):
-    from .publisher import publish, preflight
+def once(cfg,store,day=None,slot=None,requested_article_id=None,scheduled_guard=False):
+    from .publisher import publish, preflight, UploadFailure
     from .localization import generate_revision, load_approved, QualityHold
-    from .topics import candidates
+    from .topics import candidates, matches_slot
     preflight(cfg)
     # Quality failures occur before a publishing intent: no quota or unknown outcome.
-    selected=None
     if store.paused(): raise ValueError('paused')
+    store.recover_closed_uploads(scheduled_now=datetime.now(ZONE))
     if store.db.execute("SELECT 1 FROM attempts WHERE state IN ('intent','unknown') LIMIT 1").fetchone(): raise ValueError('unresolved attempt requires reconciliation')
     effective_day=day or local_day()
     if store.db.execute("SELECT count(*) FROM attempts WHERE state='published' AND published_day=?",(effective_day,)).fetchone()[0]>=4: raise ValueError('daily quota reached')
@@ -111,28 +115,89 @@ def once(cfg,store,day=None,slot=None,requested_article_id=None):
     if requested_article_id is None:
         official_url=try_official_once(store,effective_day,slot)
         if official_url: return official_url
-    choices = (candidates(store,effective_day,slot,config=cfg) if requested_article_id is None
-               else candidates(store,effective_day,slot,limit=None,config=cfg))
+    from .scratch_cover import prepare_cover, validate_cover, CoverHold
+    choices=candidates(store,effective_day,slot,limit=None,config=cfg)
+    if requested_article_id is None and slot in ('08:00','16:00','20:00'):
+        choices.append(None)  # Fallback after source candidates have failed or been skipped.
     for candidate in choices:
-        if requested_article_id is not None and candidate['id'] != requested_article_id: continue
+        if candidate is None:
+            from .official_deadline import seconds_available
+            try:remaining=seconds_available(effective_day,slot,datetime.now(ZONE))
+            except ValueError:continue
+            if remaining<2400:continue
+            from .original_business import prepare as prepare_original
+            candidate=prepare_original(cfg,store,effective_day,slot)
+            if candidate is None:continue
+        if requested_article_id is not None and candidate['id']!=requested_article_id:continue
+        if not matches_slot(store,candidate,slot):continue
+        from .store import verify_snapshot
+        folder=verify_snapshot(store.root,candidate['id'])
+        metadata=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+        if metadata.get('content_origin')=='ai_original':
+            from .original_business import verify_original
+            blocks=json.loads((folder/'content.json').read_text(encoding='utf-8'))
+            try:verify_original(metadata,blocks)
+            except (QualityHold,OSError,ValueError) as exc:
+                print('original preflight held: '+type(exc).__name__,flush=True);continue
         try:
             candidate['localization_revision']=generate_revision(cfg,store,candidate)
-            load_approved(store,candidate)
-            selected=candidate; break
+            localized=load_approved(store,candidate)
+            if metadata.get('content_origin')=='ai_original':
+                from .original_duplicate_scan import precheck
+                try:precheck(store.root,localized,cfg)
+                except (QualityHold,OSError,ValueError,RuntimeError) as exc:
+                    print('original duplicate check held: '+type(exc).__name__,flush=True);continue
+            try:
+                cover=prepare_cover(cfg,store,candidate,localized)
+                validate_cover(store,candidate,localized,cover,config=cfg,require_production=(cover['kind']=='generated'))
+            except (CoverHold,OSError,ValueError,KeyError,TypeError) as exc:
+                print('cover preflight held: '+candidate['id']+' '+str(exc),flush=True);continue
         except QualityHold as exc:
-            store.quality_hold(candidate['id'],str(exc)); store.safe_export_reports()
-            print('article quality held: '+candidate['id']+' '+str(exc),flush=True)
-    if selected is None: raise QualityHold('no article passed localization quality gate')
-    attempt,article=store.reserve(day,slot,selected['id'])
-    article['localization_revision']=selected['localization_revision']
-    try:
-        result=publish(cfg,store,article,attempt)
-        store.published(attempt,result['url'],result['published_day'])
-        store.safe_export_reports(result['published_day'])
-        print(f'verified publication: {result["url"]}')
-        return result['url']
-    except BaseException:
-        store.unknown(attempt); store.safe_export_reports(); raise
+            store.quality_hold(candidate['id'],str(exc));store.safe_export_reports();continue
+        body_bundle=None
+        if metadata.get('content_origin')=='ai_original':
+            try:
+                from .official_deadline import seconds_available
+                remaining=seconds_available(effective_day,slot,datetime.now(ZONE)) if slot is not None else 720
+                # Reserve 80 seconds for the isolated uploader and 450 for the
+                # existing publication path; skip optional generation if tight.
+                image_seconds=min(360,max(0,remaining-530))
+                if image_seconds>=1:
+                    from .body_client import generate as generate_body
+                    prepared=generate_body(store,candidate,localized,total_seconds=image_seconds)
+                    if prepared and prepared['assets']:
+                        remaining=seconds_available(effective_day,slot,datetime.now(ZONE)) if slot is not None else 720
+                        if remaining>=530:
+                            from .body_upload_client import prepare as preupload_body
+                            body_bundle=preupload_body(candidate,prepared['assets'],effective_day,slot,budget_seconds=min(60,max(1,int(remaining-470))))
+            except Exception as exc:
+                print('optional body preparation omitted: '+type(exc).__name__,flush=True)
+        if metadata.get('content_origin')=='ai_original' and slot is not None:
+            from .official_deadline import seconds_available
+            try:remaining=seconds_available(effective_day,slot,datetime.now(ZONE))
+            except ValueError:continue
+            if remaining<450:continue
+        if scheduled_guard:
+            from .scheduled_assignments import require_deadline
+            require_deadline(day,slot)
+        attempt,article=store.reserve(day,slot,candidate['id'])
+        if scheduled_guard: article['_scheduled_guard']=(day,slot)
+        if body_bundle is not None:article['body_preupload']=body_bundle
+        article['localization_revision']=candidate['localization_revision'];article['cover_candidate']=cover
+        try:
+            result=publish(cfg,store,article,attempt)
+            store.published(attempt,result['url'],result['published_day'])
+            store.safe_export_reports(result['published_day']);return result['url']
+        except UploadFailure as exc:
+            try:store.fail_precreate_upload(attempt,str(exc))
+            except BaseException:
+                store.unknown(attempt);store.safe_export_reports();raise
+            store.safe_export_reports()
+            if requested_article_id is not None:raise
+            continue
+        except BaseException:
+            store.unknown(attempt);store.safe_export_reports();raise
+    raise QualityHold('no article passed localization or upload quality gate')
 
 if __name__=='__main__':
     try: main()

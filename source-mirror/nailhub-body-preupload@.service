@@ -1,0 +1,21 @@
+# REVIEW ONLY — browser confined to one-request cgroup
+[Unit]
+Description=Isolated pre-reservation body image uploader
+[Service]
+Type=exec
+User=nailhub-source-mirror
+Group=nailhub-source-mirror
+Environment=HOME=/var/lib/nailhub-source-mirror
+Environment=PYTHONPATH=/opt/nailhub-source-mirror
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/cache/nailhub-source-mirror/browsers
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -B -m source_mirror.body_upload_service
+RuntimeMaxSec=75s
+TimeoutStopSec=2s
+KillMode=control-group
+SendSIGKILL=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/nailhub-source-mirror
+LimitNOFILE=256

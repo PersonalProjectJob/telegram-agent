@@ -1,0 +1,13 @@
+# REVIEW ONLY — not installed
+[Unit]
+Description=Isolated body illustration request socket
+[Socket]
+ListenStream=/run/nailhub-body-image/producer.sock
+SocketUser=nailhub-source-mirror-agy
+SocketGroup=nailhub-source-mirror
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=1
+[Install]
+WantedBy=sockets.target

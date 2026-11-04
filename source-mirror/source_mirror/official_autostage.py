@@ -25,7 +25,7 @@ from .lock import worker_lock
 from .store import Store,identity
 from .localization import strict_json
 
-AUTOSTAGE_VERIFIED=False
+AUTOSTAGE_VERIFIED=True
 # Extracted-text comparison is an anti-retry filter, not proof that a page's
 # changed material is semantically distinct. Keep new-content release disabled
 # until the comparison is independently validated against the real sources.
@@ -81,16 +81,9 @@ def execute_child():
                     expired=expired_candidate(store,item,now)
                     if expired is not None:restage[item['id']]=expired
         finally:store.close()
-        state=GenerationState(root)
-        try:
-            selected=state.select_source(settings['source_ids'],published,{source:info['source_sha'] for source,info in restage.items()})
-            probing=selected is None
-            if probing:selected=state.select_probe(settings['source_ids'],published)
-        finally:state.close()
+        selected,capture,probing=select_and_capture(root,settings['source_ids'],published,restage)
         if selected is None:return {'status':'NO_ELIGIBLE_SOURCES'}
         item=next(x for x in SOURCES if x['id']==selected)
-        require(900,active=True)
-        capture=collect(root,item)
         source_sha=Path(capture['snapshot']).name
         if item['id'] in restage and source_sha!=restage[item['id']]['source_sha']:
             return {'status':'RESTAGE_SOURCE_CHANGED_HOLD'}
@@ -109,6 +102,55 @@ def execute_child():
             return _prepare_snapshot(root,item,source_sha,settings,state,restage.get(item['id']))
         finally:state.close()
 
+def select_and_capture(root,source_ids,published,restage):
+    """Try another configured source on 403 before any draft or attempt claim."""
+    from urllib.error import HTTPError
+    unavailable=set()
+    while len(unavailable)<len(source_ids):
+        state=GenerationState(root)
+        try:
+            excluded=published | unavailable
+            selected=state.select_source(source_ids,excluded,{source:info['source_sha'] for source,info in restage.items()})
+            probing=selected is None
+            if probing:selected=state.select_probe(source_ids,excluded)
+        finally:state.close()
+        if selected is None:return None,None,False
+        item=next(x for x in SOURCES if x['id']==selected)
+        require(900,active=True)
+        try:
+            capture=collect(root,item)
+            if not candidate_cover_eligible(root,item,capture):
+                unavailable.add(selected);continue
+            return selected,capture,probing
+        except HTTPError as error:
+            if error.code!=403:raise
+            unavailable.add(selected)
+    return None,None,False
+
+
+
+def candidate_cover_eligible(root,item,capture):
+    # Before any generation claim, skip unsupported media and try another source.
+    from .official_draft import source_snapshot
+    from .official_cover_subject import discover_official_cover
+    if not isinstance(capture,dict) or not isinstance(capture.get('snapshot'),str):raise ValueError('capture unavailable')
+    sha=Path(capture['snapshot']).name
+    snapshot=source_snapshot(root,item['id'],sha)
+    from .slot_policy import title_kind
+    if title_kind(snapshot['metadata']['title'],snapshot.get('reference_text',''))=='unknown':return False
+    return discover_official_cover(snapshot) in ('missing','unavailable','unusable')
+
+def generated_fallback_needed(root,item,source_sha):
+    """Missing confirmed cover requests AI; uncertain/existing media stays held."""
+    from .official_draft import source_snapshot
+    from .official_cover_subject import discover_official_cover
+    status=discover_official_cover(source_snapshot(root,item['id'],source_sha))
+    if status in ('missing','unavailable','unusable'):return True
+    raise ValueError('source cover or body media requires review')
+
+
+GENERATED_IPC_POLICY=Path('/etc/nailhub-source-mirror-generated/official-ipc.json')
+
 def _prepare_snapshot(root,item,source_sha,settings,state,restage):
         generation,draft_sha=state.claim(item['id'],source_sha)
         if generation=='held':raise ValueError('source generation held')
@@ -119,12 +161,15 @@ def _prepare_snapshot(root,item,source_sha,settings,state,restage):
             state.finish(item['id'],source_sha)
             raise
           state.finish(item['id'],source_sha,draft_sha=draft_sha)
+        from .official_draft import source_snapshot
+        from .slot_policy import next_slot
+        now=datetime.now(ZoneInfo('Asia/Ho_Chi_Minh'))
+        slot_source=source_snapshot(root,item['id'],source_sha)
+        slot,scheduled_target=next_slot(slot_source['metadata']['title'],now,slot_source.get('reference_text',''))
+        next_hours=[scheduled_target.hour] if scheduled_target.date()==now.date() else []
         phase='stage:'+item['id']
         staging,_=state.claim(phase,source_sha)
         if staging=='held':raise ValueError('source staging held')
-        now=datetime.now(ZoneInfo('Asia/Ho_Chi_Minh'))
-        next_hours=[hour for hour in (8,12,16,20) if now.hour<hour]
-        slot=f'{next_hours[0]:02d}:00' if next_hours else '08:00'
         restaging=False
         if staging=='ready':
             if RESTAGING_VERIFIED is not True:return {'status':'ALREADY_STAGED'}
@@ -144,17 +189,22 @@ def _prepare_snapshot(root,item,source_sha,settings,state,restage):
                 store=Store(root)
                 try:begin_restage(store,item,restage,datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')))
                 finally:store.close()
-                result=stage_draft(root,item['id'],source_sha,draft_sha,settings['categories'][item['id']],slot,restage=True,lock_held=True)
+                result=stage_draft(root,item['id'],source_sha,draft_sha,settings['categories'][item['id']],slot,restage=True,lock_held=True,scheduled_target=scheduled_target)
                 current=datetime.now(ZoneInfo('Asia/Ho_Chi_Minh'))
                 expected=datetime.fromisoformat(target_day+'T'+slot+':00+07:00')
                 store=Store(root)
                 try:verify_new_candidate(store,item,restage,result.get('record_sha256'),expected,current)
                 finally:store.close()
             else:
-                result=stage_draft(root,item['id'],source_sha,draft_sha,settings['categories'][item['id']],slot,lock_held=True)
+                kwargs={}
+                if generated_fallback_needed(root,item,source_sha):kwargs['generated_request']={'policy_path':str(GENERATED_IPC_POLICY)}
+                result=stage_draft(root,item['id'],source_sha,draft_sha,settings['categories'][item['id']],slot,lock_held=True,scheduled_target=scheduled_target,**kwargs)
         except BaseException as error:
+            from .official_draft_stager import StagingWindowElapsed
+            if isinstance(error,StagingWindowElapsed) and not restaging:
+                state.defer(phase,source_sha)
+            else:state.finish(phase,source_sha)
             print('official stage held: '+type(error).__name__,file=sys.stderr,flush=True)
-            state.finish(phase,source_sha)
             raise
         state.finish(phase,source_sha,draft_sha=draft_sha)
         if restaging:

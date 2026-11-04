@@ -17,7 +17,22 @@ def check_candidate(store,article_id,day,slot):
     if not row:raise CandidateUnavailable('official candidate missing')
     _check_candidate_hashes(store,row['evidence_path'],row['record_sha'])
     payload,_,_=_validated(store,row['evidence_path'],row['record_sha'])
+    # Canonical payloads staged before a rendering change must not reserve.
+    # Preserve their signed evidence; a fresh staging run is required.
+    from pathlib import Path
+    from .official_editor_adapter import plan
+    folder=Path(row['evidence_path'])
+    try:
+        record=strict_json((folder/'record.json').read_text(encoding='utf-8'))
+        plan((folder/'draft.json').read_bytes(),record['editorial'],record['media_manifest'],payload)
+    except (ValueError,OSError,KeyError,TypeError) as exc:
+        raise CandidateUnavailable('canonical payload requires fresh staging') from exc
     data=strict_json(payload.decode('utf-8'))
+    from .slot_policy import allows
+    from .official_prepost import CandidateTiming
+    from .official_draft import source_snapshot
+    source=source_snapshot(store.root,data['source']['id'],Path(row['evidence_path']).parent.name)
+    if not allows(slot,data['locales']['en']['title'],source['reference_text']):raise CandidateTiming('source topic does not match slot')
     check_publish_time(data['published_at'],day,slot,datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')))
     return scan_admin(store.root,data['source']['url'],lock_held=True)
 

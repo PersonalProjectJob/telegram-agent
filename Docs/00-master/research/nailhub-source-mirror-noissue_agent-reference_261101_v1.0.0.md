@@ -9,6 +9,11 @@ owner: AlexChu
 
 # Source Mirror: Tham chiếu vận hành cho agent
 
+## Lịch hiện hành — 04/11/2026
+
+Theo giờ Việt Nam, **08:00, 16:00 và 20:00** dành cho kinh doanh, vận hành và marketing; **12:00** dành cho mẫu nail. Đây là chính sách chọn chủ đề, không bảo đảm mỗi slot có bài được đăng: ứng viên vẫn phải đạt kiểm tra nội dung, nguồn, trùng lặp, quota và thời hạn. Các mốc phân bổ khác trong những cập nhật cũ bên dưới là lịch sử tại thời điểm ghi, không phải lịch hiện hành.
+
+
 ## Cập nhật 04/11/2026, 10:50 ICT — Ảnh minh họa nội dung bài AI
 
 - **Contract:** với bài AI original có các mục H2 phù hợp, lập kế hoạch 3–5 ảnh từ tiêu đề bài, H2 và ngữ cảnh đoạn; ảnh là minh họa chung, không hàm ý nguồn chứng thực. Giữ liên kết và credit nguồn nội dung, không thêm nhãn AI công khai; provenance và evidence được lưu nội bộ. Bài thiếu cấu trúc phù hợp hoặc ảnh thất bại có thể tiếp tục với ít ảnh hơn hoặc không ảnh. Prompt không yêu cầu ảnh chứa số liệu tài chính, kết luận pháp lý, điều trị y khoa, chữ hoặc logo giả.

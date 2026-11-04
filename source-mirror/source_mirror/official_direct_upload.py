@@ -49,11 +49,15 @@ def upload(root,evidence_path,record_sha,page,dialog,media_id,role):
             parsed=urlsplit(r.url); request=r.request
             if (request.method!='POST' or parsed.scheme!='https' or parsed.hostname!='api.nailhub.ai'
                     or parsed.port not in (None,443) or parsed.username or parsed.password
-                    or parsed.path!='/api/v1/Images/quick-upload' or parsed.query or parsed.fragment or not r.ok): return False
+                    or parsed.path!='/api/v1/Images/quick-upload' or parsed.query or parsed.fragment): return False
             verify_request(request.post_data_buffer,request.headers.get('content-type',''),raw)
             return True
         except Exception: return False
     response=upload_with_chooser(page,dialog,button,{'name':name,'mimeType':mime,'buffer':raw},matches_response)
+    # An HTTP failure belongs to this upload, not a chooser timeout. The
+    # durable intent remains unresolved: even errors can follow server writes.
+    if not response.ok:
+        raise ValueError('upload HTTP status %s; reconciliation required' % response.status)
     declared=response.headers.get('content-length','')
     if declared and (not declared.isdecimal() or int(declared)>65536): raise ValueError('upload response size unavailable')
     response_data=response.body()

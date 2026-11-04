@@ -16,7 +16,7 @@ from .official_native_guard import _live_inputs,readback
 from .official_direct_upload import upload
 from .official_editor_adapter import plan
 from .official_native_mock import mock_request
-from .official_visual_evidence import load_policy
+from .official_visual_evidence import load_policy,select_rule,receipt_url
 from .isolated_compare_client import compare
 from .official_publish_policy import load as load_publish_policy
 from .official_prepost import check_publish_time
@@ -58,31 +58,32 @@ def require_owned_worker_lock(root):
 
 
 def verify_media(root,folder,record_sha,payload,originals,receipts):
-    """Compare real CDN bytes using a scoped root-owned visual policy."""
-    policy=load_policy(); source=payload['source']['id']; source_sha=folder.parent.name
-    expected=[payload['media'][0],*payload['media']]
+    """Check CDN HTTP availability while retaining original and upload bindings."""
+    from .scratch_cdn_readback import readback as check_cdn_status
+    expected=payload['media']
     if len(receipts)!=len(expected): raise ValueError('upload count differs')
     for descriptor,receipt in zip(expected,receipts):
         if (receipt.get('status')!='UPLOADED_NOT_PUBLISHABLE' or receipt.get('media_id')!=descriptor['id']
                 or receipt.get('source_sha256')!=descriptor['sha256']): raise ValueError('upload receipt differs')
-        entries=[x for x in policy['entries'] if isinstance(x,dict) and x.get('source_id')==source
-                 and x.get('source_sha256')==source_sha and x.get('image_sha256')==descriptor['sha256']]
-        if len(entries)!=1:raise ValueError('scoped image policy unavailable')
-        rule=entries[0]
-        expiry=datetime.fromisoformat(rule['valid_until_utc'].replace('Z','+00:00'))
-        if expiry.tzinfo is None or expiry<=datetime.now(timezone.utc):raise ValueError('image policy expired')
-        thresholds={k:rule[k] for k in ('mode','max_rms','max_channel_delta','max_aspect_error','min_scale','resample')}
+        if not isinstance(originals.get(descriptor['id']),bytes) or hashlib.sha256(originals[descriptor['id']]).hexdigest()!=descriptor['sha256']:raise ValueError('original image hash differs')
+        binding=receipt.get('binding')
+        if not isinstance(binding,dict) or binding.get('source_sha256')!=descriptor['sha256']:raise ValueError('upload provenance differs')
         response=receipt['binding']['response']
         thumb=response.get('thumbnailUrl'); thumb_path=response.get('thumbnailRelativePath')
         if not isinstance(thumb,str) or not isinstance(thumb_path,str) or bool(thumb)!=bool(thumb_path):
             raise ValueError('incomplete thumbnail receipt')
         for key in (('imageUrl','thumbnailUrl') if thumb else ('imageUrl',)):
-            url=response[key]
-            if not url:raise ValueError('thumbnail evidence unavailable')
-            result=compare(originals[descriptor['id']],readback(url),thresholds)
-            if result.get('status')!='VISUAL_QA_NOT_PUBLISHABLE':raise ValueError('image comparison unavailable')
-    if digest(load_policy())!=digest(policy):raise ValueError('image policy changed')
+            url=receipt_url(response,key)
+            if check_cdn_status(url)!=200:raise ValueError('CDN image unavailable')
 
+
+def upload_media(root,folder,record_sha,page,dialog,media):
+    """Upload a separate cover, then body descriptors in their frozen order."""
+    if not isinstance(media,list) or not media:raise ValueError('cover required')
+    receipts=[upload(root,folder,record_sha,page,dialog,media[0]['id'],'cover')]
+    for item in media[1:]:
+        receipts.append(upload(root,folder,record_sha,page,dialog,item['id'],'gallery'))
+    return receipts
 
 def validate_post(payload_bytes,mapping,receipts,request_bytes):
     """After POST only: reject changed body or upload mapping as UNKNOWN."""
@@ -102,7 +103,7 @@ def validate_post(payload_bytes,mapping,receipts,request_bytes):
     if packed(actual)!=packed(expected):raise ValueError('native body differs from canonical payload')
     return actual
 
-def create_route_guard(payload_bytes,mapping,receipts,state):
+def create_route_guard(payload_bytes,mapping,receipts,state,at_create=None):
     """Validate only the native Create POST; never intercept image upload."""
     def guard(route):
         req=route.request
@@ -117,6 +118,7 @@ def create_route_guard(payload_bytes,mapping,receipts,state):
             data=req.post_data_buffer
             if not isinstance(data,bytes) or len(data)>1_000_000:raise ValueError('create request too large')
             validate_post(payload_bytes,mapping,receipts,data)
+            if at_create is not None:at_create()
             state['validated']=True
         except Exception:
             state['invalid']=True
@@ -153,16 +155,14 @@ def publish(store,article,attempt):
                 page=context.new_page(); page.goto('https://nailhub.ai/admin/blogs',wait_until='domcontentloaded',timeout=30000)
                 from .official_duplicate_scan import check
                 check(page,payload['source']['url'])
-                search=page.get_by_placeholder('Search by title, slug...')
-                for title in dict.fromkeys([payload['locales']['vi']['title'],payload['locales']['en']['title']]):
-                    with page.expect_response(lambda r:search_response(r,title),timeout=30000) as found:search.fill(title)
-                    listing=strict_json(found.value.body().decode('utf-8'))
-                    if not isinstance(listing,dict) or not isinstance(listing.get('items'),list) or listing['items']:raise ValueError('possible duplicate')
-                search.fill('');page.get_by_role('button',name='Create Blog',exact=True).click();dialog=page.get_by_role('dialog')
+                from .original_duplicate_scan import check_bodies
+                check_bodies(page,{'VI':payload['locales']['vi']['body_html'],'EN':payload['locales']['en']['body_html']})
+                from .original_duplicate_scan import check_titles
+                check_titles(page,[payload['locales']['vi']['title'],payload['locales']['en']['title']])
+                page.get_by_role('button',name='Create Blog',exact=True).click();dialog=page.get_by_role('dialog')
                 dialog.get_by_role('combobox').nth(0).click();page.get_by_role('option',name=form['category'],exact=True).click()
                 dialog.locator('#externalSourceUrl').fill(form['source_url'])
-                media=payload['media'];receipts=[upload(root,folder,record_sha,page,dialog,media[0]['id'],'cover')]
-                for item in media:receipts.append(upload(root,folder,record_sha,page,dialog,item['id'],'gallery'))
+                media=payload['media'];receipts=upload_media(root,folder,record_sha,page,dialog,media)
                 verify_media(root,folder,record_sha,payload,originals,receipts)
                 for language,code in (('Vietnamese','vi'),('English','en')):
                     fields=form['locales'][code];dialog.get_by_role('tab',name=language,exact=True).click()
@@ -201,7 +201,14 @@ def publish(store,article,attempt):
                         or local_day()!=row['reserved_day'] or available() is not True or load_publish_policy()!=policy or store.paused()):raise ValueError('official intent or policy changed')
                 check_publish_time(payload['published_at'],row['reserved_day'],row['slot'],datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')));require(1,active=True)
                 route_state={}
-                context.route('https://api.nailhub.ai/api/v1/admin/blogs*',create_route_guard(payload_bytes,mapping,receipts,route_state))
+                def at_create():
+                    current=_live_inputs(root,folder,record_sha)
+                    if (current[0],current[2],current[3],current[4])!=(payload_bytes,mapping,originals,media_policy) or load_publish_policy()!=policy or store.paused():raise ValueError('create inputs changed')
+                    verify_media(root,folder,record_sha,payload,originals,receipts)
+                duplicate_page=context.new_page()
+                try:check_bodies(duplicate_page,{'VI':payload['locales']['vi']['body_html'],'EN':payload['locales']['en']['body_html']})
+                finally:duplicate_page.close()
+                context.route('https://api.nailhub.ai/api/v1/admin/blogs*',create_route_guard(payload_bytes,mapping,receipts,route_state,at_create))
                 with page.expect_response(lambda r:r.request.method=='POST' and urlsplit(r.url).hostname=='api.nailhub.ai' and urlsplit(r.url).path=='/api/v1/admin/blogs',timeout=30000) as created:
                     dialog.get_by_role('button',name='Create',exact=True).click()
                 if not route_state.get('validated') or not created.value.ok:raise ValueError('create outcome unknown')

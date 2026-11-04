@@ -38,11 +38,15 @@ def _try_once(store,day,slot):
     from .official_duplicate_scan import DuplicateSource
     from .official_auto_eligibility import SourceChanged
     from .official_prepost import CandidateTiming
+    from urllib.error import HTTPError
     for candidate in selected:
         try:
             check_candidate(store,candidate,day,slot)
             attempt,article=official_store.reserve(store,candidate,day,slot)
             break
+        except HTTPError as error:
+            if error.code==403:continue  # This path precedes the reservation commit.
+            return False
         except (official_store.CandidateUnavailable,DuplicateSource,SourceChanged,CandidateTiming):
             continue
         except (ValueError,OSError): return False
