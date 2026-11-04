@@ -1,0 +1,18 @@
+[Unit]
+Description=Generate held official Source Mirror review packages
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=nailhub-source-mirror
+Group=nailhub-source-mirror
+WorkingDirectory=/opt/nailhub-source-mirror
+Environment=HOME=/var/lib/nailhub-source-mirror
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -m source_mirror.official_review_worker --config /etc/nailhub-source-mirror/config.json
+TimeoutStartSec=1000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nailhub-source-mirror

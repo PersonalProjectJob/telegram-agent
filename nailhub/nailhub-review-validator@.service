@@ -1,0 +1,30 @@
+[Unit]
+Description=Isolated Source Mirror media review validator
+
+[Service]
+Type=exec
+User=nailhub-review-validator
+Group=nailhub-review-validator
+EnvironmentFile=/etc/nailhub-review-validator/peer.env
+ExecStart=/usr/bin/env -i SOURCE_MIRROR_REVIEW_ALLOWED_UID=${SOURCE_MIRROR_REVIEW_ALLOWED_UID} /usr/bin/python3 -I /opt/nailhub-review-validator/payload_media_validator.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+TimeoutStartSec=15
+RuntimeMaxSec=15
+MemoryMax=512M
+TasksMax=4
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+InaccessiblePaths=-/var/lib/agentfleet -/var/lib/nailhub-source-mirror -/etc/nailhub
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true

@@ -1,0 +1,12 @@
+Evidence type: short excerpt and summary, not an original HTML snapshot.
+Observed: 2026-10-30 UTC through the public web reader; direct retrieval from THINKPAD returned HTTP 403.
+Image: https://www.pexels.com/photo/cosmetics-for-manicure-4677843/
+Photographer: Leeloo The First. The image page identifies it as free.
+License: https://www.pexels.com/license/
+Pexels states: "All photos and videos on Pexels are free to use."
+The license page identifies websites and blogs as permitted uses and describes restrictions, including no implied endorsement by depicted people or brands.
+Terms: https://www.pexels.com/terms-of-service/
+Section 5 describes a worldwide, nonexclusive, royalty-free license for commercial and noncommercial use, subject to prohibited uses.
+Proposed use: credited general stock illustration for an IRS tip-reporting article, not an IRS image, endorsement, or demonstration of salon safety practices.
+The photographed subject has no visible person; no model release is asserted. This evidence does not assert rights beyond the Pexels terms or resolve any third-party rights not granted by that license.
+The associated policy timestamp is an operational recheck deadline, not a claim that the Pexels license ends at that time.

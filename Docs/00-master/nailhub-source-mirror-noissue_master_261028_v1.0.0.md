@@ -12,6 +12,50 @@ approved_by: "Owner — ok proceed in chat"
 
 # Tự động đăng lại bài nguồn lên Nailhub PROD
 
+## Cập nhật 04/11/2026, 10:50 ICT — Ảnh trong bài gốc
+
+- **Phạm vi:** với bài gốc do AI tạo và đã được duyệt nội dung, hệ thống lập kế hoạch **3–5 ảnh minh họa** từ tiêu đề bài, tiêu đề từng mục H2 và nội dung liên quan. Prompt hướng ảnh phù hợp bối cảnh tiệm nail, không đưa số liệu tài chính, kết luận pháp lý, điều trị y khoa, logo hoặc chữ giả. Đây là mục tiêu theo điều kiện chạy; không cam kết đủ 3 ảnh. Bản cũ không đủ cấu trúc mục phù hợp có thể đăng không có ảnh bổ sung.
+- **Thời gian và lỗi:** nếu slot còn đủ thời gian, ảnh có tối đa **360 giây tổng**, không quá **65 giây cho mỗi lượt**; hệ thống dành tiếp 80 giây cho tải ảnh và 450 giây cho đường xuất bản. Ảnh tạo hoặc tải lỗi được ghi nhận, bỏ riêng và bài có thể tiếp tục với số ảnh hợp lệ ít hơn hoặc không có ảnh. Những kiểm tra nội dung, nguồn, trùng lặp, quota và thời hạn đăng vẫn áp dụng. Việc mở lại form sau lỗi ảnh có thể phải tải lại ảnh bìa bắt buộc; nếu bìa đó lỗi, bài vẫn có thể bị giữ trước Create.
+- **Nguồn và hiển thị:** liên kết tới nguồn của nội dung vẫn giữ; ảnh minh họa không hàm ý nguồn đã cung cấp hoặc chứng thực ảnh. Dấu vết tạo ảnh và kiểm chứng lưu nội bộ, không thêm nhãn AI công khai; policy ảnh bìa và credit nguồn không đổi.
+- **Đã triển khai, còn giới hạn:** reviewer độc lập đã duyệt rollout có điều kiện. Sau cài, worker và hai socket ảnh hoạt động, không có attempt `intent`/`unknown`; 15/15 file cài đặt khớp candidate, 60 lượt kiểm thử tự động đạt (có bài kiểm thử kế thừa trùng). Canary dùng snapshot và cơ sở dữ liệu bản sao tạo và tải được **1 ảnh thật**, xác thực bìa và hiển thị 1 ảnh trong mỗi bản VI/EN trước khi dừng có chủ đích trước Create. Vì fixture là bản sao bài đã đăng, canary bỏ qua kiểm trùng chỉ trong script thử; không xem đó là kết quả kiểm trùng thực. Canary tạo media thử trên CDN nhưng không tạo bài; chưa xác nhận bài scheduled thật được lưu hoặc đọc lại công khai cùng ảnh. Bản sao profile và khóa thử đã được xóa. Backup khôi phục: `/var/backups/nailhub-body-rollout-20261104T035001Z`.
+
+```mermaid
+flowchart TD
+    A([Bài gốc đã duyệt]) --> B[Chọn mục và tạo ảnh]
+    B --> C{Ảnh hợp lệ và kịp giờ?}
+    C -- Có --> D[Tải ảnh vào thân bài]
+    C -- Không --> E[Bỏ ảnh lỗi]
+    D --> F[Kiểm tra trước đăng]
+    E --> F
+    F --> G([Đăng theo lịch nếu đạt])
+```
+
+
+## Cập nhật 03/11/2026, khoảng 15:45 ICT
+
+- **Sửa bản bảo mật đang HOLD:** không sửa snapshot hay evidence đã ký của `190ea45c…`. Một bản nháp thay thế đã được tạo trong thư mục báo cáo riêng, giữ nguồn SBA cùng hash; model factual và adjudicator PASS, reviewer đối chiếu 33/33 quote với nguồn. Tuy vậy, reviewer vẫn giữ bài để sửa: câu về EMV có thể bị hiểu là bảo đảm trách nhiệm pháp lý; ẩn SSID có thể tạo cảm giác đủ an toàn; và nhận định nhân viên là đường dẫn chính cần quy rõ nguồn hoặc bỏ. PASS của model không tự giải quyết các điểm này; chưa có bản Việt, ảnh bìa hay bài đăng được xác nhận cho revision này.
+- Đã triển khai prompt yêu cầu giữ điều kiện của nguồn, không biến biện pháp giảm rủi ro thành bảo đảm tuyệt đối; hướng dẫn Việt hóa phân biệt mạng Wi‑Fi ẩn và ẩn danh, yêu cầu hashtag có nghĩa và liên quan. Đây là chỉ dẫn model, không thay cho kiểm tra nguồn/MQM. Có 17 test hồi quy và 2 test prompt đạt; backup `/opt/nailhub-source-mirror/backups/accuracy-prompt-20261103`. Worker, broker và timer đã được hậu kiểm.
+- Một lượt sửa thêm đã tự dừng trước gọi model/ghi DB vì còn dưới 5 phút tới cutoff 15:50; không reserve/Create. Đến 15:45, bài bù 12:00 vẫn chưa đăng và `190ea45c…` vẫn held. Khung 16:00 giữ lịch cũ; phải kiểm tra trạng thái thực tế sau giờ chạy, không giả định đã đăng.
+
+
+## Cập nhật 03/11/2026, khoảng 15:20 ICT
+
+- **Bố cục bài mới:** luồng tạo bài gốc yêu cầu các mục với tiêu đề, đoạn văn ngắn và ít nhất một danh sách có ích; hệ thống tạo HTML `h2`, `p`, `ul`, `li`. Mỗi tiêu đề, câu và ý danh sách vẫn phải được đối chiếu nguồn và qua MQM; bản cũ vẫn được xác minh bằng schema cũ. Prompt Việt hóa yêu cầu tiêu đề, mô tả và hashtag phù hợp nội dung, tự nhiên, tránh nhồi từ khóa hay hứa thứ hạng. Prompt mới yêu cầu nêu bối cảnh nguồn một lần, văn phong trực tiếp, hạn chế lặp disclaimer/câu hỏi chung chung; link nguồn vẫn giữ, provenance AI tiếp tục lưu nội bộ.
+- **Kiểm chứng và giới hạn:** 17 test chọn lọc đạt; canary trên trình soạn thảo thật chặn mọi request ghi cho thấy H2/P/UL/LI sau paste khớp cấu trúc trước paste. Chưa chứng minh bài gốc có cấu trúc mới đi hết Create → published → đọc lại công khai. Prompt là chỉ dẫn cho model, không bảo đảm mọi bài đều hay hay đúng. Backup deploy gần nhất: `/opt/nailhub-source-mirror/backups/layout-wording-20261103` (backup bố cục trước đó: `layout-20261103`).
+- **Bài bù 12:00 chưa đăng:** slot 12 có 3 claim HOLD; các ứng viên location/marketing cũ bị kiểm tra trùng ngữ nghĩa giữ lại. Một draft continuity bị giữ vì các gợi ý không có quote hỗ trợ; draft cyber đầu bị dừng trước reserve khi reviewer phát hiện bỏ điều kiện “nếu có thể” của nguồn SBA. Đã lập proof đối soát riêng `reports/catchup-20261103-1200-cyber-reconciliation.json`: workflow đó không reserve/Create theo bằng chứng DB, khóa và journal; không suy ra hành vi của writer độc lập.
+- Một bản cyber khác được chuẩn bị **held** trong transaction để không lộ `ready` khi process lỗi. Review độc lập chỉ ra nhiều câu diễn đạt quá tuyệt đối; MQM bản Việt HOLD do dịch “hidden” thành “ẩn danh” và một hashtag không liên quan. Chưa có candidate được phép đăng bù, chưa reserve/Create. Không nới kiểm tra nguồn, trùng, quota, unknown hoặc deadline để ép đăng.
+- **Trạng thái 15:20:** ngày 03/11 có một bài 08:00 published; không có `intent`/`unknown`, worker, hai broker và hai timer đang hoạt động. Lịch 16:00 không đổi; chưa thể cam kết bài sẽ đăng. Hàng đợi và kết quả phải được kiểm tra lại tại thời điểm chạy.
+
+
+## Cập nhật vận hành ngày 02/11/2026, khoảng 08:15 ICT
+
+- **Hiển thị công khai:** bản chạy mới đã bỏ nhãn cho biết bài hoặc ảnh bìa do AI/Antigravity tạo khỏi footer và nội dung công khai. Link nguồn thực tế vẫn giữ; không gán sai tác giả con người. Provenance, credit, policy và evidence ảnh vẫn lưu nội bộ. Các bài đã đăng trước khi thay đổi không được sửa. Nội dung do mô hình tự sinh vẫn phải được kiểm tra; thay đổi này không chứng minh mọi bài về sau chắc chắn không có chữ AI.
+- Với bài nguồn chính thức, payload đã staging theo cách hiển thị cũ được kiểm tra tương thích **trước khi reserve**; nếu không khớp builder mới thì bỏ qua để staging lại, giữ nguyên evidence cũ. Không sửa trực tiếp payload/evidence đã ký.
+- **08:00, 02/11:** attempt 20 đã `published`: [Mẫu móng milky glitter ombré lấp lánh](https://nailhub.ai/blog/mau-mong-milky-glitter-ombre-lap-lanh). Kiểm tra browser chỉ đọc trên trang công khai trả HTTP 200, không thấy các chuỗi nhãn AI/Antigravity đã kiểm, và link **Scratch Magazine** dẫn đến nguồn gốc. Lượt chuẩn bị trước đó HOLD do bản dịch lặp từ; worker sáng đã tạo bản mới và đăng thành công.
+- **12:00 / 16:00 / 20:00:** ba lượt chuẩn bị nguồn kinh doanh riêng trước giờ đăng đều HOLD, chưa có bài nào được xác nhận sẵn sàng qua toàn bộ bước kiểm tra. SBA Manage: review cuối HOLD 2 major do trích dẫn chưa hỗ trợ hai nhận định; SBA Grow: replay với nguồn fetch sau đó báo một quote không khớp nguyên văn, có ký tự thay thế; California: review cuối HOLD 3 major/8 minor về hỗ trợ và phạm vi. Kết quả này không có nghĩa là ba khung giờ đã đăng hoặc chắc chắn sẽ thất bại; worker vẫn thử theo lịch và kiểm tra lại nguồn, MQM, trùng lặp, quota trước Create.
+- Lần hậu kiểm có worker, hai broker ảnh và timer hoạt động, không có attempt `intent`/`unknown`. Triển khai có backup `/opt/nailhub-source-mirror/backups/public-attribution-20261101`; test stage gồm 13 kiểm tra payload/footer và một kiểm tra payload cũ bị dừng trước reserve. Chưa kiểm chứng đầu-cuối bài official có ảnh sinh mới sau thay đổi. Các dòng cũ bên dưới mô tả lịch sử và được cập nhật này ưu tiên khi khác nhau.
+
+
 ## Metadata
 
 - Version: v1.0.77 (giữ tên file gốc để không làm gãy liên kết).
@@ -77,7 +121,7 @@ Stage đạt 314 test, 26 skipped; một test cũ được cố định budget s
 
 - Khoảng 13:28 VN, đã cài trên THINKPAD luồng dự phòng cho ba khung **12:00, 16:00 và 20:00**: khi không chọn được ứng viên nguồn thông thường, AGY có thể viết bài gốc về kinh doanh tiệm nail dựa trên tài liệu chính thống. 08:00 vẫn dành cho nội dung nail; luồng bài gốc này không tự chạy ở 08:00. Quota bốn bài/ngày, khóa chung và xử lý lượt chưa rõ vẫn được giữ.
 - Các nguồn tham khảo cố định gồm SBA [khởi sự](https://www.sba.gov/counseling/launch-your-business/), [quản lý](https://www.sba.gov/counseling/manage-your-business/), [phát triển](https://www.sba.gov/counseling/grow-your-business/) và [FAQ California Board of Barbering and Cosmetology](https://www.barbercosmo.ca.gov/forms_pubs/publications/faqs). Thứ tự ưu tiên xoay theo ngày và khung giờ; đây chưa phải khám phá toàn bộ nguồn. Sau cài đã tải được cả bốn trang; 16:00 ngày 01/11 ưu tiên SBA quản lý nếu cần dùng dự phòng. Nội dung giấy phép/tín chỉ từ California chỉ có phạm vi California, không suy ra quy định bang khác.
-- Bài gốc ghi rõ do AI tạo và kèm nguồn tham khảo thật, không ghi Scratch hay cơ quan nguồn là tác giả. Tiêu đề và từng câu được đối chiếu với trích đoạn nguồn, rồi rà soát bằng lượt AI khác; Việt hóa, glossary và MQM vẫn áp dụng. Một lần sửa có giới hạn được phép khi phản hồi kiểm tra đủ điều kiện; bài không xác minh được bị giữ. Các bước tự động có tính xác suất, không phải chứng nhận chuyên môn hay bảo đảm mọi thông tin đúng.
+- Tại thời điểm triển khai 01/11, bài gốc ghi rõ do AI tạo; từ 02/11, thông tin này được giữ nội bộ và bài công khai kèm nguồn tham khảo thật, không ghi Scratch hay cơ quan nguồn là tác giả. Tiêu đề và từng câu được đối chiếu với trích đoạn nguồn, rồi rà soát bằng lượt AI khác; Việt hóa, glossary và MQM vẫn áp dụng. Một lần sửa có giới hạn được phép khi phản hồi kiểm tra đủ điều kiện; bài không xác minh được bị giữ. Các bước tự động có tính xác suất, không phải chứng nhận chuyên môn hay bảo đảm mọi thông tin đúng.
 - Mỗi bài giữ nội dung, nguồn, bằng chứng và bìa AI trong cùng thư mục; bìa dựa trên tiêu đề và tóm tắt cuối. Kiểm trùng rà danh sách quản trị và tương đồng ngữ nghĩa, nhưng không khóa được tác giả độc lập hay bảo đảm tuyệt đối. Nguồn thiếu/thay đổi, nội dung mơ hồ, lỗi chất lượng, thiếu thời gian hoặc tạo bài chưa rõ có thể khiến bài bị giữ hoặc bỏ qua.
 - Bằng chứng: 311 test stage đạt, 26 skipped; reviewer độc lập đã rà mẫu SBA tiếng Anh theo từng trích đoạn và không thấy sai lệch thực tế. Việt hóa/MQM vượt khi phát lại đúng hai phản hồi AGY đã lưu; quét trùng thật trên 144 bài trả kết quả khác biệt; canary tạo bìa thật cho bài gốc và Scratch đều thành công. Hậu kiểm độc lập: package khớp bản cài, worker, hai broker bìa và timer active/enabled, DB integrity OK, không có lượt chưa rõ. Backup: `/opt/nailhub-source-mirror/backups/original-v2-20261101`; không khôi phục ngược DB chỉ để rollback mã.
 - **Chưa có bằng chứng bài gốc tự động đi hết Create → Published → đọc lại trên PROD sau triển khai.** Kiểm thử và canary không phải bài đã đăng. Slot 12:00 ngày 01/11 thử ba ứng viên nhưng đều bị giữ vì chủ đề không phù hợp, không tạo lượt đăng; không cam kết slot 16:00 thành công.
@@ -1279,3 +1323,24 @@ Owner yêu cầu tiếp tục hoàn tất và bật đường tự đăng CDC/SB
 | v1.0.2 | 2026-10-28 | 17:53 | AlexChu / Codex | Owner xác nhận goal: crawl và đăng được bài Published trên PROD; bổ sung mốc nghiệm thu một bài thực trước mốc vận hành 4 bài/ngày, sửa output P6. | Draft |
 | v1.0.1 | 2026-10-28 | 17:48 | AlexChu / Codex | Bổ sung crawl bằng Playwright, cây lưu bài/manifest, hợp đồng nội dung, phục hồi file/DB/quota, cô lập tài nguyên NailBlog và plan P0–P7 theo yêu cầu Owner. | Draft |
 | v1.0.0 | 2026-10-28 | 17:40 | AlexChu / Codex | Khởi tạo Master / Business theo yêu cầu flow độc lập; phân biệt yêu cầu đã xác nhận và lựa chọn cần duyệt. | Draft |
+
+
+### Cập nhật vận hành 03/11/2026 — kiểm tra trùng và bài bù
+
+- Hai lượt kiểm tra đọc PROD sau sự cố cho thấy bản nháp về địa điểm và bản về marketing có góc nội dung trùng đáng kể với các bài đã đăng; việc giữ hai bản đó có cơ sở. Nhật ký lịch sử không lưu ID/lý do khớp nên không thể khẳng định các kết quả kiểm tra sau chính là kết quả của lượt 12:00.
+- Đã triển khai audit kiểm tra trùng bản 2: lưu mã định danh phù hợp hoặc hash, hash bằng chứng và các nhãn suy luận thuộc tập cố định; không lưu nguyên văn lý do model. Các nhãn không phải lời giải thích đầy đủ cho quyết định. Giữ nguyên verdict trùng/không chắc chắn và các gate xuất bản. Chưa xác minh mọi hệ thống ngoài có đọc định dạng audit cũ hay không.
+- Phân loại chủ đề đã nhận thêm thuật ngữ an ninh mạng/an ninh số khi có ngữ cảnh kinh doanh phù hợp; đây là heuristic, không thay kiểm nguồn hoặc factual.
+- Khung 12:00 và 16:00 ngày 03/11 đều kết thúc HOLD, chưa có bài từ hai khung đó. Bài cybersecurity `fc0038...` đã có bản dịch MQM PASS, một lần precheck trùng PASS và ảnh bìa sinh thành công, nhưng vẫn HELD: câu khóa thiết bị có thể nhầm khóa màn hình với bảo vệ vật lý. Bản sửa sau giữ nguồn và điều kiện sao lưu nhưng thêm khẳng định không có nguồn về tần suất vendor phát hành; bản thử cuối còn diễn đạt MFA gây hiểu nhầm. Không coi model PASS là chứng minh factual. Các bản này chưa được đăng.
+- Verifier hiện yêu cầu bản nội dung khớp envelope sinh thực tế; không sửa một câu trong proof cũ hoặc tạo envelope giả. Để hỗ trợ biên tập trực tiếp cần thiết kế provenance revision, kiểm nguồn/MQM độc lập và kiểm tương thích trước khi dùng. Chưa có cơ chế này trong production.
+
+
+### Kết quả đăng bù 03/11/2026 — cập nhật 18:21 ICT
+
+Sau trạng thái HOLD ở mục trên, theo yêu cầu trực tiếp của người dùng, hai bài bù đã được đăng một lần qua editor thực; cả hai đã được kiểm tra lại trên admin và trang khách:
+
+- Bù 12:00: [Biện pháp an ninh kỹ thuật số và bảo vệ hệ thống dành cho tiệm nail](https://nailhub.ai/blog/bien-phap-an-ninh-ky-thuat-so-va-bao-ve-he-thong-danh-cho-tiem-nail), attempt 25. Trước khi đăng, đoạn khóa thiết bị dễ gây hiểu nhầm được xóa ở cả hai ngôn ngữ; audit lưu hash nội dung gốc và nội dung biên tập.
+- Bù 16:00: [Kế hoạch quản lý tài chính cho tiệm nail chuyên nghiệp](https://nailhub.ai/blog/ke-hoach-quan-ly-tai-chinh-cho-tiem-nail-chuyen-nghiep), attempt 26. Theo phạm vi nới lọc một lần được yêu cầu, bỏ block có khẳng định dễ gây hiểu sai về dự báo dòng tiền và sửa summary tiếng Việt cho khớp phần giữ lại. Hai bài dẫn [SBA Manage Your Business](https://www.sba.gov/counseling/manage-your-business/).
+
+MQM PASS thuộc revision trước biên tập; phần xóa/sửa được ghi audit riêng, không mô tả là MQM đã đánh giá lại. Mỗi bài qua kiểm trùng và có ảnh bìa được ràng buộc với payload thực tế. Kiểm trùng không atomic với người viết độc lập. Attempt 24 trước đó dừng trước Create, đã đối soát bằng phase, journal và tìm kiếm admin rồi chuyển released, article held trong cùng transaction; evidence nằm tại `/var/lib/nailhub-source-mirror/reports/attempt-24-reconciliation-20261103.json` trên THINKPAD.
+
+Comparator và ngoại lệ biên tập dùng stage một lần, không thay code/timer production. Lúc 18:21 DB integrity OK, không intent/unknown; ba bài workflow đã đăng trong ngày, còn một vị trí theo quota bốn bài. Hai khung lịch sử vẫn ghi HOLD và đã hết số lượt; khung 20:00 vẫn theo lịch bình thường, không bảo đảm sẽ đăng nếu gate giữ bài.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Socket for isolated Source Mirror image comparison
+
+[Socket]
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=6
+ListenStream=/run/nailhub-source-mirror-image-compare.sock
+SocketUser=nailhub-image-compare
+SocketGroup=nailhub-source-mirror-compare
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "status": "VERIFIED_SOURCE_US_SCOPE_ONLY",
+  "source": {
+    "agency": "CDC/NIOSH",
+    "report": "Evaluation of Ergonomics, Chemical Exposures, and Ventilation at Four Nail Salons",
+    "report_number": "2015-0139-3338",
+    "publication_date": "2019-03",
+    "url": "https://www.cdc.gov/niosh/hhe/reports/pdfs/2015-0139-3338.pdf",
+    "report_sha256_reported_by_controller": "a0ecc7e41039b08c21790dcfe72193eb73f8942f797ca07486db8fa43221579e9",
+    "availability_pdf_page": 2,
+    "availability_paraphrase": "The report states it is not copyrighted and may be freely reproduced.",
+    "figure": "B1",
+    "figure_pdf_page": 24,
+    "figure_description": "Pressure-activated product dispensers at Salon D; the report credits NIOSH for the photo.",
+    "candidate_caption": "Bình cấp sản phẩm bằng lực nhấn tại Salon D. Ảnh: NIOSH, báo cáo HHE 2015-0139-3338 (2019), Hình B1.",
+    "candidate_image_sha256": "cc8564a2e4de59ed8013c0c7b3475eea79879b19382d31cb58cba0482d0e5cc3",
+    "candidate_dimensions": [605, 454],
+    "candidate_format": "JPEG",
+    "page24_render_sha256": "f851dd4f105dbba794af388f14dec25826ed801c0e61ca215d2bf344a81b12f3",
+    "visual_comparison": "The local JPEG matches the left image in Figure B1 on the page render; no person is visible."
+  },
+  "rights": {
+    "scope": "US only",
+    "basis": "NIOSH report states the report is not copyrighted and may be freely reproduced; Figure B1 credits NIOSH.",
+    "evidence_status": "Source statement verified; this record is not a legal determination or a production policy entry.",
+    "international_distribution": "Not verified",
+    "publication_enabled": false
+  },
+  "limitations": [
+    "The report PDF hash is reported by the controller; this executor did not independently hash the PDF file.",
+    "The report's reproduction statement alone has not been verified as sufficient for every intended jurisdiction and use.",
+    "No media rights policy entry, publication permission, current factual approval, or owner approval is asserted.",
+    "The image is illustrative of pressure-activated dispensers in the 2019 report; do not imply it shows a universal or mandated practice.",
+    "The related 2015 bulletin is historical and does not by itself establish current law or current conditions."
+  ]
+}

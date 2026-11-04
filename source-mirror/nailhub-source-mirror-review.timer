@@ -1,0 +1,10 @@
+[Unit]
+Description=Official Source Mirror review worker (opt-in)
+
+[Timer]
+OnCalendar=*-*-* 05:30:00 Asia/Ho_Chi_Minh
+Persistent=false
+Unit=nailhub-source-mirror-review.service
+
+[Install]
+WantedBy=timers.target

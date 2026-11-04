@@ -1,0 +1,21 @@
+[Unit]
+Description=Source Mirror authenticated command worker
+
+[Service]
+Type=exec
+User=nailhub-source-mirror
+Group=nailhub-source-mirror
+WorkingDirectory=/opt/nailhub-source-mirror
+EnvironmentFile=/etc/nailhub-source-mirror/command-peer.env
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -m source_mirror.telegram_command_ipc
+StandardInput=socket
+StandardOutput=null
+StandardError=null
+TimeoutStartSec=15
+RuntimeMaxSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nailhub-source-mirror
+RestrictAddressFamilies=AF_UNIX

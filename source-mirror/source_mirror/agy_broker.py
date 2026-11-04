@@ -10,6 +10,7 @@ import subprocess
 MAX_MESSAGE = 2_000_000
 MODEL = 'gemini-3.8-flash-medium'
 EFFORT = 'medium'
+STRUCTURED_KINDS = frozenset({'official-draft','mqm-review'})
 
 
 def receive(connection):
@@ -27,8 +28,13 @@ def receive(connection):
     return json.loads(first)
 
 
-def call(socket_path, prompt):
-    message = json.dumps({'prompt': prompt}, ensure_ascii=False).encode() + b'\n'
+def call(socket_path, prompt, *, structured_kind=None):
+    request={'prompt':prompt}
+    if structured_kind is not None:
+        if not isinstance(structured_kind,str) or structured_kind not in STRUCTURED_KINDS:
+            raise ValueError('unsupported structured request kind')
+        request['structured_kind']=structured_kind
+    message = json.dumps(request, ensure_ascii=False).encode() + b'\n'
     if len(message) > MAX_MESSAGE:
         raise ValueError('inference request exceeds limit')
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -42,8 +48,12 @@ def call(socket_path, prompt):
 
 
 def infer(config, request):
-    if not isinstance(request, dict) or set(request) != {'prompt'}:
+    if not isinstance(request, dict) or set(request) not in ({'prompt'},{'prompt','structured_kind'}):
         raise ValueError('invalid broker request')
+    structured='structured_kind' in request
+    kind=request.get('structured_kind')
+    if structured and (not isinstance(kind,str) or kind not in STRUCTURED_KINDS):
+        raise ValueError('unsupported structured request kind')
     prompt = request['prompt']
     if not isinstance(prompt, str) or not 1 <= len(prompt) <= 150_000:
         raise ValueError('invalid prompt size')
@@ -51,16 +61,34 @@ def infer(config, request):
     if not Path(binary).is_absolute():
         raise ValueError('AGY binary must be absolute')
     args = [binary, '--model', MODEL, '--effort', EFFORT, '--sandbox',
-            '--disable-slash-commands', '--output-format', 'json',
-            '--print-timeout', '180s', '--print', prompt]
+            '--disable-slash-commands', '--output-format', 'json']
+    if structured:
+        # The worker selects an allowlisted task kind, never an arbitrary schema
+        # or CLI option. Legacy prompt-only requests remain on the prior path.
+        from .agy_structured import schema
+        args.extend(['--json-schema',json.dumps(schema(kind),ensure_ascii=False,separators=(',',':'))])
+    args.extend(['--print-timeout', '180s', '--print', prompt])
     result = subprocess.run(args, cwd=config['workdir'], capture_output=True,
                             text=True, timeout=200, check=False)
     if result.returncode != 0 or len(result.stdout.encode()) > MAX_MESSAGE:
         raise RuntimeError('AGY failed or output too large')
+    if structured:
+        from .localization import strict_json
+        from .agy_structured import normalize
+        envelope=strict_json(result.stdout)
+        return normalize(envelope,kind)
     envelope = json.loads(result.stdout)
     if not isinstance(envelope, dict) or envelope.get('status') != 'SUCCESS' or not isinstance(envelope.get('response'), str):
         raise ValueError('invalid AGY success envelope')
     return envelope
+
+
+def encode_reply(response):
+    """The normalized envelope may be larger; never exceed the wire cap."""
+    data=json.dumps(response,ensure_ascii=False).encode()+b'\n'
+    if len(data)>MAX_MESSAGE:
+        return b'{"ok":false,"error":"ResponseTooLarge"}\n'
+    return data
 
 
 def serve(config):
@@ -93,7 +121,7 @@ def serve(config):
                     # Deliberately omit auth details, command arguments and model output.
                     response = {'ok': False, 'error': type(exc).__name__}
                 try:
-                    connection.sendall(json.dumps(response, ensure_ascii=False).encode() + b'\n')
+                    connection.sendall(encode_reply(response))
                 except OSError:
                     pass
 

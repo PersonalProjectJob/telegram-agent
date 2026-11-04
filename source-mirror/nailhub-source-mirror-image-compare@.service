@@ -1,0 +1,30 @@
+[Unit]
+Description=Isolated Source Mirror image comparison
+
+[Service]
+Type=exec
+User=nailhub-image-compare
+Group=nailhub-image-compare
+EnvironmentFile=/etc/nailhub-source-mirror-image-compare/peer.env
+ExecStart=/usr/bin/env -i SOURCE_MIRROR_COMPARE_ALLOWED_UID=${SOURCE_MIRROR_COMPARE_ALLOWED_UID} /usr/bin/python3 -I /opt/nailhub-source-mirror-image-compare/isolated_image_compare.py
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+TimeoutStartSec=20
+RuntimeMaxSec=20
+MemoryMax=512M
+TasksMax=4
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+InaccessiblePaths=-/var/lib/agentfleet -/var/lib/nailhub-source-mirror -/etc/nailhub -/etc/nailhub-source-mirror -/etc/nailhub-source-mirror-agy
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true

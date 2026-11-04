@@ -1,0 +1,50 @@
+{
+  "version": "official-media-policy-v1",
+  "entries": [
+    {
+      "source_id": "irs-tip-reporting",
+      "source_url": "https://www.irs.gov/businesses/small-businesses-self-employed/tip-recordkeeping-and-reporting",
+      "geographic_scope": "US federal IRS guidance on tip recordkeeping and reporting; state and local requirements may differ",
+      "image_sha256": "7dd7145d4f4f5104b918eae4a8b55d96130e6501fa1184d5135f11bd751a6f36",
+      "provenance_url": "https://www.pexels.com/photo/cosmetics-for-manicure-4677843/",
+      "credit": "Leeloo The First / Pexels",
+      "alt": "Ảnh stock minh họa chung về dụng cụ làm móng",
+      "rights_basis": "Pexels License, subject to prohibited uses; general stock illustration",
+      "rights_evidence_sha256": "95871fde562dcdd36a1084dfb80a88abd078c55ba6c3d5d2c2bf268fb0f55562",
+      "rights_evidence_url": "https://www.pexels.com/license/",
+      "jurisdiction": "WORLDWIDE",
+      "valid_until_utc": "2026-10-31T05:10:00Z"
+    },
+    {
+      "source_id": "cdc-niosh-nail-technicians",
+      "source_url": "https://www.cdc.gov/niosh/nail-technicians/about/index.html",
+      "geographic_scope": "US CDC/NIOSH research and workplace safety guidance; not mandatory OSHA law; applicable federal, state and local requirements require separate review",
+      "image_sha256": "7dd7145d4f4f5104b918eae4a8b55d96130e6501fa1184d5135f11bd751a6f36",
+      "provenance_url": "https://www.pexels.com/photo/cosmetics-for-manicure-4677843/",
+      "credit": "Leeloo The First / Pexels",
+      "alt": "Ảnh stock minh họa chung về dụng cụ làm móng",
+      "rights_basis": "Pexels License, subject to prohibited uses; general stock illustration",
+      "rights_evidence_sha256": "0de4f70c41dc6ffe2b5bb4ebd1817740182c9c1499376467faeb3711a29f92ec",
+      "rights_evidence_url": "https://www.pexels.com/license/",
+      "jurisdiction": "WORLDWIDE",
+      "valid_until_utc": "2026-10-31T05:10:00Z"
+    },
+    {
+      "source_id": "sba-business-plan",
+      "source_url": "https://www.sba.gov/counseling/plan-your-business/",
+      "geographic_scope": "General US small-business background; salon context requires human review",
+      "image_sha256": "7dd7145d4f4f5104b918eae4a8b55d96130e6501fa1184d5135f11bd751a6f36",
+      "provenance_url": "https://www.pexels.com/photo/cosmetics-for-manicure-4677843/",
+      "credit": "Leeloo The First / Pexels",
+      "alt": "Ảnh stock minh họa chung về dụng cụ làm móng",
+      "rights_basis": "Pexels License, subject to prohibited uses; general stock illustration",
+      "rights_evidence_sha256": "0de4f70c41dc6ffe2b5bb4ebd1817740182c9c1499376467faeb3711a29f92ec",
+      "rights_evidence_url": "https://www.pexels.com/license/",
+      "jurisdiction": "WORLDWIDE",
+      "valid_until_utc": "2026-10-31T05:10:00Z"
+    }
+  ],
+  "category_mapping": {
+    "Nail Salon": "b1b2c3d4-e5f6-7890-abcd-ef1234567802"
+  }
+}

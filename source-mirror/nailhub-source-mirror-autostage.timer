@@ -1,0 +1,10 @@
+[Unit]
+Description=Independent official Source Mirror preparation (disabled by default)
+
+[Timer]
+OnCalendar=*-*-* *:10,30,50:00 Asia/Ho_Chi_Minh
+Persistent=false
+Unit=nailhub-source-mirror-autostage.service
+
+[Install]
+WantedBy=timers.target

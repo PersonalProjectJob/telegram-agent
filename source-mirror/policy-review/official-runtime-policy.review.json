@@ -1,0 +1,5 @@
+{
+  "version": "official-runtime-policy-v1",
+  "broker_uid": 990,
+  "socket_path": "/run/nailhub-source-mirror-agy/agy.sock"
+}

@@ -71,14 +71,18 @@ class Store:
     def set_paused(self, value): self.db.execute("UPDATE settings SET value=? WHERE key='paused'",('1' if value else '0',))
     def add_ready(self, url, title, source_date=None):
         url=canonical(url); aid=identity(url); verify_snapshot(self.root,aid)
-        self.db.execute("INSERT INTO articles VALUES (?,?,?,?, 'ready',NULL,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,source_date=excluded.source_date,state='ready',reason=NULL,manifest_sha=excluded.manifest_sha WHERE articles.state='held' AND COALESCE(articles.reason,'') NOT LIKE 'localization:%'",(aid,url,title,source_date,datetime.now(timezone.utc).isoformat(),sha(self.root/'articles'/aid/'snapshot-manifest.json')))
+        self.db.execute("INSERT INTO articles VALUES (?,?,?,?, 'ready',NULL,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,source_date=excluded.source_date,state='ready',reason=NULL,manifest_sha=excluded.manifest_sha WHERE articles.state='held' AND COALESCE(articles.reason,'') NOT LIKE 'localization:%' AND COALESCE(articles.reason,'') NOT LIKE 'topic:%'",(aid,url,title,source_date,datetime.now(timezone.utc).isoformat(),sha(self.root/'articles'/aid/'snapshot-manifest.json')))
         return aid
     def hold(self,url,reason):
         url=canonical(url); aid=identity(url)
-        self.db.execute("INSERT INTO articles VALUES (?,?,?,NULL,'held',?,?, '') ON CONFLICT(id) DO UPDATE SET reason=excluded.reason WHERE articles.state='held' AND COALESCE(articles.reason,'') NOT LIKE 'localization:%'",(aid,url,'',reason,datetime.now(timezone.utc).isoformat()))
+        self.db.execute("INSERT INTO articles VALUES (?,?,?,NULL,'held',?,?, '') ON CONFLICT(id) DO UPDATE SET reason=excluded.reason WHERE articles.state='held' AND COALESCE(articles.reason,'') NOT LIKE 'localization:%' AND COALESCE(articles.reason,'') NOT LIKE 'topic:%'",(aid,url,'',reason,datetime.now(timezone.utc).isoformat()))
     def quality_hold(self, article_id, reason):
         self.db.execute("UPDATE articles SET state='held',reason=? WHERE id=? AND state='ready'",('localization:'+reason,article_id))
+    def topic_hold(self, article_id, reason):
+        self.db.execute("UPDATE articles SET state='held',reason=? WHERE id=? AND state='ready'",('topic:'+reason,article_id))
     def ready_candidates(self, limit=8):
+        if limit is None:
+            return [dict(row) for row in self.db.execute("SELECT * FROM articles WHERE state='ready' ORDER BY COALESCE(source_date,'') DESC, created_at DESC")]
         return [dict(row) for row in self.db.execute("SELECT * FROM articles WHERE state='ready' ORDER BY COALESCE(source_date,'') DESC, created_at DESC LIMIT ?",(limit,))]
     def reserve(self, day=None, slot=None, article_id=None):
         day=day or local_day(); self.db.execute('BEGIN IMMEDIATE')
@@ -89,8 +93,15 @@ class Store:
             if count>=4: raise ValueError('daily quota reached')
             rows=self.db.execute("SELECT * FROM articles WHERE state='ready' AND (? IS NULL OR id=?) ORDER BY COALESCE(source_date,'') DESC, created_at DESC",(article_id,article_id)).fetchall()
             if not rows: raise ValueError('no ready articles')
-            article=rows[0]; verify_snapshot(self.root,article['id'])
+            article=rows[0]
+            from .publication_gate import require_supported_source
+            require_supported_source(article['source_url'])
+            folder=verify_snapshot(self.root,article['id'])
+            metadata=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+            require_supported_source(metadata['source_url'])
             if sha(self.root/'articles'/article['id']/'snapshot-manifest.json') != article['manifest_sha']: raise ValueError('snapshot manifest changed')
+            from .topics import classify_article
+            if classify_article(self,dict(article))=='tax_review': raise ValueError('tax topics held pending source and factual verification')
             if slot is not None: self.db.execute('INSERT INTO slots VALUES (?,?)',(day,slot))
             cur=self.db.execute("INSERT INTO attempts(article_id,reserved_day,state,created_at) VALUES (?,?,'intent',?)",(article['id'],day,datetime.now(timezone.utc).isoformat()))
             self.db.execute("UPDATE articles SET state='publishing' WHERE id=?",(article['id'],)); self.db.execute('COMMIT')
@@ -115,7 +126,10 @@ class Store:
         try:
             row=self.db.execute("SELECT article_id FROM attempts WHERE id=? AND state IN ('intent','unknown')",(attempt,)).fetchone()
             if not row: raise ValueError('attempt not pending')
-            self.db.execute("UPDATE attempts SET state='released',note=? WHERE id=?",(note,attempt)); self.db.execute("UPDATE articles SET state='ready' WHERE id=?",(row[0],)); self.db.execute('COMMIT')
+            has_official=self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='official_candidates'").fetchone()
+            is_official=bool(has_official and self.db.execute('SELECT 1 FROM official_candidates WHERE article_id=?',(row[0],)).fetchone())
+            state='official_ready' if is_official else 'ready'
+            self.db.execute("UPDATE attempts SET state='released',note=? WHERE id=?",(note,attempt)); self.db.execute('UPDATE articles SET state=? WHERE id=?',(state,row[0])); self.db.execute('COMMIT')
         except BaseException: self.db.execute('ROLLBACK'); raise
     def claim_slot_try(self,day,slot):
         self.db.execute('BEGIN IMMEDIATE')

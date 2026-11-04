@@ -56,6 +56,11 @@ def preflight(config):
 def wait_loaded_cover(guest_page,cover,timeout=30000):
     guest_page.wait_for_function('(i) => i.complete && i.naturalWidth > 0',arg=cover.element_handle(),timeout=timeout)
 
+def wait_loaded_images(page, root, expected_count, timeout=30000):
+    page.wait_for_function('''({root,count}) => { const imgs=[...root.querySelectorAll('img')];
+      return imgs.length===count && imgs.every(i => i.complete && i.naturalWidth>0); }''',
+      arg={'root':root.element_handle(),'count':expected_count},timeout=timeout)
+
 def paste_html(page, editor, value):
     # Clipboard is a browser user-input mechanism; no application state is injected.
     page.evaluate('''async html => {
@@ -64,10 +69,26 @@ def paste_html(page, editor, value):
     }''',value)
     editor.click(); page.keyboard.press('Control+End'); page.keyboard.press('Control+V')
 
+def verify_source_at_create(store, article, expected_meta):
+    from .store import sha
+    from .topics import classify_article
+    from .publication_gate import require_supported_source
+    current=verify_snapshot(store.root,article['id'])
+    current_meta=json.loads((current/'metadata.json').read_text(encoding='utf-8'))
+    require_supported_source(article['source_url'])
+    require_supported_source(current_meta['source_url'])
+    if current_meta != expected_meta or sha(current/'snapshot-manifest.json') != article['manifest_sha']:
+        raise VerificationIncomplete('source snapshot changed before submit')
+    if classify_article(store,article)=='tax_review':
+        raise VerificationIncomplete('tax source held pending source and factual verification')
+
+
 def prepare(config, store, article, attempt):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
     folder=verify_snapshot(store.root,article['id'])
     meta=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+    from .publication_gate import require_supported_source
+    require_supported_source(meta['source_url'])
     blocks=json.loads((folder/'content.json').read_text(encoding='utf-8'))
     media=json.loads((folder/'media-manifest.json').read_text(encoding='utf-8'))
     from .localization import load_approved
@@ -101,14 +122,10 @@ def prepare(config, store, article, attempt):
             source=html.escape(meta['source_url'],quote=True)
             # Upload through native controls one file at a time and bind each response to its chooser.
             def upload_one(button,path):
-                with page.expect_file_chooser() as chooser: dialog.get_by_role('button',name=button,exact=True).click()
-                with page.expect_response(lambda r:r.request.method=='POST' and urlsplit(r.url).scheme=='https' and urlsplit(r.url).hostname=='api.nailhub.ai' and urlsplit(r.url).path=='/api/v1/Images/quick-upload' and r.ok,timeout=30000) as response:
-                    chooser.value.set_files(path)
-                payload=response.value.json()
-                url=payload.get('imageUrl') if isinstance(payload,dict) else None
-                if not isinstance(url,str) or urlsplit(url).scheme!='https' or urlsplit(url).hostname!='vlink-storages-prod.sgp1.cdn.digitaloceanspaces.com':
-                    raise VerificationIncomplete('unexpected upload response')
-                return url
+                from .ui_image_upload import upload_with_chooser, scratch_upload_url
+                response=upload_with_chooser(page,dialog,button,path,lambda r:r.request.method=='POST' and urlsplit(r.url).scheme=='https' and urlsplit(r.url).hostname=='api.nailhub.ai' and urlsplit(r.url).path=='/api/v1/Images/quick-upload' and r.ok)
+                try: return scratch_upload_url(response)
+                except ValueError: raise VerificationIncomplete('unexpected upload response') from None
             cover_url=upload_one('Upload Cover Image',paths[0])
             page.wait_for_function("url => [...document.querySelectorAll('[role=dialog] img')].some(i => i.src === url && i.complete && i.naturalWidth > 0)",arg=cover_url,timeout=30000)
             urls=[]
@@ -218,6 +235,7 @@ def prepare(config, store, article, attempt):
                     route.continue_(); return
                 receipt={'allowed':False}
                 try:
+                    verify_source_at_create(store,article,meta)
                     sent=request.post_data_json
                     receipt['observed_status']=sent.get('status') if isinstance(sent,dict) else None
                     receipt['translation_keys']=[sorted(item) for item in sent.get('translations',[]) if isinstance(item,dict)] if isinstance(sent,dict) and isinstance(sent.get('translations'),list) else []
@@ -276,11 +294,14 @@ def prepare(config, store, article, attempt):
             details=page.get_by_role('dialog')
             for language,tab in [('Vietnamese','VI'),('English','EN')]:
                 details.get_by_role('tab',name=tab,exact=True).click()
-                prose=details.locator('.prose'); checks=locale_checks[language]
+                prose=admin_content(details); checks=locale_checks[language]
                 if prose.evaluate(sequence)!=checks['wanted']: raise VerificationIncomplete('admin locale text/media sequence differs')
                 if prose.evaluate(structure)!=checks['structure']: raise VerificationIncomplete('admin locale structure differs')
                 if prose.evaluate(SEMANTIC_INLINE)!=checks['inline']: raise VerificationIncomplete('admin locale emphasis/links differ')
-                if not prose.locator('img').evaluate_all('(imgs) => imgs.every(i => i.complete && i.naturalWidth > 0)'): raise VerificationIncomplete('admin locale image failed to load')
+                try:
+                    wait_loaded_images(page,prose,len(urls))
+                except PlaywrightTimeoutError:
+                    raise VerificationIncomplete('admin locale image failed to load')
                 if prose.locator('img').evaluate_all('(imgs) => imgs.map(i => i.src)')!=urls: raise VerificationIncomplete('admin locale media mismatch')
                 page.screenshot(path=str(evidence/f'admin-{language.lower()}.png'),full_page=True)
             page.screenshot(path=str(evidence/'admin-details.png'),full_page=True)
@@ -321,14 +342,13 @@ def prepare(config, store, article, attempt):
                 public=guest_context.new_page(); response=public.goto(public_url,wait_until='domcontentloaded',timeout=30000)
                 if not response or response.status!=200: raise VerificationIncomplete('guest article unavailable')
                 public.locator('h1').filter(has_text=locales['Vietnamese']['title']).wait_for(state='visible',timeout=30000)
-                public.locator('.prose > div.text-gray-700').wait_for(state='visible',timeout=30000)
-                public.wait_for_function('''() => [...document.querySelectorAll(".prose > div.text-gray-700 img")].every(i => i.complete)''',timeout=30000)
+                body=guest_content(public)
+                public.wait_for_function('''() => [...document.querySelectorAll(".blog-article-content.ql-editor img")].every(i => i.complete)''',timeout=30000)
                 text=' '.join(public.locator('body').inner_text().split()); cursor=0
                 for item in expected:
                     pos=text.find(item,cursor) if item else cursor
                     if pos<0: raise VerificationIncomplete('guest text differs')
                     cursor=pos+len(item)
-                body=public.locator('.prose > div.text-gray-700')
                 if body.count()!=1: raise VerificationIncomplete('public article body not uniquely identified')
                 if body.evaluate(sequence)!=wanted: raise VerificationIncomplete('public text and media sequence differs')
                 if body.evaluate(structure)!=wanted_structure: raise VerificationIncomplete('public structure differs')
@@ -375,6 +395,22 @@ def publish(config,store,article,attempt):
     return prepare(config,store,article,attempt)
 
 
+def admin_content(details):
+    """Locate exactly one visible content region in the active View dialog."""
+    content=details.locator('.blog-article-content.ql-editor')
+    content.wait_for(state='visible',timeout=15000)
+    if content.count()!=1: raise VerificationIncomplete('admin content is not unique')
+    return content
+
+
+def guest_content(page):
+    """Locate exactly one visible article content region on the guest page."""
+    content=page.locator('.blog-article-content.ql-editor')
+    content.wait_for(state='visible',timeout=30000)
+    if content.count()!=1: raise VerificationIncomplete('public article body not uniquely identified')
+    return content
+
+
 def verify_outgoing_locales(sent,localized,contents):
     """Abort the native UI write unless it carries the exact checked locale values."""
     if not isinstance(sent,dict) or not isinstance(sent.get('translations'),list) or len(sent['translations'])!=2:
@@ -414,17 +450,22 @@ class _ContentFingerprint(HTMLParser):
     blocks={'p','h1','h2','h3','h4','li','ul','ol'}
     def __init__(self,markup):
         super().__init__(convert_charrefs=True)
-        self.stack=[]; self.open_blocks=[]; self.structure=[]; self.stream=[]; self.inline=[]
+        self.stack=[]; self.open_blocks=[]; self.structure=[]; self.stream=[]; self.inline=[]; self.images=[]
         self.feed(markup); self.close()
         if self.stack: raise VerificationIncomplete('unbalanced outgoing content')
     def handle_starttag(self,tag,attrs):
         if tag not in self.blocks|{'strong','em','a','br','img'} or any(k.lower().startswith('on') for k,_ in attrs):
             raise VerificationIncomplete('unsafe outgoing content')
         attr=dict(attrs)
-        allowed_attrs={'img':{'src'},'a':{'href','target','rel'}}.get(tag,set())
+        allowed_attrs={'img':{'src','class'},'a':{'href','target','rel'}}.get(tag,set())
         if len(attr)!=len(attrs) or not set(attr)<=allowed_attrs:
             raise VerificationIncomplete('unexpected outgoing markup attributes')
         if tag=='img':
+            if 'class' in attr and attr['class']!='blog-standalone-image':
+                raise VerificationIncomplete('unexpected outgoing image class')
+            # Observed Quill editor uses this presentation-only class and the
+            # native serializer removes it. All other classes remain blocked.
+            self.images.append(attr.get('src'))
             self.stream.append(' [IMAGE:'+str(attr.get('src'))+'] '); return
         if tag=='br': self.stream.append(' '); return
         self.stack.append((tag,attr))
@@ -449,4 +490,4 @@ class _ContentFingerprint(HTMLParser):
 
 def content_fingerprint(markup):
     parsed=_ContentFingerprint(markup)
-    return (' '.join(''.join(parsed.stream).split()),parsed.structure,parsed.inline)
+    return (' '.join(''.join(parsed.stream).split()),parsed.structure,parsed.inline,parsed.images)

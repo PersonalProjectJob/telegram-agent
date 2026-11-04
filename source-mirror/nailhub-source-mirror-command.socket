@@ -1,0 +1,15 @@
+[Unit]
+Description=Source Mirror Owner command socket
+
+[Socket]
+ListenStream=/run/nailhub-source-mirror-command.sock
+SocketUser=nailhub-source-mirror
+SocketGroup=nailhub-source-mirror-command
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=12
+
+[Install]
+WantedBy=sockets.target

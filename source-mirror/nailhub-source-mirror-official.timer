@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily official US reference intake for Source Mirror
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Ho_Chi_Minh
+Persistent=true
+Unit=nailhub-source-mirror-official.service
+
+[Install]
+WantedBy=timers.target

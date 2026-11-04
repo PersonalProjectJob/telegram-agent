@@ -125,8 +125,13 @@ async def graceful_shutdown(client, worker_task, *, timeout=120, force_exit=None
                 raise SystemExit(1)  # Also covers injected test exit functions.
 
 
-def make_handler(service, owner_ids):
+def make_handler(service, owner_ids, review=None, source_mirror_socket=None):
     async def handler(event):
+        if review and review[0] is not None and await review[0].handle(event):
+            return
+        if source_mirror_socket:
+            from .source_mirror_commands import route
+            if await route(event, owner_ids, source_mirror_socket): return
         await route_command(event, service, owner_ids)
     return handler
 
@@ -152,7 +157,12 @@ async def _run_locked(config):
     cleanup_signals = lambda: None
     tasks = []
     worker_task = None
-    handler = make_handler(service, verified_owner_ids)
+    review = [None]
+    review_server = None
+    review_path = None
+    review_inode = None
+    source_mirror_socket = os.environ.get('SOURCE_MIRROR_COMMAND_SOCKET', '')
+    handler = make_handler(service, verified_owner_ids, review, source_mirror_socket)
 
     async def initialize():
         try:
@@ -198,10 +208,35 @@ async def _run_locked(config):
             await asyncio.gather(startup, return_exceptions=True)
             return
         startup.result()
+        # Disabled unless explicitly configured; reuses this process's verified client.
+        review_socket = os.environ.get('SOURCE_MIRROR_REVIEW_SOCKET', '')
+        review_uid = os.environ.get('SOURCE_MIRROR_REVIEW_UID', '')
+        review_db = os.environ.get('SOURCE_MIRROR_REVIEW_DB', '')
+        if any((review_socket, review_uid, review_db)):
+            try:
+                from .source_mirror_review import ReviewTransport, start_server
+                db_path = Path(review_db)
+                if (not all((review_socket, review_uid, review_db)) or not db_path.is_absolute()
+                        or db_path != db_path.resolve() or db_path.is_symlink()
+                        or db_path.parent.stat().st_uid != os.geteuid()
+                        or db_path.parent.stat().st_mode & 0o022):
+                    raise ConfigError('unsafe Source Mirror review configuration')
+                review[0] = ReviewTransport(str(db_path), verified_owner_ids[0], client)
+                review_server = await start_server(review_socket, int(review_uid), review[0])
+                review_path = Path(review_socket)
+                review_inode = review_path.stat().st_ino
+            except Exception:
+                if review[0] is not None:
+                    review[0].close()
+                    review[0] = None
+                LOG.error('Source Mirror review transport unavailable; Owner reviews held')
         tasks = [asyncio.create_task(client.run_until_disconnected()), stopper]
         worker_task = asyncio.create_task(service.worker(stop))
         scheduler_task = asyncio.create_task(service.scheduler(stop))
         tasks.extend((worker_task, scheduler_task))
+        if source_mirror_socket:
+            from .source_mirror_commands import notifications
+            tasks.append(asyncio.create_task(notifications(client, verified_owner_ids[0], source_mirror_socket, stop)))
         await asyncio.sleep(0)
         for task in (worker_task, scheduler_task):
             if task.done():
@@ -219,6 +254,18 @@ async def _run_locked(config):
     finally:
         stop.set()
         model_stop.set()
+        if review_server is not None:
+            review_server.close()
+            await review_server.wait_closed()
+            active_reviews = list(review_server.review_tasks)
+            for task in active_reviews:
+                task.cancel()
+            if active_reviews:
+                await asyncio.gather(*active_reviews, return_exceptions=True)
+            if review_path.exists() and not review_path.is_symlink() and review_path.stat().st_ino == review_inode:
+                review_path.unlink()
+        if review[0] is not None:
+            review[0].close()
         try:
             await graceful_shutdown(client, worker_task)
         finally:

@@ -1,6 +1,6 @@
 """Scratch Step-by-step adapter for the observed Beaver Builder article layout."""
 from urllib.parse import urlsplit
-import ipaddress, socket, re
+import ipaddress, socket, re, http.client, ssl
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from .snapshot import save, MAX_MEDIA
 from .store import identity
@@ -15,6 +15,49 @@ class SafeRedirect(HTTPRedirectHandler):
 def check_media_url(url):
     p=urlsplit(url)
     if p.scheme!='https' or p.hostname not in MEDIA_HOSTS or p.username or p.password or p.port not in (None,443): raise ValueError('media URL outside allowed hosts')
+
+def check_command_request(url, navigation):
+    """Check each browser request before it is sent; DNS remains a trust boundary."""
+    parts=urlsplit(url)
+    allowed=SOURCE_HOSTS if navigation else MEDIA_HOSTS
+    if (parts.scheme!='https' or parts.hostname not in allowed or parts.username or parts.password
+            or parts.port not in (None,443) or (navigation and not parts.path.startswith('/nail_art/'))):
+        raise ValueError('request outside article allowlist')
+    addresses=socket.getaddrinfo(parts.hostname,443,type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(info[4][0]).is_global for info in addresses):
+        raise ValueError('source host resolves to non-public address')
+
+def command_route(route, limit=MAX_MEDIA):
+    try:
+        request=route.request
+        check_command_request(request.url,request.is_navigation_request())
+        if request.method!='GET': raise ValueError('only GET permitted')
+        parts=urlsplit(request.url); host=parts.hostname
+        addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
+        if not addresses or any(not ipaddress.ip_address(x[4][0]).is_global for x in addresses):
+            raise ValueError('source DNS changed')
+        target=(addresses[0][4][0],443)
+        class PinnedHTTPS(http.client.HTTPSConnection):
+            def connect(self):
+                raw=socket.create_connection(target,timeout=self.timeout)
+                try: self.sock=ssl.create_default_context().wrap_socket(raw,server_hostname=host)
+                except BaseException: raw.close(); raise
+        connection=PinnedHTTPS(host,timeout=12)
+        try:
+            path=parts.path or '/'
+            if parts.query: path+='?'+parts.query
+            connection.request('GET',path,headers={'Accept':'*/*','Accept-Encoding':'identity'})
+            response=connection.getresponse()
+            if response.status!=200: raise ValueError('redirect or unsuccessful response')
+            ceiling=min(MAX_MEDIA,limit)
+            body=response.read(ceiling+1)
+            if len(body)>ceiling: raise ValueError('response exceeds limit')
+            content_type=response.getheader('Content-Type','application/octet-stream')
+        finally: connection.close()
+    except Exception:
+        route.abort(); return
+    route.fulfill(status=200,body=body,content_type=content_type)
+    return len(body)
 
 def download_url(source_url):
     check_media_url(source_url)
@@ -56,7 +99,7 @@ EXTRACT=r'''() => {
  const hero=main.querySelector('.fl-module-photo img');
  const rich=[...main.querySelectorAll('.fl-module-rich-text .fl-rich-text')].filter(x=>!x.closest('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form'));
  if (!hero || rich.length!==2) throw Error('unexpected article text modules');
- if (rich[0].textContent.trim() !== 'Autumn/Winter, Seasonal & Occasions, Step by Step, Themed' || rich[0].querySelector('a,img,video,iframe,table,h1,h2,h3,h4,ul,ol')) throw Error('unrecognized taxonomy module');
+ if (!['Autumn/Winter, Seasonal & Occasions, Step by Step, Themed','Step by Step'].includes(rich[0].textContent.trim()) || rich[0].querySelector('a,img,video,iframe,table,h1,h2,h3,h4,ul,ol')) throw Error('unrecognized taxonomy module');
  const articlePhotos=[...main.querySelectorAll('.fl-module-photo img')].filter(x=>!x.closest('[aria-label="Advertisements"],.scrat-mid-point-signup,.fl-module-box,form'));
  if(articlePhotos.length!==1 || articlePhotos[0]!==hero) throw Error('unhandled article photo module');
  if (hero.closest('.fl-module-photo').querySelector('figcaption,.fl-photo-caption')) throw Error('unhandled hero caption');
@@ -127,6 +170,15 @@ def validate_eligibility(title, media, *, downloaded=False):
 
 MAX_LISTING_PAGES=5
 FIRST_LISTING='https://www.scratchmagazine.co.uk/step-by-step/'
+CURATED_LUXURY_URLS=('https://www.scratchmagazine.co.uk/nail_art/crystal-nail-tutorial/',)
+
+def include_curated_luxury(urls):
+    """Prepend a fixed reviewed source; never accept a caller-supplied article URL."""
+    return list(dict.fromkeys([*CURATED_LUXURY_URLS,*urls]))[:20]
+
+def skip_known(store, url):
+    """Avoid recrawling published, ready, localization-held or topic-held entries."""
+    return bool(store.db.execute("SELECT 1 FROM articles WHERE id=? AND (state!='held' OR COALESCE(reason,'') LIKE 'localization:%' OR COALESCE(reason,'') LIKE 'topic:%')",(identity(url),)).fetchone())
 
 def validate_cursor(url):
     parts=urlsplit(url)
@@ -164,6 +216,56 @@ def listing_page_plan(load,cursor=None):
         if not following: break
         current=following
 
+def crawl_url(config, store, url):
+    """Capture one supported article; it remains subject to normal quality gates."""
+    from playwright.sync_api import sync_playwright
+    parts=urlsplit(url)
+    if (parts.scheme!='https' or parts.hostname not in SOURCE_HOSTS or parts.username or parts.password
+            or parts.port not in (None,443) or not parts.path.startswith('/nail_art/') or parts.fragment):
+        raise ValueError('unsupported article URL')
+    def known(source_url):
+        row=store.db.execute('SELECT id,state FROM articles WHERE id=?',(identity(source_url),)).fetchone()
+        if not row: return None
+        if row['state']=='ready': return {'state':'captured','article_id':row['id']}
+        if row['state']=='published':
+            attempt=store.db.execute("SELECT target_url FROM attempts WHERE article_id=? AND state='published' ORDER BY id DESC LIMIT 1",(row['id'],)).fetchone()
+            return {'state':'existing','url':attempt['target_url'] if attempt else None}
+        return {'state':'held'}
+    found=known(url)
+    if found: return found
+    with sync_playwright() as p:
+        browser=p.chromium.launch(headless=True)
+        context=browser.new_context(service_workers='block',java_script_enabled=False)
+        try:
+            budget={'requests':0,'bytes':0}
+            def bounded_route(route):
+                budget['requests']+=1
+                if budget['requests']>100 or budget['bytes']>=100*1024*1024:
+                    route.abort(); return
+                used=command_route(route,100*1024*1024-budget['bytes'])
+                if used: budget['bytes']+=used
+            context.route('**/*', bounded_route)
+            if not hasattr(context,'route_web_socket'): raise ValueError('browser websocket confinement unavailable')
+            context.route_web_socket('**/*', lambda websocket: websocket.close())
+            page=context.new_page(); page.goto(url,wait_until='domcontentloaded',timeout=30000)
+            actual=urlsplit(page.url)
+            if actual.scheme!='https' or actual.hostname not in SOURCE_HOSTS or not actual.path.startswith('/nail_art/'):
+                raise ValueError('source redirect outside allowed article scope')
+            article=page.evaluate(EXTRACT); article_url=article['canonical']; canonical_parts=urlsplit(article_url)
+            if canonical_parts.scheme!='https' or canonical_parts.hostname not in SOURCE_HOSTS or not canonical_parts.path.startswith('/nail_art/'):
+                raise ValueError('canonical URL outside source')
+            found=known(article_url)
+            if found: return found
+            validate_eligibility(article['title'],article['media'])
+            files=[{'original_url':m['url'],'download_url':download_url(m['url']),'alt':m['alt'],'bytes':download(page,download_url(m['url']))} for m in article['media']]
+            validate_eligibility(article['title'],files,downloaded=True)
+            meta={'source_url':article_url,'title':article['title'],'source_date':article['date'],'author':article['author']}
+            html='\n'.join(b['html'] for b in article['blocks'] if b['type']=='html')
+            aid=save(store.root,meta,article['blocks'],html,files,{'html':article['raw_html'],'screenshot':page.screenshot(full_page=True)})
+            store.add_ready(article_url,article['title'],article['date'])
+            return {'state':'captured', 'article_id':aid}
+        finally: context.close(); browser.close()
+
 def crawl(config,store):
     from playwright.sync_api import sync_playwright
     if config['source_url'].rstrip('/') != FIRST_LISTING.rstrip('/'): raise ValueError('unsupported source listing')
@@ -183,17 +285,18 @@ def crawl(config,store):
                 observed=choose_next(hrefs)
                 return urls,observed
             for page_index,(current,urls,observed) in enumerate(listing_page_plan(load_listing,cursor)):
+                if page_index==0: urls=include_curated_luxury(urls)
                 for url in urls[:20]:
                     parts=urlsplit(url)
                     if parts.scheme!='https' or parts.hostname not in SOURCE_HOSTS or not parts.path.startswith('/nail_art/'): continue
-                    if store.db.execute("SELECT 1 FROM articles WHERE id=? AND (state!='held' OR COALESCE(reason,'') LIKE 'localization:%')",(identity(url),)).fetchone(): continue
+                    if skip_known(store,url): continue
                     try:
                         page.goto(url,wait_until='domcontentloaded',timeout=30000)
                         if urlsplit(page.url).hostname not in SOURCE_HOSTS: raise ValueError('source redirect outside allowed hosts')
                         article=page.evaluate(EXTRACT)
                         article_url=article['canonical']; canonical_parts=urlsplit(article_url)
                         if canonical_parts.scheme!='https' or canonical_parts.hostname not in SOURCE_HOSTS or not canonical_parts.path.startswith('/nail_art/'): raise ValueError('canonical URL outside source')
-                        if store.db.execute("SELECT 1 FROM articles WHERE id=? AND (state!='held' OR COALESCE(reason,'') LIKE 'localization:%')",(identity(article_url),)).fetchone(): continue
+                        if skip_known(store,article_url): continue
                         validate_eligibility(article['title'],article['media'])
                         files=[{'original_url':m['url'],'download_url':download_url(m['url']),'alt':m['alt'],'bytes':download(page,download_url(m['url']))} for m in article['media']]
                         validate_eligibility(article['title'],files,downloaded=True)

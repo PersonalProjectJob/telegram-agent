@@ -3,6 +3,11 @@
   "source_url": "https://www.scratchmagazine.co.uk/step-by-step/",
   "slots": ["08:00", "12:00", "16:00", "20:00"],
   "timezone": "Asia/Ho_Chi_Minh",
+  "topics": {
+    "halloween_max_per_7_days": 1,
+    "us_tax_requires_human_review": true,
+    "priority_slots": {"08:00":"business", "12:00":"luxury", "16:00":"business", "20:00":"luxury"}
+  },
   "localization": {
     "enabled": true,
     "model": "gemini-3.8-flash-medium",

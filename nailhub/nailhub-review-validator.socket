@@ -1,0 +1,16 @@
+[Unit]
+Description=Socket for isolated Source Mirror media review validation
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=6
+
+[Socket]
+ListenStream=/run/nailhub-review-validator.sock
+SocketUser=nailhub-review-validator
+SocketGroup=tg-nailhub-review
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+Service=nailhub-review-validator@.service
+
+[Install]
+WantedBy=sockets.target

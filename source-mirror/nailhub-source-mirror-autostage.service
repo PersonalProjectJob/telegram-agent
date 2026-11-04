@@ -1,0 +1,20 @@
+[Unit]
+Description=Prepare one official Source Mirror candidate (disabled until reviewed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nailhub-source-mirror
+Group=nailhub-source-mirror
+WorkingDirectory=/opt/nailhub-source-mirror
+Environment=HOME=/var/lib/nailhub-source-mirror
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/nailhub-source-mirror/.venv/bin/python -m source_mirror.official_autostage
+TimeoutStartSec=1260
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nailhub-source-mirror
