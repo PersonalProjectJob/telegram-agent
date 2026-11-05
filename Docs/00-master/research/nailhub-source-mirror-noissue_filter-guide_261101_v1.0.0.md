@@ -9,6 +9,39 @@ owner: AlexChu
 
 # Source Mirror: Bộ lọc và cách xử lý
 
+## Kiểm thử tích hợp chống trùng — 05/11/2026, 11:33 ICT
+
+**Chưa bật và chưa đủ điều kiện bật.** Candidate cô lập trên THINKPAD có 55/55 kiểm thử mô phỏng đạt; sao lưu thử SQLite giữ 316 bài, 36 lượt đăng và khóa ngoại, hai lần thử lỗi giữa migration đều rollback. Không chạy migration trên kho vận hành. Thử Chromium callback thật đã phát hiện deadline không truyền qua ContextVar; candidate sửa bằng deadline cố định và kiểm tra các trường hợp hợp lệ/hết hạn/thiếu hạn trong browser fixture.
+
+Kiểm tra thật chỉ đọc: đồng bộ 3 lượt Admin và GET 122 URL mất 65,8 giây; thử AGY 122 tiêu đề với 7 lô, tối đa 20 tiêu đề/lô, mất 137,73 giây và trả đủ schema. Đây là hai phép đo riêng, một lần chạy; không chứng minh độ chính xác ngưỡng 70 hay hiệu năng ổn định. Một phép thử trước đó với lô 40 thất bại sau hơn bốn phút, chưa xác định được nguyên nhân. Một vòng đồng bộ + so tiêu đề khoảng 203,5 giây trong các lần đo này; nếu chạy trước reserve và trước Create, phải tính thêm thời gian đăng/ảnh.
+
+Còn thiếu: migration chưa nối vào kho thực; bài từng Published chuyển Draft/Archived mới có kế hoạch đối soát, chưa materialize đưa lại hàng đợi; các nhánh official autostage/restage còn dùng ID nguồn cũ; official upload chưa có bằng chứng đóng bền để an toàn bỏ qua attempt sau khi gặp trùng trước Create. So thân bài vẫn so chữ cùng ngôn ngữ. Chưa có kiểm thử đầu-cuối cả flow; không coi 55 fixture tests là xác nhận đăng thật. Worker và AGY vẫn chạy bản hiện hành, không có attempt `intent`/`unknown` tại 11:33. Khi lỗi 403/timeout/5xx làm danh sách kiểm HTTP thiếu, candidate không được dùng tập thiếu để kết luận không trùng.
+
+## Quy tắc Owner 05/11/2026, 10:50 ICT — chống trùng và kho bài đã đăng
+
+**Trạng thái: yêu cầu nghiệp vụ đã chốt; kho đối soát đã khởi tạo một lần, rule mới CHƯA bật trên worker.** Các mô tả hành vi hiện hành bên dưới vẫn áp dụng đến khi triển khai được xác nhận.
+
+Lần đồng bộ đầu tiên lúc **10:58:13 ngày 05/11/2026 giờ Việt Nam** đã lưu 122 bài Published vào `published-registry/current.json` và bản thế hệ tương ứng. Có 122 đường dẫn dựng từ slug, 122 thời điểm đăng và 97 URL nguồn hợp lệ; 25 trường nguồn để trống khi chưa có hoặc không thể lưu an toàn. Đường dẫn dựng từ slug chưa được kiểm HTTP từng bài. Thư mục và file giới hạn quyền cho tài khoản worker. **Đây là bản chụp một lần, chưa tự cập nhật và chưa được worker dùng để chặn/cho đăng**; phải đồng bộ lại trước khi dùng làm bằng chứng đối chiếu.
+
+- Chủ đề được phép lặp. So sánh với **bài đang Published trên Nailhub**, không so với bản nháp, bài đã lưu trữ hoặc chỉ tồn tại trong kho máy. Bài đã chuyển khỏi Published không còn là đối tượng đối chiếu sau lần đồng bộ thành công.
+- Tiêu đề có ý nghĩa giống từ **70/100 trở lên** theo đánh giá ngữ nghĩa thì coi là có nguy cơ gây nhầm lẫn, chọn bài khác. Cùng chủ đề nhưng khác ý định hoặc giá trị thông tin không tự coi là trùng. Điểm là ước lượng của mô hình, không phải phép đo khách quan; cần bộ ví dụ do người đánh giá để hiệu chuẩn trước khi bật.
+- Nội dung trùng bài Published: không đăng bài đó, chuyển sang bài khác phù hợp slot. Cùng nguồn hoặc tiêu đề không được coi là bằng chứng nội dung trùng; **ngoài ra tiêu đề vẫn phải đạt rule 70/100 ở trên**.
+- Kho đối soát đặt tại `/var/lib/nailhub-source-mirror/published-registry/` trên THINKPAD. Nailhub Admin là nguồn xác thực; bản local lưu ID, trạng thái, tiêu đề và thân bài theo ngôn ngữ có sẵn, cùng URL/nguồn/ngày khi có bằng chứng. Không lưu token hay phiên trình duyệt. Khi dữ liệu không đủ, không tự bịa trường còn thiếu.
+- Đồng bộ danh sách đầy đủ, kiểm tra tính ổn định, chỉ thay bản hiện hành khi hoàn tất; lỗi, thiếu trang hoặc dữ liệu cũ không được coi là đối soát thành công. Sau khi đăng hoặc trạng thái bài trên Admin thay đổi, đồng bộ lại. Bằng chứng phải cho biết thời điểm và kết quả đồng bộ; dữ liệu local không thay thế nguồn sự thật trên Admin.
+- Không phá idempotency, khóa worker, hạn mức hoặc đối soát lượt Create chưa rõ; không khẳng định tránh mọi trùng với người/hệ thống đăng song song khi server không có khóa chung. Các chốt cũ theo nguồn/tiêu đề, bao gồm việc lưu bản snapshot cùng URL, phải được thay thế theo từng nhánh và kiểm thử migration trước khi tuyên bố rule đã áp dụng.
+
+```mermaid
+flowchart TD
+ A([Chuẩn bị bài]) --> B[Đồng bộ bài đã đăng]
+ B --> C{Danh sách đầy đủ?}
+ C -- Không --> D[Thông báo lỗi đối soát]
+ C -- Có --> E{Tiêu đề trùng ý?}
+ E -- Có --> F[Chọn bài khác]
+ E -- Không --> G{Nội dung trùng?}
+ G -- Có --> F
+ G -- Không --> H[Tiếp tục kiểm tra đăng]
+```
+
 ## Cập nhật 05/11/2026, 09:29 ICT
 
 - Đã bỏ phân loại riêng, ưu tiên thấp và giới hạn bảy ngày cho bài Halloween trên THINKPAD. Bài được xét như các bài khác theo đúng khung giờ và các điều kiện còn áp dụng; không tự động coi mọi bài Halloween đã sẵn sàng hoặc bảo đảm được đăng.

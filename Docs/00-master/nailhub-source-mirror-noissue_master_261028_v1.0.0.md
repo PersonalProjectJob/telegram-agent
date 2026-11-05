@@ -12,6 +12,16 @@ approved_by: "Owner — ok proceed in chat"
 
 # Tự động đăng lại bài nguồn lên Nailhub PROD
 
+## Kiểm thử chống trùng — 05/11/2026, 11:33 ICT
+
+Đã thử tích hợp kho Published và ngưỡng tiêu đề 70 trong môi trường tách biệt trên THINKPAD, **chưa bật tự động**. Candidate đạt 55 kiểm thử mô phỏng; đồng bộ Admin + HTTP 122 bài mất 65,8 giây, lượt AGY so 122 tiêu đề batch 20 mất 137,73 giây. Còn các bước xử lý lịch sử bài chuyển Draft, định danh nguồn official và bằng chứng đóng upload trước khi có thể quyết định bỏ attempt trùng an toàn. Những con số trên không phải bằng chứng kiểm thử xuất bản đầu-cuối. Chi tiết và giới hạn ở [hướng dẫn bộ lọc](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+## Quy tắc nghiệp vụ 05/11/2026, 10:50 ICT — chống trùng
+
+Owner chốt: chủ đề được lặp; tiêu đề tương đồng **từ 70/100 về ý nghĩa** với bài đang Published thì chọn bài khác; nội dung trùng bài đang Published cũng chọn bài khác. Không so với bài chỉ nằm trong kho hoặc ở Draft/Archived. Điểm ý nghĩa do mô hình đánh giá là ước lượng cần hiệu chuẩn, không phải tỷ lệ khách quan. Nguồn sự thật là danh sách Published trên Nailhub; kho đối soát local trên THINKPAD tại `/var/lib/nailhub-source-mirror/published-registry/` đã được khởi tạo một lần lúc 10:58 ngày 05/11 với 122 bài, **chưa tự đồng bộ**. Cùng nguồn không tự là trùng nội dung; còn phải qua rule tiêu đề. Quy trình, lỗi đồng bộ và giới hạn xem [hướng dẫn bộ lọc](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+**Chưa áp dụng vào worker:** code và quy trình đang được xây, kiểm thử; các chốt cũ vẫn có thể giữ bài theo nguồn hoặc tiêu đề. Không coi yêu cầu mới là đã triển khai cho đến khi có kiểm thử, đối soát kho và xác nhận bật tự động.
+
 ## Cập nhật 04/11/2026, 12:45 ICT — Sửa vòng factual HOLD
 
 - Đã sửa `original_business.py` để một factual review **HOLD hợp lệ, có issue** được để `source_quote` rỗng cho câu chưa tìm thấy bằng chứng và đi vào tối đa một vòng sửa. Mọi quote không rỗng vẫn phải là đoạn nguyên văn trong nguồn; kết quả **PASS** vẫn bắt buộc đủ quote hợp lệ cho từng câu và qua adjudication độc lập. Không chuyển HOLD thành PASS.

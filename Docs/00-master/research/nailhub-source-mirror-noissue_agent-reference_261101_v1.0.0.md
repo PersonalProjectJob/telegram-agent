@@ -9,6 +9,14 @@ owner: AlexChu
 
 # Source Mirror: Tham chiếu vận hành cho agent
 
+## Kiểm thử tích hợp 05/11/2026, 11:33 ICT
+
+Candidate cô lập `.context/dedup-unified-candidate` và staging THINKPAD `/tmp/nailhub-dedup-complete-Kn2qRTd9` chưa triển khai: 55/55 kiểm thử mô phỏng đạt; migration SQLite thử trên bản sao giữ 316 articles/36 attempts và rollback, nhưng chưa nối vào `Store`. Quét Admin 3 lượt + HTTP 122 bài mất 65,8 giây, AGY 122 tiêu đề batch 20 mất 137,73 giây (một lần thực, không Create); batch 40 trước đó lỗi chưa rõ nguyên nhân. Browser fixture đã phát hiện và thử sửa giới hạn ContextVar route. Blocker: official autostage/restage ID nguồn, official upload closure, reissue sau unpublish và clone/requeue chưa wired; chưa E2E, không bật worker. Xem [hướng dẫn bộ lọc](nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+## Quy tắc mới của Owner — 05/11/2026, 10:50 ICT
+
+Chủ đề được trùng; tiêu đề trùng ý nghĩa từ 70/100 hoặc nội dung trùng bài **Published** phải chuyển bài khác; Draft/Archived/bài trong kho không là tập đối chiếu. Kho local `/var/lib/nailhub-source-mirror/published-registry/` đã backfill một lần lúc 10:58:13 VN 05/11/2026: 122 bài, 122 URL suy ra từ slug chưa kiểm HTTP từng URL, 122 ngày, 97 URL nguồn. **Chưa có đồng bộ tự động**, phải refresh đầy đủ/ổn định trước khi dùng; không coi cache cũ là bằng chứng khi đồng bộ lỗi. Không lưu secrets. 70 là điểm mô hình ước lượng cần hiệu chuẩn, không phải xác suất hay thước đo khách quan. **Chưa bật:** `snapshot_identity`, title exact và official source cũ còn chặn; không hứa rule mới hoạt động cho đến khi thay thế từng nhánh, kiểm migration, thử đối soát và kiểm thử worker. Xem [hướng dẫn bộ lọc](nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
 ## Cập nhật 04/11/2026, 12:45 ICT — Factual HOLD và correction
 
 - `original_business.validate_factual_review` chỉ chấp nhận `source_quote` rỗng khi được gọi cho một MQM HOLD hợp lệ có issue; quote không rỗng vẫn phải khớp nguyên văn nguồn. PASS vẫn yêu cầu đầy đủ quote đúng cho từng câu, sau đó qua adjudication độc lập. Correction vẫn giới hạn một lần và không tạo PASS từ HOLD.
