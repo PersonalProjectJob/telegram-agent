@@ -22,6 +22,14 @@ SEMANTIC_INLINE=r"""root => {
 class VerificationIncomplete(RuntimeError): pass
 class BodyMediaChanged(VerificationIncomplete): pass
 
+def original_attempt_seconds(day,slot,manual_window,now,monotonic_now):
+    from .official_deadline import manual_window_seconds,seconds_available
+    if slot is None:
+        if manual_window is None:raise ValueError('slotless original requires explicit manual catch-up')
+        return manual_window_seconds(day,manual_window,now,monotonic_now)
+    if manual_window is not None:raise ValueError('manual catch-up cannot use a scheduled slot')
+    return seconds_available(day,slot,now)
+
 def body_retry_allowed(body_blocked,phase):
     return body_blocked is True and phase=='pre_create'
 
@@ -353,12 +361,12 @@ def prepare(config, store, article, attempt):
             page.on('response',watch_read)
             def require_original_time(minimum):
                 if not is_original:return
-                from .official_deadline import seconds_available
+                import time
                 data=store.db.execute('SELECT a.reserved_day,p.slot FROM attempts a JOIN attempt_phases p ON p.attempt_id=a.id WHERE a.id=?',(attempt,)).fetchone()
                 if not data:raise VerificationIncomplete('original slot evidence unavailable')
-                try:remaining=seconds_available(data['reserved_day'],data['slot'],datetime.now(ZONE))
+                try:remaining=original_attempt_seconds(data['reserved_day'],data['slot'],article.get('_manual_catchup_window'),datetime.now(ZONE),time.monotonic())
                 except ValueError as exc:raise VerificationIncomplete('original slot deadline unavailable') from exc
-                if remaining<minimum:raise VerificationIncomplete('original slot deadline elapsed')
+                if remaining<minimum or remaining<=0:raise VerificationIncomplete('original slot deadline elapsed')
             if is_original:require_original_time(350)
             # Compare rendered outgoing bodies against every published article.
             from .original_duplicate_scan import check_bodies, audited as audit_original_duplicate
@@ -381,6 +389,9 @@ def prepare(config, store, article, attempt):
             def authorize_create():
                 require_original_time(0)
                 check_scheduled_deadline()
+                if article.get('_manual_catchup_window') is not None:
+                    from .scheduled_assignments import require_manual_unpinned
+                    require_manual_unpinned(article['id'],reserved)
                 store.begin_create(attempt)
             body_blocked=[False]
             def on_body_block():body_blocked[0]=True

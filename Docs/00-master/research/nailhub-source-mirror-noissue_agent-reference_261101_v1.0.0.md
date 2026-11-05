@@ -9,6 +9,19 @@ owner: AlexChu
 
 # Source Mirror: Tham chiếu vận hành cho agent
 
+## Cập nhật 04/11/2026, 12:45 ICT — Factual HOLD và correction
+
+- `original_business.validate_factual_review` chỉ chấp nhận `source_quote` rỗng khi được gọi cho một MQM HOLD hợp lệ có issue; quote không rỗng vẫn phải khớp nguyên văn nguồn. PASS vẫn yêu cầu đầy đủ quote đúng cho từng câu, sau đó qua adjudication độc lập. Correction vẫn giới hạn một lần và không tạo PASS từ HOLD.
+- Đã cài file sau review độc lập, giữ worker lock trong stop/start; 6 test tổng hợp đạt trước và sau cài, không có `intent`/`unknown`. Bản fraud thật đã vào correction, nhưng review kế tiếp trả PASS với hai quote không có nguyên văn trong SBA; gate strict giữ bài ở **HOLD**, chưa stage/pin. Backup `/opt/nailhub-source-mirror/backups/factual-hold-fix-20261104-123838`.
+
+## Cập nhật 04/11/2026 — Đăng bù 12:00 và dự phòng
+
+- **12:00 đã đăng bù:** [Hướng dẫn vẽ móng sọc negative space với bộ sưu tập Gellux Festival Edit](https://nailhub.ai/blog/huong-dan-ve-mong-soc-negative-space-voi-bo-suu-tap-gellux-festival-edit), attempt 32, trạng thái `published`; kiểm độc lập trang khách HTTP 200, có bốn ảnh trong thân và một liên kết Scratch. Bản dịch giữ tên màu và thời gian theo nguồn. Bản kiểm MQM mới PASS sau khi xác thực lại source và provenance của generation envelope; không dùng audit cũ như PASS.
+- **Vì sao cần đăng bù:** bài Abstract được gắn 12:00 bị giữ vì chính nguồn có bước 1–5 rồi đánh số 5 lần nữa; snapshot nguồn không bị sửa. Bài Autumn được thử và giữ do MQM; bài Stripe ban đầu bị giữ sai do mạo từ tiếng Anh bị coi là phần tên sản phẩm. Validator được sửa hẹp, test và review trước khi chạy MQM mới. `slot_runs` 12:00 được đối soát từ `held` thành `published` theo attempt 32 trong transaction dưới worker lock; lịch sử attempt và notice event được giữ nguyên, không gửi thông báo thủ công. Evidence đối soát nằm trong báo cáo vận hành.
+- **Dự phòng bốn khung:** luồng gốc của khung chưa gắn bài vẫn chạy trước, bao gồm official và AI original. Nếu chỉ bị `QualityHold` trước khi tạo attempt, còn thời gian và không có slot đã reserve hoặc `intent`/`unknown`, hệ thống có thể thử tối đa ba ứng viên hợp khung chưa thử, không lấy bài đã gắn lịch. Mỗi lần vẫn qua quota, nguồn, trùng lặp và gate hiện hữu; dừng trước giờ kế tiếp 5 phút. Dự phòng không áp dụng khi kết quả đăng có thể chưa rõ và không bảo đảm mọi slot có bài. Candidate có 29 test đạt; chưa xác nhận fallback tự động đi hết publish trong slot thực.
+- **Tên màu và mùa:** phân loại bài Tartan nay không coi riêng cụm tên sản phẩm chứa “Pumpkin Juice” trong nội dung là Halloween; từ khóa mùa trong tiêu đề, URL, alt hoặc chỗ khác vẫn được kiểm. Sáu test candidate đạt; snapshot Tartan thực được kiểm lại thành `other`, hợp 12:00, vẫn `ready`; không đăng thử bài này. Khung 16:00 vẫn cần kiểm trạng thái thực tế sau khi chạy, không giả định đã đăng.
+
+
 ## Lịch hiện hành — 04/11/2026
 
 Theo giờ Việt Nam, **08:00, 16:00 và 20:00** dành cho kinh doanh, vận hành và marketing; **12:00** dành cho mẫu nail. Đây là chính sách chọn chủ đề, không bảo đảm mỗi slot có bài được đăng: ứng viên vẫn phải đạt kiểm tra nội dung, nguồn, trùng lặp, quota và thời hạn. Các mốc phân bổ khác trong những cập nhật cũ bên dưới là lịch sử tại thời điểm ghi, không phải lịch hiện hành.

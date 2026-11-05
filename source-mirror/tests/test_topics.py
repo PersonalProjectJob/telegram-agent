@@ -14,7 +14,8 @@ class TopicSelectionTests(unittest.TestCase):
     def tearDown(self):
         self.store.close();self.tmp.cleanup()
     def add(self, slug, title, body='A nail tutorial.', alt=None):
-        meta={'source_url':'https://example.com/'+slug,'title':title}
+        url=slug if slug.startswith('https://') else 'https://example.com/'+slug
+        meta={'source_url':url,'title':title}
         media=[]
         if alt is not None:
             img=io.BytesIO();Image.new('RGB',(2,2)).save(img,format='PNG')
@@ -25,29 +26,27 @@ class TopicSelectionTests(unittest.TestCase):
     def published(self, aid, day):
         self.store.db.execute("INSERT INTO attempts(article_id,reserved_day,state,published_day,created_at) VALUES (?,?,'published',?,'2026-10-29T00:00:00Z')",(aid,day,day))
         self.store.db.execute("UPDATE articles SET state='published' WHERE id=?",(aid,))
-    def test_slot_preferences_and_no_halloween_when_regular_available(self):
-        a=self.add('ghost','Halloween ghost art'); b=self.add('shop','How to build a nail salon'); c=self.add('marble','Luxury marble nails'); d=self.add('other','A short nail tutorial')
-        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00')],[c,b,d])
-        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','16:00')],[b,c,d])
+    def test_halloween_and_regular_nail_share_slot_without_overriding_business(self):
+        a=self.add('ghost','Halloween ghost nail art'); b=self.add('https://www.sba.gov/counseling/plan-your-business/','How to build a nail salon'); c=self.add('marble','Luxury marble nails'); d=self.add('other','A short nail tutorial')
+        self.assertEqual(set(r['id'] for r in candidates(self.store,'2026-10-29','12:00')),{a,c,d})
+        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','16:00')],[b])
         self.assertNotIn(a,[r['id'] for r in candidates(self.store,'2026-10-29','20:00')])
-    def test_seasonal_detected_in_body_and_seven_day_cap(self):
-        a=self.add('look','An elegant nail look','A ghost for Halloween.')
-        prior=self.add('pumpkin','Pumpkin style');self.published(prior,'2026-10-24')
-        self.assertEqual(candidates(self.store,'2026-10-29','12:00'),[])
-        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-31','12:00')],[a])
-    def test_tax_in_body_held_durably_without_attempt_or_slot(self):
-        aid=self.add('salon','Salon owner guide','Review 1099 payroll and IRS tax obligations.')
-        self.assertEqual(candidates(self.store,'2026-10-29','12:00'),[])
-        self.store.hold('https://example.com/salon','recrawl failure')
-        self.store.add_ready('https://example.com/salon','Salon owner guide')
-        row=self.store.db.execute('SELECT state,reason FROM articles WHERE id=?',(aid,)).fetchone()
-        self.assertEqual(row['state'],'held');self.assertTrue(row['reason'].startswith('topic:'))
+    def test_published_halloween_no_longer_imposes_seven_day_cap(self):
+        a=self.add('look','Halloween ghost nail art','A ghost for Halloween.')
+        prior=self.add('pumpkin','Pumpkin nails');self.published(prior,'2026-10-24')
+        for cap in (0,1):
+            self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00',config={'topics':{'halloween_max_per_7_days':cap}})],[a])
+    def test_tax_business_requires_official_source_and_keeps_untrusted_ready(self):
+        aid=self.add('salon','Nail salon owner business guide','Review 1099 payroll and IRS tax obligations.')
+        trusted=self.add('https://www.sba.gov/counseling/plan-your-business/','Nail salon owner business guide','Review 1099 payroll and IRS tax obligations.')
+        self.assertEqual([row['id'] for row in candidates(self.store,'2026-10-29','16:00')],[trusted])
+        self.assertEqual(self.store.db.execute('SELECT state FROM articles WHERE id=?',(aid,)).fetchone()[0],'ready')
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM attempts').fetchone()[0],0)
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM slots').fetchone()[0],0)
-    def test_scan_beyond_eight_seasonal_candidates(self):
-        good=self.add('classy','Luxury nail look')
-        for n in range(12): self.add('ghost'+str(n),'Halloween ghost '+str(n))
-        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00')],[good])
+    def test_halloween_candidates_not_suppressed_by_regular_article(self):
+        good=self.add('classy','Luxury nails')
+        ghosts={self.add('ghost'+str(n),'Halloween ghost nails '+str(n)) for n in range(12)}
+        self.assertEqual(set(r['id'] for r in candidates(self.store,'2026-10-29','12:00',limit=None)),ghosts|{good})
     def test_terms_are_whole_words_and_tax_precedence(self):
         self.assertEqual(classify('Nail tip texture inspiration'),'other')
         self.assertEqual(classify('Halloween nail salon tax guide'),'tax_review')
@@ -65,14 +64,15 @@ class TopicSelectionTests(unittest.TestCase):
         for tag in ('TaxTips', 'khai_thue'):
             payload['hashtags']=[tag]
             self.assertTrue(payload_contains_tax(payload))
-    def test_seasonality_in_media_alt_is_not_selected_over_regular_article(self):
-        self.add('elegant','Elegant manicure',alt='Halloween ghost nail')
+    def test_halloween_in_media_alt_does_not_suppress_article(self):
+        elegant=self.add('elegant','Elegant manicure',alt='Halloween ghost nail')
         clean=self.add('classic','Classic nail design')
-        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00')],[clean])
-    def test_policy_can_disable_halloween_and_cannot_disable_tax_review(self):
-        self.add('ghost','Halloween ghost')
-        self.assertEqual(candidates(self.store,'2026-10-29','12:00',config={'topics':{'halloween_max_per_7_days':0}}),[])
-        for bad in ({'us_tax_requires_human_review':False},{'halloween_max_per_7_days':2},{'halloween_max_per_7_days':True},{'unknown':1}):
+        self.assertEqual(set(r['id'] for r in candidates(self.store,'2026-10-29','12:00')),{clean,elegant})
+    def test_legacy_halloween_option_has_no_effect_and_tax_policy_stays_strict(self):
+        aid=self.add('ghost','Halloween ghost nails')
+        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00',config={'topics':{'halloween_max_per_7_days':0}})],[aid])
+        self.assertEqual([r['id'] for r in candidates(self.store,'2026-10-29','12:00',config={'topics':{'us_tax_requires_human_review':False}})],[aid])
+        for bad in ({'us_tax_requires_human_review':'yes'},{'halloween_max_per_7_days':2},{'halloween_max_per_7_days':True},{'unknown':1}):
             with self.subTest(bad=bad),self.assertRaises(ValueError):
                 candidates(self.store,'2026-10-29','12:00',config={'topics':bad})
 

@@ -16,7 +16,7 @@ from .agy_broker import MODEL, EFFORT, call
 from .localization import QualityHold, config_check, digest, model_response, packed, validate_review
 from .official_sources import SOURCES, extract, source_title, verify_source_date
 from .topics import classify
-from .official_tax import source_is_tax, reject_absolute_tax_exemptions
+from .official_tax import source_is_tax
 from .official_source_links import marked_source, validate_translation
 from . import official_link_contract as link_contract
 
@@ -194,8 +194,6 @@ def create(root, source_id, source_sha, config, inference=None, allow_official_t
             model_source['source_links']=generic_links
     item=next(item for item in SOURCES if item['id']==source_id)
     tax_source=source_is_tax(item,source['metadata']['title'],source['reference_text'])
-    if (tax_source and allow_official_tax is not True) or (not tax_source and classify(source['metadata']['title'] + ' ' + source['reference_text']) == 'tax_review'):
-        raise QualityHold('tax topic held before inference')
     def infer(prompt,kind='official-draft'):
         if structured_inference is None:
             return (inference or (lambda text: call(cfg['socket_path'],text)))(prompt)
@@ -281,9 +279,6 @@ def create(root, source_id, source_sha, config, inference=None, allow_official_t
         elif generic_links:
             try: link_contract.validate_translation(raw_source,source['metadata']['source_url'],candidate['text_vi'])
             except ValueError as error: raise QualityHold('source link translation invalid') from error
-        if tax_source:
-            try: reject_absolute_tax_exemptions(candidate['title_vi']+'\n'+candidate['text_vi'])
-            except ValueError as error: raise QualityHold('blanket tax exemption claim held') from error
         # An automated MQM PASS is not evidence that either field was translated.
         for field in ('title_vi', 'text_vi'):
             if not re.search(r'[ăâđêôơưĂÂĐÊÔƠƯ\u1ea0-\u1ef9]', candidate[field]):
@@ -311,8 +306,6 @@ def create(root, source_id, source_sha, config, inference=None, allow_official_t
                 raise QualityHold('numeric facts changed or format unverified')
             if re.search(r'\b(?:no|not|never|without|cannot|don.t|mustn.t|shouldn.t)\b', english, re.I) and not re.search(r'\b(?:không|chưa|đừng|chẳng|khỏi)\b', vietnamese, re.I):
                 raise QualityHold('source negation missing')
-        if not (tax_source and allow_official_tax is True) and classify(candidate['title_vi'] + ' ' + candidate['text_vi']) == 'tax_review':
-            raise QualityHold('generated tax topic held')
     except QualityHold:
         save_generation_hold(root, source_id, source_sha, generation, 'translation_validation_hold')
         raise

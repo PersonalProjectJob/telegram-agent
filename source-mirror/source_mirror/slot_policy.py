@@ -15,6 +15,38 @@ _NAIL=re.compile(r'\b(?:nails|manicure|manicurist|pedicure|nail[ -]+(?:art|desig
 _NON_BEAUTY=re.compile(r'\b(?:nail[ -]+guns?|carpent(?:er|ry)|roofing|fasteners?)\b',re.I)
 _BUILD_TECHNIQUE=re.compile(r'\b(?:build|building|built|construct|constructing)\s+(?:(?!(?:salons?|business(?:es)?|studios?|shops?)\b)[a-z][a-z-]*\s+){0,6}(?:nails?|manicures?|nail[ -]+extensions?)\b(?!\s+(?:salons?|business(?:es)?|studios?|shops?))',re.I)
 _TECHNIQUE_BODY=re.compile(r'\bstep\s+1\b.{0,300}\b(?:paint|gel[ -]+polish|top[ -]+coat|nail[ -]+art)\b|\bnail[ -]+art[ -]+tutorial\b|\bapply.{0,35}(?:gel[ -]+polish|top[ -]+coat)\b|các\s+bước\s+vẽ',re.I|re.S)
+
+# These are preference signals, not eligibility rules: an unclassified or
+# differently classified business article remains a valid fallback.
+_SUBTOPIC_PATTERNS={
+ 'operations':re.compile(r'\b(?:operations?|workflow|scheduling|appointments?|inventory|supplies|training|employees?|staff(?:ing)?|customer[ -]+service|client[ -]+experience|workplace|salon[ -]+management|managing[ -]+(?:a[ -]+|your[ -]+)?(?:nail[ -]+)?salon)\b|vận\s+hành|quy\s+trình|lịch\s+hẹn|nhân\s+viên|đào\s+tạo|vật\s+tư|chăm\s+sóc\s+khách',re.I),
+ 'marketing':re.compile(r'\b(?:marketing|advertis(?:e|ing)|promotion|promotions|branding|brand[ -]+awareness|social[ -]+media|customer[ -]+retention|client[ -]+retention|loyalty|referrals?|attract(?:ing)?[ -]+(?:new[ -]+)?(?:clients?|customers?))\b|tiếp\s+thị|quảng\s+cáo|thương\s+hiệu|khuyến\s+mãi|giữ\s+chân\s+khách|thu\s+hút\s+khách|mạng\s+xã\s+hội',re.I),
+ 'growth':re.compile(r'\b(?:growth|grow(?:ing)?|expand(?:ing|sion)?|scal(?:e|ing)|business[ -]+plan(?:ning)?|capital|funding|financ(?:e|ing)|opening|launch(?:ing)?|location|pricing|new[ -]+services?)\b|phát\s+triển|tăng\s+trưởng|mở\s+rộng|kế\s+hoạch\s+kinh\s+doanh|vốn|địa\s+điểm|định\s+giá|mở\s+tiệm',re.I),
+}
+SLOT_SUBTOPICS={'08:00':'operations','16:00':'marketing','20:00':'growth'}
+
+def subtopics(title,context=''):
+ """Use title signals first; inspect body only if title has no signals."""
+ title=title if isinstance(title,str) else ''
+ context=context if isinstance(context,str) else ''
+ found={name for name,pattern in _SUBTOPIC_PATTERNS.items() if pattern.search(title)}
+ if found:return found
+ return {name for name,pattern in _SUBTOPIC_PATTERNS.items() if pattern.search(context[:3000])}
+
+def subtopic_rank(title,context,slot):
+ """0 for preferred subtopic, 1 for fallback; never disqualify a business."""
+ target=SLOT_SUBTOPICS.get(slot)
+ return 0 if target and target in subtopics(title,context) else 1
+
+def priority_for_article(store,article,slot):
+ """Read the authenticated snapshot; preserve fallback if signals are absent."""
+ from .store import verify_snapshot
+ from .localization import source_text
+ import json
+ folder=verify_snapshot(store.root,article['id'])
+ metadata=json.loads((folder/'metadata.json').read_text(encoding='utf-8'))
+ blocks=json.loads((folder/'content.json').read_text(encoding='utf-8'))
+ return subtopic_rank(metadata.get('title'),source_text(blocks),slot)
 def title_kind(title,context=''):
  if not isinstance(title,str) or not title.strip() or _NON_BEAUTY.search(title):return 'unknown'
  context=context if isinstance(context,str) else ''

@@ -79,22 +79,53 @@ def require_deadline(day, slot, *, clock=None):
     now = (clock or (lambda: datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))))()
     if now.tzinfo is None: raise ScheduleInvalid('clock requires timezone')
     local = now.astimezone(ZoneInfo('Asia/Ho_Chi_Minh'))
-    if slot != '12:00' or local.date().isoformat() != day or not ('12:00' <= local.strftime('%H:%M') < '16:00'):
+    windows={'08:00':('08:00','11:55'),'12:00':('12:00','15:55'),'16:00':('16:00','19:55'),'20:00':('20:00','23:55')}
+    if slot not in windows or local.date().isoformat() != day or not (windows[slot][0] <= local.strftime('%H:%M') < windows[slot][1]):
         raise ScheduleInvalid('assigned slot window expired')
+
+MAX_FALLBACKS = 3
+
+def require_manual_unpinned(article_id,day,*,loader=load):
+    mapping=loader()
+    if any(aid==article_id and assigned_day>=day for (assigned_day,_),aid in mapping.items()):
+        raise ScheduleInvalid('manual article is assigned to a current or future slot')
 
 def run_slot(cfg, store, day, slot, once, *, before=lambda: None, loader=load, clock=None):
     """Never creates intent: delegates to existing guarded once under caller's lock."""
     mapping = loader()
     aid = mapping.get((day, slot))
-    if aid is None:
-        before()
-        return once(cfg, store, day, slot)
-    require_deadline(day,slot,clock=clock)
+    if aid is not None:require_deadline(day,slot,clock=clock)
     before()
-    now_after = (clock or (lambda: datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))))()
-    if now_after.tzinfo is None:
-        raise ScheduleInvalid("clock requires timezone")
-    local_after = now_after.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
-    if local_after.date().isoformat() != day or not ("12:00" <= local_after.strftime("%H:%M") < "16:00"):
-        raise ScheduleInvalid("assigned slot window expired")
-    return once(cfg, store, day, slot, requested_article_id=aid, scheduled_guard=True)
+    if aid is not None:require_deadline(day,slot,clock=clock)
+    from .localization import QualityHold
+    from .topics import candidates
+
+    def no_attempts_since(baseline):
+        if store.db.execute("SELECT 1 FROM attempts WHERE state IN ('intent','unknown') LIMIT 1").fetchone():
+            raise ScheduleInvalid('fallback blocked by unresolved attempt')
+        if store.db.execute('SELECT 1 FROM slots WHERE day=? AND slot=?',(day,slot)).fetchone():
+            raise ScheduleInvalid('fallback blocked by reserved slot')
+        current=tuple(store.db.execute('SELECT count(*), COALESCE(MAX(id),0) FROM attempts').fetchone())
+        if current!=baseline:
+            raise ScheduleInvalid('fallback blocked by new attempt')
+
+    baseline=tuple(store.db.execute('SELECT count(*), COALESCE(MAX(id),0) FROM attempts').fetchone())
+    attempted=set()
+    try:
+        if aid is None:return once(cfg,store,day,slot,attempted_ids=attempted)
+        return once(cfg, store, day, slot, requested_article_id=aid, scheduled_guard=True,attempted_ids=attempted)
+    except QualityHold:
+        no_attempts_since(baseline)
+    require_deadline(day,slot,clock=clock)
+    # Never consume any article assigned to a scheduled slot, including future
+    # pins. The existing candidate selector enforces topic and seasonal policy.
+    pinned=set(mapping.values())
+    alternatives=[x['id'] for x in candidates(store,day,slot,limit=None,config=cfg) if x['id'] not in pinned and x['id'] not in attempted][:MAX_FALLBACKS]
+    for candidate in alternatives:
+        no_attempts_since(baseline)
+        require_deadline(day,slot,clock=clock)
+        try:
+            return once(cfg, store, day, slot, requested_article_id=candidate, scheduled_guard=True,attempted_ids=attempted)
+        except QualityHold:
+            no_attempts_since(baseline)
+    raise QualityHold('scheduled flow and bounded alternatives held')

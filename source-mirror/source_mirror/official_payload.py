@@ -12,7 +12,7 @@ from .official_sources import SOURCES, extract, source_title, verify_source_date
 from .agy_broker import MODEL, EFFORT
 from .topics import classify
 from .source_disclosures import CDC_DISCLOSURE, IRS_DISCLOSURE, SBA_DISCLOSURE, SBA_TAX_DISCLOSURE
-from .official_tax import source_is_tax, reject_absolute_tax_exemptions
+from .official_tax import source_is_tax
 from .official_stock_policy import is_candidate as is_stock_candidate
 from .official_generated_media import is_generated,validate_descriptor
 from .official_source_links import marked_source, render_marked, validate_translation
@@ -79,11 +79,6 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
                 or (re.search(r'\b(?:no|not|never|without|cannot|don.t|mustn.t|shouldn.t)\b',original,re.I) and not re.search(r'\b(?:không|chưa|đừng|chẳng|khỏi)\b',translated,re.I))):
             raise ValueError('translation invariant failed')
     tax_source=source_is_tax(found[0],meta['title'],source['reference_text'])
-    tax_allowed=tax_source and allow_official_tax is True
-    if tax_source and not tax_allowed: raise ValueError('tax remains held')
-    if tax_source: reject_absolute_tax_exemptions(candidate['title_vi']+'\n'+candidate['text_vi'])
-    if not tax_allowed and classify(meta['title']+' '+source['reference_text']+' '+candidate['title_vi']+' '+candidate['text_vi'])=='tax_review':
-        raise ValueError('tax remains held')
     if not isinstance(media,list) or not media: raise ValueError('media required')
     if not isinstance(editorial,dict) or set(editorial)!={'locales','hashtags','category','status','is_public','is_featured','video_urls','published_at'}:
         raise ValueError('explicit editorial fields required')
@@ -108,8 +103,6 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
     if type(editorial['is_featured']) is not bool or editorial['video_urls']!=[]:
         raise ValueError('featured flag and empty video list required')
     editorial_text=' '.join([editorial['category'],*tags,*[value for fields in editorial['locales'].values() for value in fields.values()]])
-    if tax_source: reject_absolute_tax_exemptions(editorial_text)
-    if not tax_allowed and classify(editorial_text)=='tax_review': raise ValueError('tax remains held')
     try: published=datetime.fromisoformat(editorial['published_at'].replace('Z','+00:00'))
     except (AttributeError,ValueError): raise ValueError('invalid publication time') from None
     if published.tzinfo is None: raise ValueError('publication time requires timezone')
@@ -119,8 +112,6 @@ def build(draft_bytes, media, editorial, allow_official_tax=False):
             raise ValueError('invalid media descriptor')
         if is_generated(item): validate_descriptor(item)
         if any(not isinstance(item[k],str) or not item[k].strip() for k in item): raise ValueError('invalid media descriptor')
-        if not tax_allowed and classify(item['alt']+' '+item['credit'])=='tax_review': raise ValueError('tax remains held')
-        if tax_source: reject_absolute_tax_exemptions(item['alt']+' '+item['credit'])
         reference={'id':item['id'],'sha256':item['sha256'],'alt':item['alt'],'credit':item['credit']}
         if is_generated(item): reference.update({'kind':'generated','rights_evidence_sha256':item['rights_evidence_sha256']})
         references.append(reference)

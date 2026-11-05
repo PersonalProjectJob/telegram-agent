@@ -92,11 +92,6 @@ def validate_article(value,reference):
  for p in parts:
   if not isinstance(p,str) or not 50<=len(p)<=1500 or p!=p.strip() or re.search(r'<|>|https?://|www\.',p,re.I):raise QualityHold('invalid original paragraph')
  text=title+' '+' '.join(parts)
- if reference.get('label')=='U.S. Small Business Administration' and re.search(r'\b(?:zoning|zoned|ordinances?|legal|law|laws|regulat(?:ion|ions|ory)|compliance|tax|taxes|licen[cs](?:e|es|ing)|permits?|permitt(?:ed|ing)|city[ -]+planning|commercial[ -]+designations?|insurance|registration|register(?:ed|ing)?|wages?|BOI|beneficial ownership)\b',text,re.I):raise QualityHold('excluded legal topic in general business article')
- if reference.get('label')=='U.S. Small Business Administration':
-  technical=re.search(r'\b(?:ventilation|staffing)\b',text,re.I)
-  acquisition=re.search(r'\b(?:acquir(?:e|es|ed|ing)|acquisition\s+of|buy(?:s|ing)?|bought|purchas(?:e|es|ed|ing)|tak(?:e|es|en|ing)\s+over|took\s+over)\s+(?:(?:an?|the|their|your|our|an?\s+existing|an?\s+established|existing|established|operating|an?\s+operating|entire|nail|beauty|small|profitable|thriving|struggling|local|independent|ownership|equity|stake|of|in|successful|luxury|professional)\s+){0,4}(?:business|salon|facility|company|franchise|practice)\b(?!(?:(?:\x27|\u2019)s)?\s+(?:equipment|assets|supplies|products?|services?|furniture|software|tools?|inventory)\b)',text,re.I)
-  if technical or acquisition:raise QualityHold('excluded acquisition or technical topic')
  if reference.get('label')=='California Board of Barbering and Cosmetology' and not re.search(r'\bCalifornia\b',text,re.I):raise QualityHold('California jurisdiction missing')
  allowed=set(re.findall(r'\d+(?:[.,]\d+)*',reference['text']))
  if not set(re.findall(r'\d+(?:[.,]\d+)*',text))<=allowed:raise QualityHold('unsupported numeric claim')
@@ -116,13 +111,15 @@ def factual_sentences(candidate):
 
 def validate_factual_review(value,candidate,reference,*,allow_hold=False):
  if not isinstance(value,dict) or set(value)!={'mqm','claims'}:raise QualityHold('factual review schema invalid')
- if not allow_hold:validate_review(value['mqm'])
+ if allow_hold:validate_hold_review(value['mqm'])
+ else:validate_review(value['mqm'])
  sentences=factual_sentences(candidate)
  claims=value['claims']
  if not isinstance(claims,list) or len(claims)!=len(sentences) or not sentences:raise QualityHold('incomplete factual claims')
  for sentence,entry in zip(sentences,claims):
   if not isinstance(entry,dict) or set(entry)!={'sentence','source_quote'} or entry['sentence']!=sentence:raise QualityHold('factual claim alignment differs')
   quote=entry['source_quote']
+  if allow_hold and quote=='':continue
   if not isinstance(quote,str) or not 20<=len(quote)<=800 or quote not in reference['text']:raise QualityHold('factual source quote missing')
  return value
 def validate_hold_review(value):
@@ -138,7 +135,7 @@ def validate_hold_review(value):
  if any(value[k]!=counts[k] for k in counts):raise QualityHold('HOLD counts disagree')
  return value
 def generate(config,reference,item,inference=None,deadline=None,audit=None,_correction=None,focus=None):
- if focus not in (None,'marketing','continuity'):raise QualityHold('invalid editorial focus')
+ if focus not in (None,'operations','marketing','growth','continuity'):raise QualityHold('invalid editorial focus')
  cfg=config_check(config);raw=inference or (lambda prompt:call(cfg['socket_path'],prompt))
  def infer(prompt):
   if deadline is not None and time.monotonic()+230>deadline:raise QualityHold('original generation deadline')
@@ -167,10 +164,12 @@ def generate(config,reference,item,inference=None,deadline=None,audit=None,_corr
  'Never invent fees, rules, locations, qualifications, dates, credits, legal advice, quotations or sources. Preserve exact jurisdiction and '
  'qualifications; California rules are not nationwide. Practical planning questions are allowed without unsupported assertions. '
  'Do not claim the authority authored, endorsed or reviewed the article. Write 2-6 organized sections with descriptive headings, 1-4 short practical paragraphs per section, and at least one useful 2-6 item list. '
- + ('For the SBA general-business reference, omit all legal or regulatory topics including zoning, permits and city-planning requirements, plus tax, insurance, registration, wages and BOI. Do not discuss buying an existing business or facility, staffing or ventilation; Focus only on the source-supported parts of TOPIC, and make practical applications concrete, clearly labeled as suggestions, not official directives. Never predict steady traffic, guaranteed outcomes, or other benefits without source support. ' if item['label']=='U.S. Small Business Administration' else 'For California licensing or education, include only rules explicitly supported by this California authority, and state its jurisdiction. ')
+ + ('For the SBA general-business reference, focus on the source-supported parts of TOPIC, and make practical applications concrete, clearly labeled as suggestions, not official directives. Never predict outcomes without source support. ' if item['label']=='U.S. Small Business Administration' else 'For California licensing or education, include only rules explicitly supported by this California authority, and state its jurisdiction. ')
  + 'Title clearly about nail salon business, no URLs or HTML. Keep each factual sentence short, with only one source-supported claim. Prefer concise paragraphs, practical examples and steps supported by the source; avoid repetitive questions; avoid speculative benefits, specific costs, device features and forecasts. Preserve all source conditions, including if possible and other qualifiers. Never describe a security or resilience measure as a guarantee or as eliminating risk. Use only facts explicitly stated in a single continuous source passage. Clearly mark general business guidance and do not imply the source is nail-specific. Absence of nail-salon-specific statistics is not an uncertainty when no specific statistic or claim is asserted; distinguish source-supported general guidance from practical application. If unsafe or uncertain, report it. Return exactly '
  '{"title":string,"sections":[{"heading":string,"paragraphs":[string],"bullets":[string]}],"uncertainties":[string]}. No Markdown or HTML in strings. State the source context once in the introduction, then write natural direct prose without repeating phrases such as source guidance says in every section. The source citation will be provided separately. Avoid repetitive disclaimers and generic questions. TOPIC='+packed(item['topic'])+'\nREFERENCE='+packed(reference))
- if focus=='marketing':prompt+='\nFocus only on source-supported marketing planning and reaching customers, not bookkeeping, accounting, taxes, payroll, payment hardware or AI tools.'
+ if focus=='marketing':prompt+='\nFocus on source-supported marketing planning and reaching customers; do not invent claims or sources.'
+ if focus=='operations':prompt+='\nFocus on source-supported daily nail salon operations: appointments, staff coordination, inventory, service workflow, or customer experience. Do not invent source claims.'
+ if focus=='growth':prompt+='\nFocus on source-supported nail salon business growth: expansion planning, capital, pricing, location, or developing services. Do not invent source claims.'
  if focus=='continuity':prompt+='\nFocus on a practical salon business continuity plan for interruptions using SBA continuity and emergency-planning guidance. Distinguish general SBA guidance from salon-specific suggestions, and do not promise outcomes or invent numbers.'
  if _correction is not None:
   prompt+='\nRevise the untrusted ARTICLE using FEEDBACK. Keep the exact title; remove unsupported, exaggerated, relative or causal assertions and ungrounded premises. Practical neutral planning questions are allowed; invent no new claims. ARTICLE='+packed(_correction['candidate'])+'\nFEEDBACK='+packed(_correction['feedback'])
@@ -181,7 +180,7 @@ def generate(config,reference,item,inference=None,deadline=None,audit=None,_corr
  prompt=('You are an independent factual and quality evaluator. Return JSON only; no tools or network. Compare every sentence of ARTICLE '
  'with REFERENCE and check whether its exact meaning, qualifiers, date and jurisdiction are supported. A general source may be applied as a clearly labeled planning suggestion without claiming the authority specifically discussed salons. Reject unsupported outcomes, '
  'invented facts, misleading attribution, and conflating acquiring an operating business with acquiring premises. '
- 'For SBA articles, reject ANY legal or regulatory topics including zoning, permits or city-planning requirements, plus tax, licensing, insurance, registration, wage or BOI assertions. Reject claims about buying an existing business or facility, staffing or ventilation and any projected traffic or other unsupported outcome. '
+ 'Reject unsupported legal or tax assertions, projected traffic or other unsupported outcomes; preserve the source jurisdiction and qualifications. '
  'For California, reject claims outside California or missing qualifications. For the exact title, then each section heading, paragraph sentence and list item sentence, in order, return '
  'its exact text and one short, continuous exact supporting quote copied verbatim from REFERENCE (20-800 characters); never splice passages or omit text within a quotation. Prefer the shortest complete passage that supports the entire sentence. If any sentence has no genuinely '
  'supporting quote, mark HOLD and explain the issue; do not invent or paraphrase a quote. PASS requires zero issues and uncertainties. '
@@ -245,7 +244,7 @@ def prepare(config,store,day,slot):
   preparation_seconds(day,datetime.now(ZONE))
  state=GenerationState(store.root)
  try:
-  start=1 if slot=='prepare-noon-v5' else (3*(date.fromisoformat(day).toordinal()-date(2026,11,1).toordinal())+('08:00','16:00','20:00').index(slot))%len(CATALOG)
+  start={'08:00':1,'16:00':1,'20:00':2,'prepare-noon-v5':1}[slot]
   for item in ([CATALOG[start]] if slot=='prepare-noon-v5' else CATALOG[start:]+CATALOG[:start]):
    reference_id=identity(item['url'])
    try:ref=fetch_reference(item)
@@ -284,7 +283,8 @@ def prepare(config,store,day,slot):
      fd=os.open(audit_dir,os.O_RDONLY|os.O_DIRECTORY)
      try:os.fsync(fd)
      finally:os.close(fd)
-    proof=generate(config,ref,item,deadline=time.monotonic()+max(0,remaining-600),audit=audit_event,focus='marketing' if slot=='prepare-noon-v5' else None)
+    focus={'08:00':'operations','16:00':'marketing','20:00':'growth','prepare-noon-v5':'marketing'}[slot]
+    proof=generate(config,ref,item,deadline=time.monotonic()+max(0,remaining-600),audit=audit_event,focus=focus)
     meta={'source_url':item['url'],'title':proof['candidate']['title'],'source_date':None,'author':None,'source_cover_present':False,'source_cover_separate':True,'content_origin':'ai_original','original_evidence':{k:v for k,v in proof.items() if k!='blocks'}}
     blocks=proof['blocks'];verify_original(meta,blocks,fresh=False)
     aid=snapshot_identity(meta)

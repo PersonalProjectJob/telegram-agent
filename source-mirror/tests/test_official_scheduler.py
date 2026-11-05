@@ -65,6 +65,15 @@ class SchedulerTests(unittest.TestCase):
             self.assertFalse(try_once(self.f.store,'2026-11-01','12:00'))
         self.assertEqual(self.f.store.db.execute('SELECT state FROM articles WHERE id=?',(self.aid,)).fetchone()[0],'published')
         self.assertEqual(self.f.store.db.execute('SELECT count(*) FROM attempts').fetchone()[0],1)
+    def test_priority_reads_real_official_evidence_not_article_snapshot(self):
+        result={'verified':True,'url':'https://nailhub.ai/blog/fixture','published_day':'2026-11-01'}
+        with patch('source_mirror.official_store.OFFICIAL_RESERVATION_ENABLED',True),patch('source_mirror.official_scheduler.load_publish_policy',return_value=self.policy), \
+             patch('source_mirror.official_publisher.available',return_value=True),patch('source_mirror.official_publisher.publish',return_value=result), \
+             patch('source_mirror.slot_policy.subtopic_rank',return_value=1) as rank:
+            self.assertFalse(try_once(self.f.store,'2026-11-01','08:00',priority=0))
+            self.assertEqual(self.f.store.db.execute('SELECT count(*) FROM attempts').fetchone()[0],0)
+            self.assertTrue(try_once(self.f.store,'2026-11-01','08:00',priority=1))
+            self.assertEqual(rank.call_count,2)
     def test_mock_post_failure_remains_unknown_not_retried(self):
         with patch('source_mirror.official_store.OFFICIAL_RESERVATION_ENABLED',True),patch('source_mirror.official_scheduler.load_publish_policy',return_value=self.policy), \
              patch('source_mirror.official_publisher.available',return_value=True),patch('source_mirror.official_publisher.publish',side_effect=TimeoutError):

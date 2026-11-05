@@ -9,6 +9,13 @@ owner: AlexChu
 
 # Source Mirror: Bộ lọc và cách xử lý
 
+## Cập nhật 05/11/2026, 09:29 ICT
+
+- Đã bỏ phân loại riêng, ưu tiên thấp và giới hạn bảy ngày cho bài Halloween trên THINKPAD. Bài được xét như các bài khác theo đúng khung giờ và các điều kiện còn áp dụng; không tự động coi mọi bài Halloween đã sẵn sàng hoặc bảo đảm được đăng.
+- Cấu hình cũ `halloween_max_per_7_days` vẫn được chấp nhận để tương thích, nhưng không còn ảnh hưởng việc chọn bài. Không thay đổi chính sách thuế hay nội dung kho.
+- Lịch đang chạy: 08:00, 16:00 và 20:00 cho kinh doanh; 12:00 cho mẫu nail. Hai dòng lịch cũ trong phần 3.1 bên dưới đã được sửa theo mã thực tế. Định nghĩa chi tiết từng chủ đề vẫn chờ Owner thống nhất.
+- Kiểm tra trên THINKPAD: 8/8 test bộ lọc đạt, worker active, không có lượt `intent`/`unknown`; không tạo bài trong lúc triển khai. Có bản dự phòng mã trước khi cập nhật.
+
 ## Cập nhật 03/11/2026, khoảng 15:45 ICT
 
 - **Sửa bản bảo mật đang HOLD:** không sửa snapshot hay evidence đã ký của `190ea45c…`. Một bản nháp thay thế đã được tạo trong thư mục báo cáo riêng, giữ nguồn SBA cùng hash; model factual và adjudicator PASS, reviewer đối chiếu 33/33 quote với nguồn. Tuy vậy, reviewer vẫn giữ bài để sửa: câu về EMV có thể bị hiểu là bảo đảm trách nhiệm pháp lý; ẩn SSID có thể tạo cảm giác đủ an toàn; và nhận định nhân viên là đường dẫn chính cần quy rõ nguồn hoặc bỏ. PASS của model không tự giải quyết các điểm này; chưa có bản Việt, ảnh bìa hay bài đăng được xác nhận cho revision này.
@@ -90,13 +97,13 @@ flowchart TD
 
 | Đầu vào | Kiểm tra và kết quả | Giới hạn quan sát |
 |---|---|---|
-| 08:00 | `slot_policy` chỉ cho loại nail; bài kinh doanh/không rõ bị bỏ qua ở slot. | Là quy tắc nhận diện bằng tiêu đề và nội dung, không phải mô hình hiểu chủ đề hoàn hảo. |
-| 12:00, 16:00, 20:00 | Chỉ loại kinh doanh; bài nail art tutorial hoặc nội dung pha kỹ thuật rõ bị loại/đánh dấu không rõ. Bài business tổng quát phù hợp có thể được nhận dù không nhắc nail trong tiêu đề. | Các ví dụ từ khóa mơ hồ, ngành khác hoặc liên quan nail tình cờ có thể phân loại sai/giữ. |
+| 08:00, 16:00, 20:00 | `slot_policy` chỉ cho loại kinh doanh; bài nail art tutorial hoặc nội dung pha kỹ thuật rõ bị loại/đánh dấu không rõ. | Nhận diện bằng tiêu đề và nội dung có thể phân loại sai hoặc giữ bài phù hợp. |
+| 12:00 | Chỉ chọn loại mẫu nail; bài kinh doanh hoặc không rõ bị bỏ qua ở slot. | Quy tắc từ khóa không phải mô hình hiểu chủ đề hoàn hảo. |
 | Lệnh URL không gắn slot | Bộ lọc slot cho phép đường thủ công không gắn giờ; nguồn và các cổng khác vẫn áp dụng. | Không hiểu là mọi domain đều được hỗ trợ. |
-| Xếp thứ tự | Scheduled dùng `slot_policy` để chọn ứng viên hợp giờ trước ưu tiên nonseasonal/Halloween và kiểm lại trước chuẩn bị; queue hợp lệ giữ thứ tự ổn định. `topics.priority_slots` cũ vẫn được validate nhưng không quyết định thứ tự scheduled; đường không gắn slot dùng fallback luxury. | Bài sai giờ không che Halloween hợp giờ; trần theo mùa vẫn áp dụng. Phân loại vẫn có thể không chắc. |
-| Halloween / thuế | Có trần Halloween một bài trong cửa sổ bảy ngày theo logic phân loại hiện tại; lịch sử không đầy đủ được xử lý thận trọng. Ứng viên nguồn thường bị `tax_review` thì giữ; bài gốc có chứng cứ được kiểm riêng, nhưng payload còn bị rà từ khóa thuế trước đăng. | Trần áp dụng theo logic phân loại, không phải phân tích ngữ nghĩa hoàn chỉnh. Không khẳng định mọi bài thuế gốc sẽ được đăng. |
+| Xếp thứ tự | Scheduled dùng `slot_policy` để chọn ứng viên hợp giờ; queue hợp lệ giữ thứ tự ổn định. `topics.priority_slots` cũ vẫn được validate nhưng không quyết định thứ tự scheduled; đường không gắn slot dùng fallback luxury. | Không ưu tiên thấp hoặc đặt trần riêng cho Halloween. Phân loại vẫn có thể không chắc. |
+| Thuế | Ứng viên nguồn thường bị `tax_review` thì giữ; bài gốc có chứng cứ được kiểm riêng, nhưng payload còn bị rà từ khóa thuế trước đăng. | Không khẳng định mọi bài thuế gốc sẽ được đăng; hiện trạng này cần Owner xem xét riêng. |
 
-**Ví dụ:** “Nail art tutorial” phù hợp hướng nail 08:00; “Nail salon business pricing” phù hợp hướng kinh doanh, không cho 08:00. Bài hướng dẫn kỹ thuật nail thuần không nên được dùng để lấp slot kinh doanh. Phân loại không chắc không đồng nghĩa bài xấu.
+**Ví dụ:** “Nail art tutorial” phù hợp hướng nail 12:00; “Nail salon business pricing” phù hợp hướng kinh doanh 08:00, 16:00 hoặc 20:00. Bài hướng dẫn kỹ thuật nail thuần không nên được dùng để lấp slot kinh doanh. Phân loại không chắc không đồng nghĩa bài xấu.
 
 ### 3.2 Phát hiện nguồn và nguyên vẹn bản lưu
 

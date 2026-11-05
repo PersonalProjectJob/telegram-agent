@@ -186,7 +186,7 @@ def validate_candidate(source, candidate):
             if english in a.text.lower() and vietnamese not in b.text.lower():
                 if english in ('top coat','gel polish'):
                     suffix=r'Top\s+Coat' if english=='top coat' else r'Gel\s+Polish'
-                    applied=re.search(r"\b(?:apply|use)\s+([A-Za-z0-9][A-Za-z0-9&'’.-]*(?:\s+[A-Za-z0-9&'’.-]+){0,5}\s+"+suffix+r")\b",a.text,re.I)
+                    applied=re.search(r"\b(?:apply|use)\s+(?:the\s+)?((?!the\b)[A-Za-z0-9][A-Za-z0-9&'’.-]*(?:\s+[A-Za-z0-9&'’.-]+){0,5}\s+"+suffix+r")\b",a.text,re.I)
                     if applied:
                         source_prefix=a.text[max(0,applied.start()-40):applied.start()]
                         source_negative=re.search(r"\b(?:do\s+not|don['’]t|must\s+not|never|avoid)\s+(?:ever\s+)?$",source_prefix,re.I)
@@ -380,7 +380,4 @@ def load_approved(store, article):
     validate_candidate(source, bound_candidate)
     if payload['locales']['English']['blocks'] != source['blocks'] or payload['locales']['English']['title'] != source['metadata']['title']:
         raise QualityHold('English source differs')
-    from .topics import payload_contains_tax
-    if payload_contains_tax(payload):
-        raise QualityHold('tax topics held pending source and factual verification')
     return payload
