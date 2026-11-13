@@ -133,6 +133,25 @@ class Service:
                     LOG.warning("NailBlog skipped post %s: slot_at is not a timezone-aware ISO datetime", row["id"])
         return due
 
+    def writes_armed(self):
+        """Only the loaded build/config binding may write after the Owner's preflight."""
+        return bool(self.startup_binding and not self.state.control()['paused']
+                    and self.state.armed_binding() == self.startup_binding)
+
+    async def pause_fault(self, code):
+        """Durable fail-closed recovery for an incompatible legacy state, with one Owner notice."""
+        self.state.set_paused(True)
+        self.state.disarm()
+        await self._owner_notice(notice_key('state_fault', code),
+                                 f'NailBlog tạm dừng: {code}. Cần đối soát state trước khi resume.')
+
+    async def _owner_notice(self, key, text):
+        if self.notice_send is None:
+            from .notices import Outbox
+            Outbox(self.state).enqueue(key, text, self.clock())
+            return False
+        return await send_once(self.state, self.notice_send, key, text, now=self.clock())
+
     def tick(self, now=None):
         """One scheduler pass. Step A never publishes: due posts are only logged and keep their state."""
         if self.state.control()["paused"]:
@@ -178,6 +197,8 @@ class Service:
         browser.write_ready()
         store = AdminStore(self.state, self.config)
         op = store.operation(post_id)
+        if op and store.release_unmaterialized_create(post_id):
+            op = None
         row = self.state.get_post(post_id)
         if not row:
             raise AdminError('draft_state_invalid')
@@ -189,20 +210,24 @@ class Service:
             store.check_write(post_id)
             hashes = validate_files(cover_path, image_paths, config=self.config)
             verify_reviews(json.loads(row['draft_json']), hashes, config=self.config)
+        self._check_armed_write()
         async with browser as admin:
             await admin.ready()
             if op:
                 # A create intent survives an unknown outcome. Never issue another POST.
                 if row['admin_id']:
                     actual = await admin.read(row['admin_id'])
-                    store.record_draft(post_id, actual)
+                    self._record_created_draft(store, post_id, actual)
                     return actual
                 return await self._reconcile_create(admin, store, post_id, title, slug)
             if await admin.find_duplicates(title, slug):
                 raise AdminError('duplicate_on_site')          # nothing claimed, nothing posted
             store.claim_create(post_id, payload)
             self._note_create_claim(post_id)
-            admin.guard.check_action = lambda: store.check_write(post_id)
+            def check_write():
+                self._check_armed_write()
+                store.check_write(post_id)
+            admin.guard.check_action = check_write
             admin.file_hashes = dict(zip([str(Path(p).resolve()) for p in [cover_path, *image_paths]], hashes))
             try:
                 actual = await admin.save_draft(payload, lambda value: store.materialized(post_id, value),
@@ -211,8 +236,18 @@ class Service:
                 if str(error) == 'create_timeout':             # the POST hung: outcome unknown, reconcile read-only
                     raise AdminError('create_unknown_reconciling') from None
                 raise
-            store.record_draft(post_id, actual)
+            self._record_created_draft(store, post_id, actual)
             return actual
+
+    @staticmethod
+    def _record_created_draft(store, post_id, actual):
+        from .publication import AdminError
+        try:
+            store.record_draft(post_id, actual)
+        except AdminError as error:
+            if str(error) != 'draft_readback_mismatch':
+                raise
+            raise AdminError('create_requires_manual_reconciliation') from None
 
     def _note_create_claim(self, post_id):
         """First moment this process knows a Create was claimed for `post_id` (INSERT OR IGNORE keeps the earliest)."""
@@ -314,10 +349,17 @@ class Service:
         """Due scheduled posts first, then recovery. Durable claims are the only path to a Publish click.
 
         Each post gets one bounded browser block (`admin.publish_timeout_seconds`) that also ends when `stop` fires."""
-        if self.config.mode != 'live' or self.state.control()['paused']:
+        if self.config.mode != 'live' or not self.writes_armed():
             return []
         from .admin_state import AdminStore
-        store = AdminStore(self.state, self.config)
+        from .publication import AdminError
+        try:
+            store = AdminStore(self.state, self.config)
+        except AdminError as error:
+            if str(error) != 'state_environment_mismatch':
+                raise
+            await self.pause_fault(str(error))
+            return []
         now = self.clock()
         candidates = self.due_posts()
         candidates += [row for row in self.state.list_posts(('before_publish', 'uncertain'))
@@ -331,6 +373,21 @@ class Service:
             candidates = [row for row in candidates if row['id'] == post_id]
         completed = []
         for row in candidates:
+            if not self.writes_armed():
+                break
+            try:
+                owner_approved = (not self.config.autoflow.enabled or row['state'] != 'scheduled'
+                                  or self._draft_owner_approved(row))
+            except AdminError as error:
+                if str(error) not in ('legacy_topic_claim_conflict', 'state_environment_mismatch'):
+                    raise
+                await self.pause_fault(str(error))
+                break
+            if not owner_approved:
+                await self._owner_notice(notice_key('publish_missing_owner_ok', row['id']),
+                                         f"NailBlog: không đăng bài #{row['id']} (slot {row['slot_at']}): thiếu duyệt thẻ Draft "
+                                         'đúng snapshot trong autoflow. Cần Owner đối soát.')
+                continue
             if stop is not None and stop.is_set():
                 break
             if not await self._acquire_browser(stop):
@@ -341,6 +398,44 @@ class Service:
             finally:
                 self.browser_lock.release()
         return completed
+
+    def _draft_owner_approved(self, row):
+        from .approvals import ApprovalStore
+        from .autoflow import AutoflowRuns
+        from .onepost import OnePost
+        from .publication import digest
+        run = AutoflowRuns(self.state).by_topic(row['topic_id'])
+        if not run:
+            return False
+        context = json.loads(run['ctx'] or '{}')
+        approved_snapshot = (context.get('draft') or {}).get('snapshot')
+        approvals = ApprovalStore(self.state)
+        image_snapshot = (context.get('images') or {}).get('snapshot')
+        if (not approvals.is_approved(run['run_id'], 'images', image_snapshot)
+                or not approvals.is_approved(run['run_id'], 'draft', approved_snapshot)):
+            return False
+        onepost = OnePost(self)
+        saved = onepost.read(run['run_id'])
+        if not saved or saved['post_id'] != row['id']:
+            return False
+        # The phase advances after approval; all reviewed content must still have the same digest.
+        artifact = onepost.artifact(run['run_id'])
+        artifact.pop('snapshot', None)
+        artifact['phase'] = 'draft_verified'
+        return digest(artifact) == approved_snapshot
+
+    def _check_armed_write(self):
+        from .publication import AdminError
+        if not self.writes_armed():
+            raise AdminError('write_binding_not_armed')
+
+    def _check_publish_write(self, store, post_id):
+        self._check_armed_write()
+        row = self.state.get_post(post_id)
+        if self.config.autoflow.enabled and not self._draft_owner_approved(row):
+            from .publication import AdminError
+            raise AdminError('draft_owner_approval_required')
+        store.check_publish_write(post_id, self.clock())
 
     async def _publish_one(self, row, store, stop):
         from .admin import Admin
@@ -370,7 +465,7 @@ class Service:
                         # both fresh publication and read-only uncertain recovery.
                         admin.approved_image_hashes = document.get('image_hashes')
                         if row['state'] == 'scheduled':
-                            admin.guard.check_action = lambda: store.check_publish_write(row['id'], self.clock())
+                            admin.guard.check_action = lambda: self._check_publish_write(store, row['id'])
                             await admin.publish(row['admin_id'], payload,
                                                 lambda: store.claim_publish(row['id'], self.clock()))
                         evidence = await admin.published_readback(row['admin_id'], payload)

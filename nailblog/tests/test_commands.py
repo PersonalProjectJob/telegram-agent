@@ -164,11 +164,12 @@ class ExecuteTests(unittest.TestCase):
         self.assertIsNotNone(parsed, text)
         return execute(self.state, *parsed, now=now, config=self.config)
 
-    def test_pause_and_resume_change_the_control_row(self):
+    def test_sync_resume_cannot_bypass_preflight_or_arm(self):
         self.run_command("/nailblog pause")
         self.assertEqual(self.state.control()["paused"], 1)
-        self.run_command("/nailblog resume")
-        self.assertEqual(self.state.control()["paused"], 0)
+        self.assertIn("preflight", self.run_command("/nailblog resume")[0])
+        self.assertEqual(self.state.control()["paused"], 1)
+        self.assertEqual(self.state.armed_binding(), "")
 
     def test_mode_changes_the_control_row(self):
         for mode in ("random", "adaptive", "fixed"):

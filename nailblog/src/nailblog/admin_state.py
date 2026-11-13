@@ -55,6 +55,32 @@ class AdminStore:
             db.execute('INSERT INTO admin_operations(post_id,intent,payload) VALUES(?,?,?)',
                        (post_id, intent, json.dumps(payload, ensure_ascii=False)))
 
+    def release_unmaterialized_create(self, post_id):
+        """A local image URL proves before_create never ran, hence Guard never permitted POST.
+
+        Once URLs were materialized, an empty receipt proves nothing: keep the claim forever for reconciliation.
+        The post lifecycle state is unchanged; the durable control result records this pre-POST release.
+        """
+        from urllib.parse import urlsplit
+        with self.state.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            op = db.execute('SELECT * FROM admin_operations WHERE post_id=?', (post_id,)).fetchone()
+            row = db.execute('SELECT * FROM posts WHERE id=?', (post_id,)).fetchone()
+            if (not row or not op or row['state'] not in ('writing', 'review') or row['admin_id']
+                    or op['approval'] or json.loads(op['receipt'] or '{}')):
+                return False
+            payload = json.loads(op['payload'])
+            images = [payload.get('coverImage') or {}, *(payload.get('images') or [])]
+            local = any(urlsplit(image.get('imageUrl', '')).path.startswith('/nailblog-local/') for image in images)
+            if not local:
+                return False
+            db.execute('DELETE FROM admin_operations WHERE post_id=?', (post_id,))
+            db.execute("UPDATE control SET last_result='create_claim_released_before_post' WHERE id=1")
+            # The reconciliation clock belongs to this claim; a new claim starts a fresh clock.
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='create_reconcile'").fetchone():
+                db.execute('DELETE FROM create_reconcile WHERE post_id=?', (post_id,))
+            return True
+
     def check_write(self, post_id):
         row = self.state.get_post(post_id)
         if self.state.control()['paused'] or not row or row['state'] not in ('writing', 'review') or row['admin_id']:

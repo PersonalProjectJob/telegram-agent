@@ -141,8 +141,14 @@ class AgyText:
             raise AgyTextError(code, error)
         worker = uid(cfg.worker_user)
         output = job.read('output.json', owner=worker, limit=2 * 1024 * 1024)
+        try:
+            transcript = job.read('native-transcript.json', owner=worker, limit=2 * 1024 * 1024)
+        except ImageError:
+            # Missing/unreadable proof follows the verifier's explicit receipt-invalid path, never a new job.
+            transcript = None
         value = verify_text_receipt(cfg, receipt, request, output,
-                                    job.read('native-final.bin', owner=worker), job.read('native-user.bin', owner=worker))
+                                    job.read('native-final.bin', owner=worker), job.read('native-user.bin', owner=worker),
+                                    transcript=transcript)
         from .text import check_schema
         if check_schema(request['schema'], value):
             raise AgyTextError('schema')

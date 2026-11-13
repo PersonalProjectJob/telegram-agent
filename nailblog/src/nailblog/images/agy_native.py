@@ -222,25 +222,94 @@ def assistant_text(raw, *, limit=64000):
         raise _held('native_assistant') from None
 
 
-def native_text(rows, prompt):
-    """Validate a text-only conversation: user prompt first, then assistant turns, nothing else.
+# Exact agy 1.2.11 completion nudge observed in the fresh no-tool text smoke conversation.
+TEXT_COMPLETION_NUDGE = ("You did not call any tools. You should continue calling tools until you've completed your task. "
+                         "If you have completed your task call the finish tool.")
+MAX_TEXT_NUDGES = 3
+MAX_TEXT_TRANSCRIPT_BYTES = 2 * 1024 * 1024
 
-    Returns the last assistant text plus the raw records. An unknown step type,
-    status, shape or a trailing non-assistant row raises a HOLD error.
+
+def completion_nudge(raw):
+    """Pinned internal user turn: unlike the initial prompt, its observed body has ONLY text and mirror."""
+    try:
+        root = fields(raw)
+        if set(root) != {1, 4, 5, 19} or one(root, 1) != 14 or one(root, 4) != 3:
+            raise _held('native_nudge')
+        metadata = fields(one(root, 5))
+        # Exact field set/types observed on all three internal nudges. Tool field 4 and unknown fields fail closed.
+        if (set(metadata) != {1, 3, 8, 12, 20, 26, 32} or one(metadata, 3) != 4
+                or any(not isinstance(one(metadata, key), bytes) or not one(metadata, key)
+                       for key in (1, 8, 12, 20, 26, 32))):
+            raise _held('native_nudge')
+        body = fields(one(root, 19))
+        if set(body) != {2, 3}:
+            raise _held('native_nudge')
+        mirror = fields(one(body, 3))
+        expected = TEXT_COMPLETION_NUDGE.encode()
+        if one(body, 2) != expected or set(mirror) != {1} or one(mirror, 1) != expected:
+            raise _held('native_nudge')
+        return True
+    except ImageError as error:
+        raise error if str(error).startswith(HELD) else _held('native_wire') from None
+    except (TypeError, ValueError, UnicodeError, AttributeError):
+        raise _held('native_nudge') from None
+
+
+def native_text(rows, prompt):
+    """Validate every native row. Only the pinned completion nudge may add a user turn.
+
+    No-nudge conversations retain their existing assistant-turn behavior. A nudged conversation must contain
+    byte-identical single JSON-object answers throughout, preventing an earlier answer/intent being hidden.
     """
     rows = list(rows)
-    if (not 2 <= len(rows) <= 16 or [row[0] for row in rows] != list(range(len(rows))) or
-            any(row[1] not in (14, 15) or (row[2], row[3]) != (3, 0) or row[5] is not None or row[6] is not None
-                for row in rows) or rows[0][1] != 14 or rows[-1][1] != 15):
+    if (not 2 <= len(rows) <= 16 or any(not isinstance(row, (list, tuple)) or len(row) != 7 for row in rows)
+            or [row[0] for row in rows] != list(range(len(rows)))
+            or any(any(type(row[i]) is not int for i in range(4)) or row[1] not in (14, 15)
+                   or (row[2], row[3]) != (3, 0) or row[5] is not None or row[6] is not None for row in rows)
+            or rows[0][1] != 14 or rows[-1][1] != 15):
         raise _held('native_rows')
     user_prompt(bytes(rows[0][4]), prompt)
-    final_raw, final = None, None
-    for row in rows[1:]:
+    answers, nudges = [], 0
+    for index, row in enumerate(rows[1:], 1):
         if row[1] == 14:
-            raise _held('native_rows')
-        final_raw = bytes(row[4]); final = assistant_text(final_raw)
+            nudges += 1
+            if rows[index - 1][1] != 15 or nudges > MAX_TEXT_NUDGES:
+                raise _held('native_rows')
+            completion_nudge(bytes(row[4]))
+        else:
+            answers.append((bytes(row[4]), assistant_text(bytes(row[4]))))
+    if nudges:
+        first = answers[0][1]
+        if any(text != first for _, text in answers):
+            raise _held('native_nudge_answer_changed')
+        _, copies = collapse_json(first)
+        if copies != 1:
+            raise _held('native_nudge_answer_invalid')
+    final_raw, final = answers[-1]
     return {'final_text': final, 'final_raw': final_raw, 'user_raw': bytes(rows[0][4]),
-            'steps': [row[1] for row in rows]}
+            'steps': [row[1] for row in rows],
+            'transcript': [[*row[:4], bytes(row[4]).hex(), row[5], row[6]] for row in rows]}
+
+
+def text_transcript(raw):
+    """Decode the bounded proof stored beside a text receipt; native_text still validates every native wire record."""
+    try:
+        if not isinstance(raw, bytes) or not 1 <= len(raw) <= MAX_TEXT_TRANSCRIPT_BYTES:
+            raise _held('native_transcript')
+        encoded = json.loads(raw)
+        if not isinstance(encoded, list) or not 2 <= len(encoded) <= 16:
+            raise _held('native_transcript')
+        rows = []
+        for row in encoded:
+            if not isinstance(row, list) or len(row) != 7 or not isinstance(row[4], str):
+                raise _held('native_transcript')
+            payload = bytes.fromhex(row[4])
+            if payload.hex() != row[4]:
+                raise _held('native_transcript')
+            rows.append((*row[:4], payload, row[5], row[6]))
+        return rows
+    except (ValueError, TypeError, UnicodeError):
+        raise _held('native_transcript') from None
 
 
 def salvage_text(rows, prompt):

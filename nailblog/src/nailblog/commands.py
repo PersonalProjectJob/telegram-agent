@@ -192,7 +192,7 @@ def _pick(state, slot, number, now, slots, daily):
     slot_at = iso_slot(slot_datetime(target, slot))
     week = f"daily:{target.isoformat()}"
     if _autoflow_run_for_slot(state, slot_at) is not None:
-        return [f"Slot {slot[:2]} ngày mai đã có run autoflow (đã trả phí/đang chạy): không đổi chủ đề được."]
+        return [f"Slot {slot[:2]} ngày mai đã có run autoflow (job Agy (gói subscription)): không đổi chủ đề được."]
     candidates = state.topics_for(week, slot_at)
     if not candidates:
         return [f"Chưa có ứng viên cho slot {slot[:2]} ngày mai (mốc {daily.propose_at} chưa chạy)."]
@@ -211,7 +211,7 @@ def _pick(state, slot, number, now, slots, daily):
 
 
 STAGE_TEXT = {
-    "new": ("mới tạo", "tạo bài và ảnh (trả phí, trong trần của run)"),
+    "new": ("mới tạo", "tạo bài và ảnh (job Agy (gói subscription), trong trần của run)"),
     "images_send": ("ảnh đã sẵn sàng", "gửi thẻ duyệt ảnh cho Owner"),
     "images_wait": ("chờ Owner duyệt ảnh", None),
     "images_retry": ("đang tạo lại ảnh (tối đa một lần)", "gửi thẻ ảnh mới"),
@@ -290,10 +290,50 @@ def decide_approval(state, verdict, request_id, reason, *, sender_id, owner_ids,
     its next pass)."""
     from .approvals import ApprovalStore
     owner = owner_ids[0] if len(owner_ids) == 1 else None
-    result = ApprovalStore(state).decide(request_id, verdict, reason, sender_id, owner, now, override=override)
+    store = ApprovalStore(state)
+    result = store.decide(request_id, verdict, reason, sender_id, owner, now, override=override)
     text = DECISION_TEXT.get(result["code"], "không xử lý được").replace("<id>", str(request_id))
     word = "từ chối" if verdict == "reject" else ("OK + override" if result["override"] else "OK")
     reply = f"Yêu cầu duyệt #{request_id} ({word}): {text} [{result['code']}]."
+    request = store.get(request_id)
+    if request is not None and sender_id == owner:
+        from .autoflow import AutoflowRuns
+        run = AutoflowRuns(state).get(request['run_id'])
+        with state.connection() as db:
+            table = db.execute("SELECT 1 FROM sqlite_master WHERE name='onepost_runs'").fetchone()
+            saved = db.execute('SELECT post_id,document FROM onepost_runs WHERE run_id=?',
+                               (request['run_id'],)).fetchone() if table else None
+        post = state.get_post(saved['post_id']) if saved and saved['post_id'] else None
+        document = json.loads(saved['document']) if saved else {}
+        topic = state.get_topic(run['topic_id']) if run else None
+        title = (document.get('article') or {}).get('title') or (topic or {}).get('title') or 'chưa có tiêu đề'
+        title_label = 'Tiêu đề bài hiện tại (chưa đối chiếu snapshot)' if (document.get('article') or {}).get('title') else 'Chủ đề hiện tại (chưa có tiêu đề thẻ)'
+        slot = (run or {}).get('slot_at') or (post or {}).get('slot_at') or document.get('slot_at') or 'chưa có slot'
+        slot_label = 'slot hiện tại'
+        # The durable outbox retains the actual sent card, even if the topic/article changes later.
+        sent_ids = set(json.loads(request['message_ids'] or '[]'))
+        if sent_ids:
+            with state.connection() as db:
+                table = db.execute("SELECT 1 FROM sqlite_master WHERE name='owner_outbox'").fetchone()
+                cards = db.execute("SELECT text,message_ids FROM owner_outbox WHERE kind='media' AND status='sent'").fetchall() if table else []
+            for card in cards:
+                if not sent_ids.intersection(json.loads(card['message_ids'])):
+                    continue
+                lines = card['text'].splitlines()
+                card_title = next((line.removeprefix('Tiêu đề: ') for line in lines if line.startswith('Tiêu đề: ')), None)
+                card_slot = next((line.removeprefix('Slot: ') for line in lines if line.startswith('Slot: ')), None)
+                if card_title:
+                    title, title_label = card_title, 'Tiêu đề trên thẻ'
+                if card_slot:
+                    slot, slot_label = card_slot, 'slot trên thẻ'
+                break
+        kind = 'ảnh' if request['kind'] == 'images' else 'Draft'
+        reply += f" Thẻ {kind}; {slot_label} {slot}; {title_label}: {title}; snapshot {request['snapshot'][:8]}."
+        if post:
+            from .state import TRANSITIONS
+            if 'held' in TRANSITIONS.get(post['state'], ()):
+                reply += (f" Trước khi gửi lệnh đăng, giữ bài bằng /nailblog hold {post['id']} <lý do>. "
+                          'Lệnh này không hoàn tác một lệnh đăng đã gửi.')
     if result["code"] == "recorded":
         reply += " Autoflow sẽ chạy bước tiếp theo ở lượt kiểm tra kế tiếp (khoảng một phút)."
     return [reply]
@@ -333,6 +373,8 @@ async def preflight(service, *, config_path=None):
         try:
             from .images.subscription import SubscriptionImages
             SubscriptionImages(config).verify_models()
+            from .images.subscription import check_ready
+            check_ready(config.subscription, service.clock, text=True)
         except Exception:
             failed.append('subscription_queue_unavailable')
         if not set(CATEGORIES) <= set(config.admin.category_ids):
@@ -381,7 +423,7 @@ def execute(state, name, args, *, now, config=None):
         return [reply]
     if name == "topics_drop":
         if _autoflow_run_for_topic(state, args[0]) is not None:
-            return [f"Không loại được chủ đề #{args[0]}: slot của nó đã có run autoflow (đã trả phí/đang chạy). "
+            return [f"Không loại được chủ đề #{args[0]}: slot của nó đã có run autoflow (job Agy (gói subscription)). "
                     "Dùng /nailblog flow để xem; run giữ lại hoặc bỏ qua sẽ tự kết thúc."]
         ok = state.set_topic_state(args[0], "dropped", only_from=("proposed", "approved"))
         return [f"Đã loại chủ đề #{args[0]}." if ok else f"Không loại được chủ đề #{args[0]}."]
@@ -437,8 +479,7 @@ def execute(state, name, args, *, now, config=None):
         state.set_paused(True)
         return ["Đã tạm dừng NailBlog."]
     if name == "resume":
-        state.set_paused(False)
-        return ["Đã chạy lại NailBlog."]
+        return ["Resume cần preflight + arm: dùng /nailblog resume qua Telegram."]
     if name == "flow":
         rows = flow_lines(state, now)
         head = "Autoflow" + ("" if getattr(getattr(config, "autoflow", None), "enabled", False) else " (đang tắt)") + ":"

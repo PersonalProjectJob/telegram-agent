@@ -776,7 +776,8 @@ async def run_due(service, stop=None):
 async def _autoflow_pass(service, stop):
     """One engine pass after the daily steps (the engine itself needs live + unpaused + armed). Never raises: a
     failing engine must not stop the scheduler. The OnePost is built like the CLI's: `OnePost(service)`."""
-    if not autoflow_enabled(service.config) or service.config.mode != "live" or (stop is not None and stop.is_set()):
+    if (not autoflow_enabled(service.config) or service.config.mode != "live" or service.state.control()["paused"]
+            or (stop is not None and stop.is_set())):
         return
     try:
         from . import autoflow
@@ -785,4 +786,7 @@ async def _autoflow_pass(service, stop):
         await autoflow.run_due(service, stop, onepost=OnePost(service), approvals=ApprovalStore(service.state),
                                now=service.clock())
     except Exception as error:
+        if str(error) in ('legacy_topic_claim_conflict', 'state_environment_mismatch'):
+            await service.pause_fault(str(error))
+            return
         LOG.warning("NailBlog autoflow pass failed exception=%s", type(error).__name__)

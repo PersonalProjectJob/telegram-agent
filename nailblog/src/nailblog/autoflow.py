@@ -223,6 +223,14 @@ class _Env:
             LOG.info('NailBlog autoflow post not held post=%s reason=%s', post_id, reason)
 
     async def finish(self, row, stage, reason):
+        if reason == 'images_deadline_missed':
+            from .images.subscription import SubscriptionImages
+            try:
+                SubscriptionImages(self.config, clock=lambda: self.now).verify_models()
+                image_ready = True
+            except Exception:
+                image_ready = False
+            self.runs.update(row['run_id'], ctx={'image_worker_ready': image_ready})
         updated = self.runs.update(row['run_id'], stage=stage, terminal_reason=reason, failures=0, next_attempt_at=0)
         LOG.info('NailBlog autoflow run=%s stage=%s reason=%s', row['run_id'], stage, reason)
         notice = _terminal_notice(updated)
@@ -286,6 +294,11 @@ def _terminal_notice(row):
         text = f'lỗi lặp lại {MAX_FAILURES} lần ({code}), bài chuyển sang giữ lại'
     elif is_hold_code(reason):
         text = f'cần đối soát thủ công ({reason}), không tự thử lại'
+    if reason == 'images_deadline_missed':
+        ready = _ctx(row).get('image_worker_ready')
+        text += ('; worker ảnh ready lúc kiểm tra hạn' if ready is True else
+                 '; worker ảnh không ready lúc kiểm tra hạn' if ready is False else
+                 '; chưa có trạng thái readiness worker ảnh tại hạn')
     verb = 'bỏ qua' if row['stage'] == 'skipped' else 'giữ lại'
     return (notice_key('autoflow', f"{row['run_id']}|{row['stage']}"),
             f"NailBlog autoflow: bài #{row['topic_id']} (slot {row['slot_at']}, run {row['run_id']}) {verb}: {text}.")
@@ -540,6 +553,9 @@ async def _advance(env, row):
         return                                      # stop/pause before any transport call: no failure, retry next pass
     except Exception as error:
         code = _code(error)
+        if code in ('legacy_topic_claim_conflict', 'state_environment_mismatch'):
+            await env.service.pause_fault(code)
+            return
         if code in QUIET_CODES:
             return
         if code == RECONCILING_CODE:
@@ -562,6 +578,11 @@ def _new_runs(env):
         try:
             taken.add(datetime.fromisoformat(existing['slot_at']).timestamp())
         except ValueError:
+            continue
+    for post in env.state.list_posts(('scheduled', 'before_publish', 'uncertain')):
+        try:
+            taken.add(datetime.fromisoformat(post['slot_at']).timestamp())
+        except (TypeError, ValueError):
             continue
     for topic in env.state.list_topics(('approved',)):
         if not topic['slot_at'] or env.runs.by_topic(topic['id']) or env.state.posts_for_topic(topic['id']):

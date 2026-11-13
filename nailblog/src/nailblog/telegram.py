@@ -69,7 +69,7 @@ def make_owner_media_sender(client, owner_ids, *, raw_send=raw_send_message):
         raise ValueError('verified single Owner binding required')
     bound = owner_ids[0]
 
-    async def send(owner_id, files, caption_text, *, random_id=None, skip_files=False):
+    async def send(owner_id, files, caption_text, *, random_id=None, skip_files=False, album_sent=None):
         if owner_id != bound:
             raise ValueError('recipient is not the verified Owner')
         streams = []
@@ -83,6 +83,8 @@ def make_owner_media_sender(client, owner_ids, *, raw_send=raw_send_message):
             for start in range(0, len(streams), 10):  # Telegram albums hold at most 10 items
                 result = await client.send_file(bound, streams[start:start + 10])
                 sent.extend(getattr(m, 'id', m) for m in (result if isinstance(result, (list, tuple)) else [result]))
+                if album_sent is not None:
+                    album_sent(sent)
             if random_id is None:
                 message = await client.send_message(bound, caption_text, parse_mode=None, link_preview=False)
                 sent.append(getattr(message, 'id', message))
