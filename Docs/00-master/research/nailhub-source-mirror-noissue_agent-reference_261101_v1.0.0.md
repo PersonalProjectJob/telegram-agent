@@ -9,6 +9,27 @@ owner: AlexChu
 
 # Source Mirror: Tham chiếu vận hành cho agent
 
+## Cập nhật 1099 — 10/11/2026
+
+Owner quy định khung 12:00 giờ Việt Nam dành cho bài nail hoặc thuế liên bang Mỹ phù hợp ngành nail, đặc biệt 1099 khi nguồn hỗ trợ; giữ bài đã ghim và áp dụng quy trình dự phòng hiện hành. Đây là định hướng nghiệp vụ và biên tập. **Bổ sung chọn nguồn 1099 trong pipeline chưa deploy**: worker hiện chưa được xác nhận tự chọn hoặc tự đăng bài 1099, và thay Markdown không thay thế thay đổi code.
+
+Với từng nhận định thuế, dùng đúng URL trang IRS gốc hỗ trợ nhận định và nêu năm thuế, đối tượng, điều kiện, ngoại lệ và phạm vi liên bang tương ứng. Đối chiếu ấn bản và hiệu lực; ngày truy cập, ngày sửa trang hoặc một năm xuất hiện trong tài liệu không tự chứng minh năm áp dụng. Không mặc định ngưỡng cũ hay đồng nhất 1099-NEC, 1099-MISC và 1099-K. Khi thiếu chứng cứ, bỏ nhận định hoặc giữ bài theo quy trình hiện hành; không bịa số liệu. Trang tham khảo: [Form 1099-NEC](https://www.irs.gov/forms-pubs/about-form-1099-nec), [information returns](https://www.irs.gov/businesses/small-businesses-self-employed/am-i-required-to-file-a-form-1099-or-other-information-return), [instructions](https://www.irs.gov/instructions/i1099mec); chỉ dẫn trang thực sự hỗ trợ nhận định.
+
+Đã cập nhật Rule và Template trên THINKPAD dưới worker lock, có backup; loader `article_guidance.prepare()` dưới tài khoản service đã nạp cả hai file vào prompt thử. Worker active, lịch ghim không đổi tại lần kiểm tra. Không tạo bài hoặc triển khai code.
+
+
+## Trạng thái so tóm tắt — 05/11/2026, trước 16:35 ICT
+
+Chưa bật. Shadow bootstrap 132 = 122 baseline + 10 attempts local, 9 bài về sau Draft vẫn giữ; nguồn summary Admin cho 10 bài là unique slug+title inferred, summary có thể đã đổi. Không GET URL hay so body/ảnh. 30 fixture integration PASS; AGY 132 summaries FAIL sau 311,94s ở lô 5 (4 lô đầu pass; lỗi model unavailable, chưa rõ nguyên nhân). Qwen 3.5 9B local 3 synthetic pairs client timeout 65s, không có verdict; không dùng hai phép thử đơn lẻ khẳng định model luôn lỗi. Broker subprocess có thể còn chạy sau client timeout. Chuẩn bị history và comparator nằm trong `.context/summary-integration-live`, chưa đưa vào `/opt` worker. Ưu tiên tiếp theo: chẩn đoán broker/deadline, thử lô nhỏ và chất lượng, đối soát union history, test kết nối/ghi atomic; báo cáo rồi mới bật.
+
+## Ưu tiên quy tắc mới — 05/11/2026, 14:15 ICT
+
+Owner thay thế yêu cầu cũ: đối chiếu lịch sử local đã xác nhận đăng thành công (kể cả về sau đổi trạng thái hoặc URL), không quét kho bài chưa đăng, không HTTP/status check sau đăng, không so toàn thân/ảnh. Mỗi bài lưu chủ đề, đề tài, tiêu đề và tóm tắt ý chính; title ý nghĩa >=70/100 hoặc summary trùng → chọn bài khác; cùng chủ đề không tự trùng. Không tự đặt ngưỡng số cho summary. Chưa bật, đang xây/test; đừng nhầm snapshot Published 122 bài trước đó là toàn bộ lịch sử. Cần ghi history bền sau published, recovery khi gián đoạn và đối soát Create lần hiện tại chưa rõ. Xem [hướng dẫn bộ lọc](nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+## Bốn phần chống trùng — 05/11/2026, khoảng 12:55 ICT
+
+Chỉ candidate `.context/dedup-unified-candidate` và staging THINKPAD, **chưa bật**. Identity official/reissue/migration: 58 tests fixture đạt; comparison 36 legacy baseline 5 fail/7 error và candidate với 4 expectation điều chỉnh cũng 5 fail/7 error (chưa triage). Official closure 36 fixture + Chromium tracker giả; CDC attempt13 released có một intent ảnh legacy thiếu receipt, không xóa và không coi upload đã đóng. Semantic body VI/EN: 4-pair AGY shadow; 1 synthetic long batch 21,79 giây, 122 bài cần khoảng 31 batch lúc cold chưa benchmark. Browser fixture real scheduler/SQLite/Chromium, UI/Admin/AGY/CDN/Create giả, duplicate skip và fake published PASS, không có POST PROD. Legacy IDs thiếu anchor, response Create shape và raw hash không tái xác minh độc lập, các test lỗi và hiệu năng full là những điểm cần giải quyết trước bật. Xem [hướng dẫn bộ lọc](nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
 ## Kiểm thử tích hợp 05/11/2026, 11:33 ICT
 
 Candidate cô lập `.context/dedup-unified-candidate` và staging THINKPAD `/tmp/nailhub-dedup-complete-Kn2qRTd9` chưa triển khai: 55/55 kiểm thử mô phỏng đạt; migration SQLite thử trên bản sao giữ 316 articles/36 attempts và rollback, nhưng chưa nối vào `Store`. Quét Admin 3 lượt + HTTP 122 bài mất 65,8 giây, AGY 122 tiêu đề batch 20 mất 137,73 giây (một lần thực, không Create); batch 40 trước đó lỗi chưa rõ nguyên nhân. Browser fixture đã phát hiện và thử sửa giới hạn ContextVar route. Blocker: official autostage/restage ID nguồn, official upload closure, reissue sau unpublish và clone/requeue chưa wired; chưa E2E, không bật worker. Xem [hướng dẫn bộ lọc](nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
@@ -256,3 +277,10 @@ Sau trạng thái HOLD ở mục trên, theo yêu cầu trực tiếp của ngư
 MQM PASS thuộc revision trước biên tập; phần xóa/sửa được ghi audit riêng, không mô tả là MQM đã đánh giá lại. Mỗi bài qua kiểm trùng và có ảnh bìa được ràng buộc với payload thực tế. Kiểm trùng không atomic với người viết độc lập. Attempt 24 trước đó dừng trước Create, đã đối soát bằng phase, journal và tìm kiếm admin rồi chuyển released, article held trong cùng transaction; evidence nằm tại `/var/lib/nailhub-source-mirror/reports/attempt-24-reconciliation-20261103.json` trên THINKPAD.
 
 Comparator và ngoại lệ biên tập dùng stage một lần, không thay code/timer production. Lúc 18:21 DB integrity OK, không intent/unknown; ba bài workflow đã đăng trong ngày, còn một vị trí theo quota bốn bài. Hai khung lịch sử vẫn ghi HOLD và đã hết số lượt; khung 20:00 vẫn theo lịch bình thường, không bảo đảm sẽ đăng nếu gate giữ bài.
+
+
+### 2026-11-10 10:32 — 1099, trạng thái candidate
+
+Candidate từ baseline THINKPAD bổ sung ba URL IRS 1099, phân loại ngữ cảnh 12:00, ưu tiên nguồn và kiểm tra cover bảo thủ. IRS form và instructions cho kết quả `missing` ở bộ kiểm ảnh; information return `unknown` nên không được suy là thiếu ảnh. Chỉ có fixture và compile tách biệt; gate năm thuế, fallback official sau pin, cấu hình production và review đầy đủ chưa hoàn tất. Không triển khai hay thay assignment. Xem `.context/source-mirror-tax-progress.md`.
+
+Changelog | v1.0.1 | 2026-11-10 10:36 ICT | AlexChu / Codex | Cập nhật quy định 12:00, nguồn IRS và trạng thái pipeline 1099 chưa deploy.

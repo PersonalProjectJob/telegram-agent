@@ -12,6 +12,64 @@ approved_by: "Owner — ok proceed in chat"
 
 # Tự động đăng lại bài nguồn lên Nailhub PROD
 
+## Cập nhật 1099 — 10/11/2026
+
+Owner quy định khung 12:00 giờ Việt Nam dành cho bài nail hoặc thuế liên bang Mỹ phù hợp ngành nail, đặc biệt 1099 khi nguồn hỗ trợ; giữ bài đã ghim và áp dụng quy trình dự phòng hiện hành. Đây là định hướng nghiệp vụ và biên tập. **Bổ sung chọn nguồn 1099 trong pipeline chưa deploy**: worker hiện chưa được xác nhận tự chọn hoặc tự đăng bài 1099, và thay Markdown không thay thế thay đổi code.
+
+Với từng nhận định thuế, dùng đúng URL trang IRS gốc hỗ trợ nhận định và nêu năm thuế, đối tượng, điều kiện, ngoại lệ và phạm vi liên bang tương ứng. Đối chiếu ấn bản và hiệu lực; ngày truy cập, ngày sửa trang hoặc một năm xuất hiện trong tài liệu không tự chứng minh năm áp dụng. Không mặc định ngưỡng cũ hay đồng nhất 1099-NEC, 1099-MISC và 1099-K. Khi thiếu chứng cứ, bỏ nhận định hoặc giữ bài theo quy trình hiện hành; không bịa số liệu. Trang tham khảo: [Form 1099-NEC](https://www.irs.gov/forms-pubs/about-form-1099-nec), [information returns](https://www.irs.gov/businesses/small-businesses-self-employed/am-i-required-to-file-a-form-1099-or-other-information-return), [instructions](https://www.irs.gov/instructions/i1099mec); chỉ dẫn trang thực sự hỗ trợ nhận định.
+
+Đã cập nhật Rule và Template trên THINKPAD dưới worker lock, có backup; loader `article_guidance.prepare()` dưới tài khoản service đã nạp cả hai file vào prompt thử. Worker active, lịch ghim không đổi tại lần kiểm tra. Không tạo bài hoặc triển khai code.
+
+```mermaid
+flowchart TD
+    A([Đến khung 12:00]) --> B[Giữ bài đã ghim]
+    B --> C[Kiểm tra theo quy trình hiện hành]
+    C --> D{Đủ điều kiện đăng?}
+    D -- Có --> E([Tiếp tục lịch hiện hành])
+    D -- Không --> F[Áp dụng dự phòng hiện hành]
+    F --> G([Kết quả phụ thuộc kiểm tra])
+```
+
+Chọn nguồn 1099 theo định hướng mới vẫn cần được bổ sung vào pipeline trước khi có thể tự chạy.
+
+
+### Chính sách bài gốc cho đăng bù — 07/11/2026
+
+Owner cho phép **chỉ bài đăng bù** được là bài viết độc lập về kinh doanh, vận hành, marketing hoặc phát triển, dựa trên gợi ý thực hành chung mà không bắt buộc có nguồn. Đây là lựa chọn bổ sung, không yêu cầu xóa nguồn khỏi bài đã có. Khi nêu sự kiện bên ngoài cụ thể, luật, thuế hoặc hướng dẫn chính thức, phải dẫn nguồn có thẩm quyền phù hợp; không bịa dữ liệu, trích dẫn hoặc gán lời khuyên chung cho tổ chức. Bài lấy từ nguồn phải giữ quy thuộc đúng; lịch thường không đổi. Vẫn áp dụng đúng nhóm giờ, so tiêu đề ngữ nghĩa từ 70/100 và tóm tắt cùng ý chính với lịch sử đã đăng, chất lượng tiếng Việt, quota bốn bài/ngày, ánh xạ slot và chặn Create chưa rõ.
+
+**Trạng thái triển khai 07/11/2026, 18:13 ICT:** đã cài fallback bài độc lập cho `slot-catchup`, gồm khung 12:00, sau khi các ứng viên và lựa chọn có nguồn không thành công. Lịch thường không thay đổi. Các lượt tạo độc lập giới hạn ba lần và vẫn chịu các cổng kiểm chất lượng, trùng, quota, đích slot và attempt chưa rõ; nội dung đã HOLD hoặc trùng được phản hồi để chọn bài khác, với hash sections chặn lặp nguyên thân bài trong cùng lượt. Hash không phát hiện mọi cách diễn đạt tương tự.
+
+Autostage 18:10 kết thúc thành công; deploy giữ worker lock, đối chiếu 107 hash baseline, backup `/var/backups/nailhub-catchup-independent-20261107-181351` và xác nhận 7 hash sau cài. Worker active, Rule và Template được tài khoản service đọc. 17 test tập trung chạy trên Python dịch vụ đạt; một lượt AGY thật sinh bài, qua hai review và kiểm evidence mà không lưu hoặc đăng. Bộ hồi quy 107 test vẫn có 13 failure, 1 error, trùng danh sách baseline. Form Create rỗng nguồn mới được kiểm với mutation giả lập/chặn mạng; **chưa xác minh backend chấp nhận source rỗng qua Create thực**. Không đăng bài thử; chưa có bằng chứng Published/readback thực của đường mới.
+
+
+## Quyết định Owner — 06/11/2026: thuật ngữ và chủ đề 16:00
+
+Đánh giá thuật ngữ theo ngữ cảnh và ý nghĩa; không giữ bài chỉ vì không khớp chính xác một từ khóa hoặc cụm dịch khi bản dịch vẫn đúng. Ví dụ, `curing lamps` → “đèn hơ để gel đóng rắn” không bị giữ chỉ vì thiếu chuỗi “hơ đèn”. Vẫn phải xử lý sai ý, phủ định và số liệu; nếu chưa chắc thì kiểm tra lại hoặc chọn bài khác.
+
+Slot **16:00** dành cho kinh doanh, vận hành tiệm, bao gồm marketing, AI, SI (super intelligence — siêu trí tuệ) và POS. Các chủ đề AI/SI/POS cần có liên hệ thực tế tới tiệm nail/doanh nghiệp và nguồn hỗ trợ cho nhận định về sản phẩm.
+
+Quyết định được cập nhật tại `source-mirror/Rule/editorial.md` và đồng bộ vào `/var/lib/nailhub-source-mirror/Rule/editorial.md`. File Markdown là rule nghiệp vụ; worker **chưa tự nạp** và rule Python cũ vẫn có thể giữ bài. Chưa sửa code, chưa triển khai hay kiểm thử thay đổi hành vi trong cập nhật này.
+
+## Cập nhật 06/11/2026 — Rule, template và model
+
+- Đã tạo trên THINKPAD `/var/lib/nailhub-source-mirror/Rule/editorial.md` và `/var/lib/nailhub-source-mirror/Template/article-standard.md`; tài khoản service đọc được. [Template trên Windows](research/nailhub-source-mirror-noissue_article-standard_261106_v1.0.0.md) cùng nội dung với file template tại thời điểm đồng bộ.
+- Hai file là tài liệu để quản lý quyết định, **chưa được worker production tự nạp**. Bản tích hợp đang thử riêng; không coi hướng dẫn Markdown là bằng chứng hành vi thực tế. Các hồ sơ cũ không tự được đánh giá lại khi sửa tài liệu.
+- Owner yêu cầu chuyển AGY viết/Việt hóa sang `claude-sonnet-5-5-medium`, effort `medium`. Đã thử gọi thành công bằng tài khoản service và thử phản hồi JSON; **chưa chuyển cấu hình worker hoặc broker**, hiện vẫn dùng Gemini theo lần kiểm tra ngày 06/11. Phần tạo ảnh có cấu hình và provenance riêng.
+- Bản scheduler đối chiếu tiêu đề/tóm tắt local đã triển khai lúc 20:24 ngày 05/11; các nhận xét “chưa bật” bên dưới là lịch sử trước thời điểm đó. Lượt 08:00 ngày 06/11 có ứng viên bị giữ vì model chưa kết luận được mức trùng; không suy ra mọi slot sẽ thành công.
+- AGY không cung cấp trường model trong phản hồi đã quan sát; tên model được chọn bởi broker là ghi nhận nội bộ, không phải chứng thực mật mã của nhà cung cấp. Không ghi đè dữ liệu cũ để đổi tên model.
+
+## Kiểm thử rule tóm tắt — 05/11/2026, trước 16:35 ICT
+
+Bản thử chưa bật có 132 bản ghi lịch sử local shadow, so title/summary không quét thân bài hay HTTP URL. 30 test integration giả lập đạt; AGY so 132 bản thực thất bại sau 311,94 giây tại lô 5; Qwen local thử 3 cặp synthetic client timeout 65 giây. Chưa có verdict trùng/không trùng hoặc bằng chứng ổn định để bật. [Chi tiết](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+## Quy tắc Owner mới — 05/11/2026, 14:15 ICT
+
+**Chưa bật worker.** Chống trùng chỉ đối chiếu với lịch sử local trên THINKPAD của các bài đã xác nhận đăng thành công; không kiểm lại URL hoặc trạng thái về sau. Phân loại chủ đề/đề tài và lưu tiêu đề cùng tóm tắt ý chính; cùng chủ đề được phép, trùng ý nghĩa tiêu đề theo ngưỡng 70/100 đã chốt hoặc trùng ý chính thì chọn bài khác. Không quét toàn thân bài hay so ảnh khi chống trùng. Không dùng bài chưa đăng trong kho làm đối tượng so. Lượt Create hiện tại chưa rõ vẫn phải đối soát để tránh đăng lặp. Quy tắc này thay thế yêu cầu cũ bên dưới về chỉ lấy Published hiện tại và kiểm HTTP sau đăng; xem [hướng dẫn bộ lọc](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
+## Kiểm thử bốn phần chống trùng — 05/11/2026, khoảng 12:55 ICT
+
+Đã tiếp tục chuẩn bị bản thử về phiên bản nguồn, tái xét bài chuyển Draft, bằng chứng đóng upload và so nội dung VI–EN. Đã thử Chromium với một lượt Create **giả lập**, không gọi Create PROD. Chưa bật tự động: các điểm còn thiếu gồm đối soát historical ID không có anchor, một intent ảnh CDC cũ thiếu receipt, test official cũ còn lỗi, thời gian AGY so toàn kho và bằng chứng Create thực tế. Chi tiết tại [hướng dẫn bộ lọc](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
+
 ## Kiểm thử chống trùng — 05/11/2026, 11:33 ICT
 
 Đã thử tích hợp kho Published và ngưỡng tiêu đề 70 trong môi trường tách biệt trên THINKPAD, **chưa bật tự động**. Candidate đạt 55 kiểm thử mô phỏng; đồng bộ Admin + HTTP 122 bài mất 65,8 giây, lượt AGY so 122 tiêu đề batch 20 mất 137,73 giây. Còn các bước xử lý lịch sử bài chuyển Draft, định danh nguồn official và bằng chứng đóng upload trước khi có thể quyết định bỏ attempt trùng an toàn. Những con số trên không phải bằng chứng kiểm thử xuất bản đầu-cuối. Chi tiết và giới hạn ở [hướng dẫn bộ lọc](research/nailhub-source-mirror-noissue_filter-guide_261101_v1.0.0.md).
@@ -35,7 +93,7 @@ Owner chốt: chủ đề được lặp; tiêu đề tương đồng **từ 70/
 - **Tên màu và mùa:** phân loại bài Tartan nay không coi riêng cụm tên sản phẩm chứa “Pumpkin Juice” trong nội dung là Halloween; từ khóa mùa trong tiêu đề, URL, alt hoặc chỗ khác vẫn được kiểm. Sáu test candidate đạt; snapshot Tartan thực được kiểm lại thành `other`, hợp 12:00, vẫn `ready`; không đăng thử bài này. Khung 16:00 vẫn cần kiểm trạng thái thực tế sau khi chạy, không giả định đã đăng.
 
 
-## Lịch hiện hành — 04/11/2026
+## Lịch runtime tại 04/11/2026
 
 Theo giờ Việt Nam, **08:00, 16:00 và 20:00** dành cho kinh doanh, vận hành và marketing; **12:00** dành cho mẫu nail. Đây là chính sách chọn chủ đề, không bảo đảm mỗi slot có bài được đăng: ứng viên vẫn phải đạt kiểm tra nội dung, nguồn, trùng lặp, quota và thời hạn. Các mốc phân bổ khác trong những cập nhật cũ bên dưới là lịch sử tại thời điểm ghi, không phải lịch hiện hành.
 
@@ -86,7 +144,7 @@ flowchart TD
 
 ## Metadata
 
-- Version: v1.0.77 (giữ tên file gốc để không làm gãy liên kết).
+- Version: v1.0.78 (giữ tên file gốc để không làm gãy liên kết).
 - Created: 2026-10-28 17:40; Updated: 2026-11-01 22:20, giờ Việt Nam.
 - Document status: **Approved / Active — Owner yêu cầu proceed đến Published PROD ngày 28/10/2026**.
 - Audience: Owner, Marketing, vận hành, Development, QA.
@@ -1273,6 +1331,8 @@ Owner yêu cầu tiếp tục hoàn tất và bật đường tự đăng CDC/SB
 
 | Version | Date | Time (VN) | Author | Nội dung | Status |
 |---|---|---|---|---|---|
+| v1.0.79 | 2026-11-10 | 10:36 | AlexChu / Codex | Cập nhật hướng dẫn 1099 và tài liệu; pipeline chọn nguồn chưa deploy. | Guidance cập nhật / code pending |
+| v1.0.78 | 2026-11-07 | 18:14 | AlexChu / Codex | Triển khai fallback bài độc lập cho catch-up sau review, kiểm AGY không publish, xác nhận guard và ghi giới hạn backend. | Deployed / Create source rỗng chưa xác minh |
 | v1.0.77 | 2026-11-01 | 22:20 | AlexChu / Codex | Ghi khảo sát parser, guard và entrypoint; không xóa. | Assessed / no deletion |
 | v1.0.76 | 2026-11-01 | 22:16 | AlexChu / Codex | Ghi thống nhất slot, probe và kiểm kê không xóa. | Live / slot slice |
 | v1.0.75 | 2026-11-01 | 22:11 | AlexChu / Codex | Ghi scanner helper và probe admin chỉ đọc sau triển khai. | Live / scan slice |
@@ -1372,3 +1432,14 @@ Sau trạng thái HOLD ở mục trên, theo yêu cầu trực tiếp của ngư
 MQM PASS thuộc revision trước biên tập; phần xóa/sửa được ghi audit riêng, không mô tả là MQM đã đánh giá lại. Mỗi bài qua kiểm trùng và có ảnh bìa được ràng buộc với payload thực tế. Kiểm trùng không atomic với người viết độc lập. Attempt 24 trước đó dừng trước Create, đã đối soát bằng phase, journal và tìm kiếm admin rồi chuyển released, article held trong cùng transaction; evidence nằm tại `/var/lib/nailhub-source-mirror/reports/attempt-24-reconciliation-20261103.json` trên THINKPAD.
 
 Comparator và ngoại lệ biên tập dùng stage một lần, không thay code/timer production. Lúc 18:21 DB integrity OK, không intent/unknown; ba bài workflow đã đăng trong ngày, còn một vị trí theo quota bốn bài. Hai khung lịch sử vẫn ghi HOLD và đã hết số lượt; khung 20:00 vẫn theo lịch bình thường, không bảo đảm sẽ đăng nếu gate giữ bài.
+
+### Kiểm tra đăng bù tự động 10/11/2026 (đang xử lý)
+
+Worker đã thử slot 08:00 ba lần và đều HOLD, nhưng vòng chạy hiện tại không gọi đăng bù sau lượt thứ ba; timer chuẩn bị nguồn không thực hiện đăng bài. Lượt đăng bù có khóa lúc 09:04 kết thúc do phản hồi so trùng không hợp lệ, trước khi tạo attempt; chưa có URL xuất bản. Lượt thứ hai dùng bài độc lập đã dừng lúc 09:29 do cấu trúc editor không khớp; attempt 53 đang `unknown`, chưa có URL được xác nhận. Đã upload ảnh bìa. Dữ liệu attempt ghi `pre_create`; kiểm tra mã cho thấy lỗi editor xảy ra trước nhánh Create, nhưng chưa có bằng chứng network độc lập hoặc URL PROD để kết luận kết quả. Giữ `unknown`, không thử đăng lại; cổng này cũng sẽ chặn các lượt đăng khác cho tới khi đối soát đủ bằng chứng. Quota vẫn là bốn bài/ngày.
+
+Bản sửa tự động đang được kiểm thử và review, chưa triển khai; broker AI dùng chung chưa có chứng cứ cô lập đầy đủ khi timeout nên cần xử lý trước khi triển khai. Dữ liệu lịch sử cũ chỉ có số lượt bắt đầu, không đủ chứng minh ba kết quả HOLD sau gián đoạn; bản thử chỉ tính các kết quả HOLD được lưu từ khi cập nhật.
+
+
+### 2026-11-10 10:32 — 1099 candidate, chưa triển khai
+
+Owner yêu cầu slot 12:00 tiếp nhận bài nail và thuế liên bang Mỹ, ưu tiên 1099 có nguồn IRS; giữ assignment đã ghim, quota, unknown và dedup. Candidate đang được phát triển tách khỏi baseline THINKPAD; không coi là chính sách runtime đã triển khai. Cần chứng minh đúng năm thuế và điều kiện từ nguồn IRS, nối fallback pin, cấu hình và xác minh ảnh/publish trước deploy. Kiểm tra lúc 10:29 cho thấy pin Rose quartz nails và hash lịch không đổi; worker active. Không tạo post. Theo dõi chi tiết trong `.context/source-mirror-tax-progress.md`.

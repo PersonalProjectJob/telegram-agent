@@ -9,6 +9,54 @@ owner: AlexChu
 
 # Source Mirror: Bộ lọc và cách xử lý
 
+## Cập nhật 1099 — 10/11/2026
+
+Owner quy định khung 12:00 giờ Việt Nam dành cho bài nail hoặc thuế liên bang Mỹ phù hợp ngành nail, đặc biệt 1099 khi nguồn hỗ trợ; giữ bài đã ghim và áp dụng quy trình dự phòng hiện hành. Đây là định hướng nghiệp vụ và biên tập. **Bổ sung chọn nguồn 1099 trong pipeline chưa deploy**: worker hiện chưa được xác nhận tự chọn hoặc tự đăng bài 1099, và thay Markdown không thay thế thay đổi code.
+
+Với từng nhận định thuế, dùng đúng URL trang IRS gốc hỗ trợ nhận định và nêu năm thuế, đối tượng, điều kiện, ngoại lệ và phạm vi liên bang tương ứng. Đối chiếu ấn bản và hiệu lực; ngày truy cập, ngày sửa trang hoặc một năm xuất hiện trong tài liệu không tự chứng minh năm áp dụng. Không mặc định ngưỡng cũ hay đồng nhất 1099-NEC, 1099-MISC và 1099-K. Khi thiếu chứng cứ, bỏ nhận định hoặc giữ bài theo quy trình hiện hành; không bịa số liệu. Trang tham khảo: [Form 1099-NEC](https://www.irs.gov/forms-pubs/about-form-1099-nec), [information returns](https://www.irs.gov/businesses/small-businesses-self-employed/am-i-required-to-file-a-form-1099-or-other-information-return), [instructions](https://www.irs.gov/instructions/i1099mec); chỉ dẫn trang thực sự hỗ trợ nhận định.
+
+Đã cập nhật Rule và Template trên THINKPAD dưới worker lock, có backup; loader `article_guidance.prepare()` dưới tài khoản service đã nạp cả hai file vào prompt thử. Worker active, lịch ghim không đổi tại lần kiểm tra. Không tạo bài hoặc triển khai code.
+
+
+## Kiểm thử lịch sử/tóm tắt — 05/11/2026, trước 16:35 ICT
+
+Candidate tách biệt, **chưa bật worker**. Khởi tạo shadow đã hợp nhất 122 bài từ snapshot và 10 URL thuộc attempts local Published ngoài snapshot thành 132 bản ghi, có title/summary, gồm 9 bài hiện Draft nhưng từng đăng. Metadata 10 lượt dựa match duy nhất URL+title với Admin, là kết quả suy ra; summary có thể đã được sửa sau lúc đăng. Không kiểm GET URL bài. Hai nhóm không phân loại chắc không bị loại khỏi so sánh. Bộ tích hợp 30 kiểm thử giả lập đạt trên THINKPAD; chưa E2E live/cutover.
+
+AGY thử trên 132 bản title/summary thực tế thất bại sau 311,94 giây: 4 lô đầu có kết quả, lô 5 chờ khoảng 200 giây và báo model không sẵn sàng; không đủ thông tin kết luận nguyên nhân. Qwen 3.5 9B local thử 3 cặp synthetic cũng timeout client sau 65 giây, không có kết quả. Hai thử nghiệm riêng không chứng minh model luôn thất bại; không có verdict so trùng. Client deadline có thể đóng socket nhưng không bảo đảm hủy AGY server subprocess. Cần khắc phục/đo lại trước khi bật; **không đổi model mặc định hay dùng dữ liệu thiếu để kết luận không trùng**.
+
+## Quy tắc Owner mới — 05/11/2026, 14:15 ICT
+
+**Yêu cầu mới đang thực hiện, chưa bật worker.** Mục này thay thế yêu cầu trước về đối chiếu trạng thái Published hiện tại, quét toàn thân bài và kiểm HTTP từng bài khi chống trùng. Những mô tả cũ bên dưới chỉ là lịch sử hoặc mô tả code còn đang chạy.
+
+- Chỉ so với **lịch sử local bài đã xác nhận đăng thành công** trên THINKPAD; bài trong kho chưa đăng không dùng làm tập so. Sau khi đã ghi nhận đăng thành công, không kiểm URL hay trạng thái hiện tại của bài đó để quyết định có so trùng. Bài đã chuyển Draft/Archived hoặc URL lỗi sau này vẫn nằm trong lịch sử chống trùng.
+- Phân loại mỗi bản ghi theo **chủ đề** và **đề tài**, lưu title cùng bản tóm tắt ý chính có tính phân biệt. Ví dụ: chủ đề Kinh doanh → đề tài Tăng lợi nhuận khi tiệm mới mở → các bài A/B/C với ý chính riêng. Cùng chủ đề/đề tài được phép; chỉ chuyển bài khi tiêu đề tương đồng ngữ nghĩa theo ngưỡng Owner đã chốt hoặc tóm tắt thể hiện nội dung trùng. Không coi tên nhóm là bằng chứng trùng, và không để việc phân loại nhóm sai tự bỏ sót so sánh.
+- Ngưỡng title đã chốt từ **70/100 về ý nghĩa** là ước lượng của model cần hiệu chuẩn; không gọi đó là xác suất hoặc tỉ lệ khách quan. Phần tóm tắt được đánh giá theo thông tin và góc nhìn cụ thể, không đặt ngưỡng số mới nếu Owner chưa chốt. Nếu trùng, chọn bài khác; nếu không thể đánh giá, báo rõ lỗi và không tự nhận là khác biệt.
+- Không quét thân đầy đủ hay so trùng hình ảnh cho quyết định chống trùng. Lúc hình thành tóm tắt mới, phải dựa trên nội dung đã duyệt và không bịa; tóm tắt không đủ thì xử lý như dữ liệu thiếu, không giả định không trùng.
+- Ghi nhận lịch sử sau khi đăng thành công, lưu ID/URL khi có, thời điểm, tiêu đề, chủ đề, đề tài, tóm tắt và bằng chứng kết quả; không lưu token. Ghi an toàn để lỗi/crash không làm mất record hoặc đăng lặp. Số lượng/nguồn của dữ liệu backfill phải ghi riêng, không tuyên bố đã biết toàn bộ lịch sử trước thời điểm khởi tạo.
+- Không kiểm tra URL/trạng thái về sau để quyết định trùng; điều đó **không loại bỏ đối soát an toàn khi kết quả Create của lần đăng hiện tại chưa rõ**. Lần chưa rõ vẫn cần xác minh trước khi retry.
+
+```mermaid
+flowchart TD
+ A([Chuẩn bị bài]) --> B[Phân nhóm và tóm tắt]
+ B --> C[Đọc lịch sử đã đăng]
+ C --> D{Tiêu đề hoặc ý chính trùng?}
+ D -- Có --> E[Chọn bài khác]
+ D -- Không --> F[Tiếp tục đăng]
+ F --> G{Xác nhận thành công?}
+ G -- Có --> H[Ghi lịch sử local]
+ G -- Chưa rõ --> I[Đối soát lượt đăng]
+```
+
+## Kiểm thử bốn phần chống trùng — 05/11/2026, khoảng 12:55 ICT
+
+**Candidate vẫn tách biệt, chưa bật vào worker.** Định danh official đã có bản thử hỗ trợ nhiều phiên bản, migration có backup/rollback, và reissue sau khi xác minh Admin ID. 58 kiểm thử identity/reissue/migration/runner/readback/postpublish đạt trên THINKPAD; test dùng fixture. Các bài cũ thiếu Admin ID được neo bằng chứng lúc Create không tự suy theo URL, cần đối soát. Cùng 36 test cũ: baseline 5 fail/7 error; candidate sau cập nhật bốn kỳ vọng chính sách cũng 5 fail/7 error; chưa xác nhận các lỗi còn lại vô hại.
+
+Official upload candidate dùng chứng cứ riêng theo attempt, chỉ giải phóng trước Create khi upload đã đóng và lock/receipt/phase hợp lệ; thiếu chứng cứ hay có thể đã Create thì dừng đối soát. 36 test fixture và Chromium tracker route.fulfill đạt, không phải E2E official. Một intent ảnh cũ của CDC attempt 13 đã `released`, chỉ có intent, thiếu response/receipt; outcome ảnh `unknown`, không xóa hoặc giả định hoàn tất. Helper audit thử nghiệm không cho phép bypass hay upload lại.
+
+Body semantic candidate so nội dung Published VI/EN kể cả khác ngôn ngữ; mẫu AGY thật 4 cặp cho kết quả như nhãn, 1 lô tổng hợp 47.782 ký tự mất 21,79 giây, chưa benchmark 122 bài và chưa hiệu chuẩn độ chính xác. Cache cặp có TTL, kiểm lại toàn vẹn, chỉ giảm so lặp; lượt đầu vẫn cần khoảng 31 lô/122 bài. Chromium fixture trên THINKPAD chạy scheduler, SQLite, browser, upload và Create giả: chọn bài B sau khi A trùng VI/EN, cập nhật registry; 1 upload và 1 Create đều giả, không kết nối PROD. Admin/AGY/CDN được giả lập nên đây không phải E2E PROD. Cache footer chỉ hit khi outgoing khớp bản duyệt cộng footer xác định, thay đổi khác so lại.
+
+Reviewer độc lập xác nhận các test thành phần nhưng chưa chấp thuận bật: response Create PROD có `id` hay không chưa kiểm chứng; receipt lưu ID tối thiểu và hash request/response, không lưu raw bytes nên phụ thuộc runtime; 1 legacy upload intent còn chưa đối soát xong; historical không anchor cần xử lý riêng; suite official cũ vẫn lỗi, chưa đo toàn kho AGY hoặc E2E PROD. Worker/AGY active, không `intent`/`unknown` mới tại 12:52; không sửa worker hoặc kho live.
+
 ## Kiểm thử tích hợp chống trùng — 05/11/2026, 11:33 ICT
 
 **Chưa bật và chưa đủ điều kiện bật.** Candidate cô lập trên THINKPAD có 55/55 kiểm thử mô phỏng đạt; sao lưu thử SQLite giữ 316 bài, 36 lượt đăng và khóa ngoại, hai lần thử lỗi giữa migration đều rollback. Không chạy migration trên kho vận hành. Thử Chromium callback thật đã phát hiện deadline không truyền qua ContextVar; candidate sửa bằng deadline cố định và kiểm tra các trường hợp hợp lệ/hết hạn/thiếu hạn trong browser fixture.
@@ -313,3 +361,5 @@ Sau trạng thái HOLD ở mục trên, theo yêu cầu trực tiếp của ngư
 MQM PASS thuộc revision trước biên tập; phần xóa/sửa được ghi audit riêng, không mô tả là MQM đã đánh giá lại. Mỗi bài qua kiểm trùng và có ảnh bìa được ràng buộc với payload thực tế. Kiểm trùng không atomic với người viết độc lập. Attempt 24 trước đó dừng trước Create, đã đối soát bằng phase, journal và tìm kiếm admin rồi chuyển released, article held trong cùng transaction; evidence nằm tại `/var/lib/nailhub-source-mirror/reports/attempt-24-reconciliation-20261103.json` trên THINKPAD.
 
 Comparator và ngoại lệ biên tập dùng stage một lần, không thay code/timer production. Lúc 18:21 DB integrity OK, không intent/unknown; ba bài workflow đã đăng trong ngày, còn một vị trí theo quota bốn bài. Hai khung lịch sử vẫn ghi HOLD và đã hết số lượt; khung 20:00 vẫn theo lịch bình thường, không bảo đảm sẽ đăng nếu gate giữ bài.
+
+Changelog | v1.0.1 | 2026-11-10 10:36 ICT | AlexChu / Codex | Cập nhật quy định 12:00, nguồn IRS và trạng thái pipeline 1099 chưa deploy.
