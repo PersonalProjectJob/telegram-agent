@@ -237,6 +237,7 @@ class Settings:
     ready_poll: float = 1
     test_paths: bool = False
     allow_removed: tuple[str, ...] = ()
+    rollback_no_start: bool = False
 
     @property
     def package(self):
@@ -384,7 +385,7 @@ class Deployment:
                     raise DeploymentError('Installed bytes differ from staged wheel: ' + name)
         return {'bytes_match': True}
 
-    def rollback(self, backup, before, *, restore_db=False):
+    def rollback(self, backup, before, *, restore_db=False, no_start=False):
         settings = self.settings
         metadata = json.loads((backup / 'backup.json').read_text(encoding='utf-8'))
         if metadata['service'] != settings.service or metadata['code_dir'] != str(settings.code_dir.resolve()) or metadata['config_path'] != str(settings.config.resolve()):
@@ -427,7 +428,7 @@ class Deployment:
                 with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as restored:
                     if restored.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                         raise DeploymentError('Restored SQLite integrity_check failed')
-        if before['ActiveState'] == 'active':
+        if before['ActiveState'] == 'active' and not no_start:
             self.system('start')
             if self.snapshot(settings.unit)['ActiveState'] != 'active':
                 raise DeploymentError('Rollback unit is not active')
@@ -534,8 +535,9 @@ class Deployment:
             result['error']=type(error).__name__+': '+str(error)
             try:
                 if backup is not None:
-                    result['rollback']=self.rollback(backup,before,restore_db=not result['start_issued'])
-                elif stopped and before['ActiveState']=='active':
+                    result['rollback']=self.rollback(backup,before,restore_db=not result['start_issued'],
+                                                     no_start=settings.rollback_no_start)
+                elif stopped and before['ActiveState']=='active' and not settings.rollback_no_start:
                     self.system('start')  # Backup failed before any installation; original files are intact.
                     result['rollback']={'restored':True,'original_install_unchanged':True,'database_restored':False}
             except Exception as rollback_error:
@@ -553,6 +555,8 @@ def main(argv=None):
     parser.add_argument('--allow-removed', action='append', default=[], metavar='RECORD_PATH',
                         help='Permit exactly this installed RECORD path to be absent from the wheel (repeatable)')
     parser.add_argument('--restore-db', action='store_true', help='Explicitly restore DB with a manual rollback')
+    parser.add_argument('--no-start', action='store_true', help='Manual rollback: leave target stopped for config/unit review')
+    parser.add_argument('--rollback-no-start', action='store_true', help='Deploy failure: leave restored code stopped for manual config recovery')
     parser.add_argument('--test-paths', action='store_true', help='Allow TEMP paths/units and short health waits for tests only')
     parser.add_argument('--rollback', type=Path, help='Restore this service from a validated deploy backup')
     parser.add_argument('--code-dir', type=Path)
@@ -571,6 +575,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.restore_db and args.rollback is None:
         parser.error('--restore-db requires --rollback')
+    if args.no_start and args.rollback is None:
+        parser.error('--no-start requires --rollback')
     if not args.test_paths:
         defaults=DEFAULTS[args.service]
         for field in ('unit','other_unit','code_dir','config','state_dir'):
@@ -597,14 +603,16 @@ def main(argv=None):
                         args.config or defaults['config'], args.state_dir or defaults['state_dir'],
                         args.backup_root, args.python, tuple(site_paths), args.prefix,
                         args.unit or defaults['unit'], args.other_unit or defaults['other_unit'],
-                        args.db_path, args.systemctl, args.journalctl, args.health_wait, test_paths=args.test_paths, allow_removed=tuple(args.allow_removed))
+                        args.db_path, args.systemctl, args.journalctl, args.health_wait, test_paths=args.test_paths,
+                        allow_removed=tuple(args.allow_removed), rollback_no_start=args.rollback_no_start)
     os.umask(0o077)
     try:
         deployer = Deployment(settings)
         if args.rollback is not None:
             settings.validate()
             other_before = deployer.snapshot(settings.other_unit)
-            restored = deployer.rollback(args.rollback.resolve(), {'ActiveState': 'active'}, restore_db=args.restore_db)
+            restored = deployer.rollback(args.rollback.resolve(), {'ActiveState': 'active'},
+                                         restore_db=args.restore_db, no_start=args.no_start)
             other_after = deployer.snapshot(settings.other_unit)
             result = {'service': service, 'rollback': restored, 'other_before': other_before, 'other_after': other_after}
             if other_after != other_before:
