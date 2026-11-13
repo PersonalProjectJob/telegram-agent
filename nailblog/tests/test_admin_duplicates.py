@@ -93,6 +93,12 @@ class Button:
     def locator(self, selector):
         return Button(self.page, selector)
 
+    def nth(self, index):
+        return self
+
+    async def input_value(self):
+        return 'Draft'
+
 
 class FakePage:
     def __init__(self, responses=(), more=False):

@@ -217,7 +217,9 @@ class OutboxSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(row['next_attempt_at'], 1000.0)
 
     async def test_a_hung_send_does_not_stop_the_scheduler_from_running_publish_pass(self):
-        service = Service(settings(self.temp.name, mode='live'))
+        from nailblog.config import ContractConfig, STAGING_API_ORIGIN, STAGING_SITE_ORIGIN
+        service = Service(settings(self.temp.name, mode='live', contract=ContractConfig(
+            api_origin=STAGING_API_ORIGIN, site_origin=STAGING_SITE_ORIGIN, environment='staging')))
         service.publish_pass = AsyncMock(return_value=None)
         calls = []
 

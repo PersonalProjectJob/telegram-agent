@@ -242,6 +242,51 @@ def find_duplicates_on(site):
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_changed_form_status_retains_claim_then_safe_local_release_on_retry(self):
+        from nailblog.admin import Admin
+        with tempfile.TemporaryDirectory() as d:
+            c=config(d);service=Service(c);service.state.arm(service.startup_binding);p=payload()
+            for image in [p['coverImage'],*p['images']]:
+                image['imageUrl']=image['imageUrl'].replace('/images/','/nailblog-local/')
+            p['translations'][0]['content']=p['translations'][0]['content'].replace('/images/','/nailblog-local/')
+            n=service.state.add_post(SLOT.isoformat(),draft=document(p))
+            browser=Admin(c);browser.write_ready=lambda:None;browser.ready=AsyncMock()
+            browser.select_form_option=AsyncMock();browser.paste_html=AsyncMock()
+            uploaded=copy.deepcopy(p)
+            for image in [uploaded['coverImage'],*uploaded['images']]:
+                image['imageUrl']=image['imageUrl'].replace('/nailblog-local/','/uploaded/')
+            uploaded['translations'][0]['content']=uploaded['translations'][0]['content'].replace('/nailblog-local/','/uploaded/')
+            browser.upload=AsyncMock(side_effect=[uploaded['coverImage'],*uploaded['images']])
+            browser.find_duplicates=AsyncMock(return_value=[])
+            class Control:
+                def nth(self,index):return self
+                def locator(self,*args):return self
+                def get_by_placeholder(self,*args,**kwargs):return self
+                def get_by_role(self,*args,**kwargs):return self
+                async def wait_for(self,**kwargs):pass
+                async def click(self):pass
+                async def fill(self,value):pass
+                async def press(self,value):pass
+                async def input_value(self):return 'Published'
+            control=Control()
+            browser.page=SimpleNamespace(get_by_role=lambda *args,**kwargs:control,expect_response=AsyncMock())
+            context=AsyncMock();context.__aenter__.return_value=browser;context.write_ready=lambda:None
+            with patch('nailblog.admin.Admin',return_value=context), \
+                    patch('nailblog.admin_images.validate_files',return_value=document(p)['image_hashes']):
+                with self.assertRaisesRegex(AdminError,'^form_draft_status_changed$'):
+                    await service.save_remote_draft(n,p,cover_path='cover',image_paths=['1','2','3'])
+                store=AdminStore(service.state,c)
+                self.assertIsNotNone(store.operation(n))
+                browser.page.expect_response.assert_not_called()
+                async def retry(value,materialize,**kwargs):
+                    materialize(uploaded)
+                    return {**uploaded,'id':POST_ID}
+                browser.save_draft=AsyncMock(side_effect=retry)
+                await service.save_remote_draft(n,p,cover_path='cover',image_paths=['1','2','3'])
+                self.assertEqual(service.state.get_post(n)['admin_id'],POST_ID)
+                self.assertEqual(browser.find_duplicates.await_count,2)
+                browser.save_draft.assert_awaited_once()
+
     async def test_create_failure_then_restart_recovers_once_without_recreating(self):
         with tempfile.TemporaryDirectory() as d:
             c=config(d);service=Service(c);service.state.arm(service.startup_binding);p=payload()
@@ -485,6 +530,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 async def select_option(self,value):calls.append(('select',value))
                 async def fill(self,value):pass
                 async def press(self,value):pass
+                async def input_value(self):return 'Draft'
                 async def wait_for(self,**kw):pass
                 async def click(self):calls.append(('click',))
                 def locator(self,*a):return self
@@ -510,6 +556,32 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(prepared['images'][0]['imageUrl'],payload()['images'][0]['imageUrl'])
             receipt_payload=admin.create_receipt.await_args.args[1]
             self.assertEqual(receipt_payload['images'],new_media[1:])
+
+    async def test_create_refuses_changed_form_status_before_materialization_or_submission(self):
+        from nailblog.admin import Admin
+        with tempfile.TemporaryDirectory() as d:
+            admin=Admin(config(d));admin.write_ready=lambda:None;admin.ready=AsyncMock()
+            admin.select_form_option=AsyncMock();admin.paste_html=AsyncMock()
+            prepared=payload();media=[prepared['coverImage'],*prepared['images']]
+            admin.upload=AsyncMock(side_effect=media)
+            class Control:
+                def nth(self,index):return self
+                def locator(self,*args):return self
+                def get_by_placeholder(self,*args,**kwargs):return self
+                def get_by_role(self,*args,**kwargs):return self
+                async def wait_for(self,**kwargs):pass
+                async def click(self):pass
+                async def fill(self,value):pass
+                async def press(self,value):pass
+                async def input_value(self):return 'Published'
+            control=Control()
+            admin.page=SimpleNamespace(get_by_role=lambda *args,**kwargs:control,
+                                       expect_response=AsyncMock())
+            materialize=AsyncMock()
+            with self.assertRaisesRegex(AdminError,'^form_draft_status_changed$'):
+                await admin.save_draft(prepared,materialize,cover_path='cover.webp',image_paths=['1.webp','2.webp','3.webp'])
+            materialize.assert_not_called()
+            admin.page.expect_response.assert_not_called()
 
     async def test_select_uses_visible_radix_control_and_verifies_native_value(self):
         from nailblog.admin import Admin

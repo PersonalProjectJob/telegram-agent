@@ -45,6 +45,9 @@ def scratch(config):
     the whole job, including writing topics, posts and files, and leave nothing behind. When the real database
     exists it is copied; when it does not, the scratch state starts empty and the real state directory is never
     created or touched."""
+    if config.mode == 'live' and config.contract.environment == 'production':
+        # A production-safe snapshot and scratch binding have not yet been implemented.
+        raise StateError('production_dry_run_unsupported')
     with tempfile.TemporaryDirectory(prefix='nailblog-dry-run-') as directory:
         copy = Path(directory) / 'nailblog.sqlite3'
         real = Path(config.db_path)
@@ -142,6 +145,8 @@ async def _daily(config, args, runtime, options):
 
 def _autoflow_requeue(config, args, runtime):
     """Operator command (R7b): reopen a run held `text_quality_held` on a new slot. Bot must be paused."""
+    if args.dry_run and config.mode == 'live' and config.contract.environment == 'production':
+        raise StateError('production_dry_run_unsupported')
     from .autoflow import requeue_held_text
     from .service import Service
     now = runtime.now if runtime.now is not None else time.time()
@@ -162,7 +167,8 @@ async def execute(command, config, args=None, runtime=None):
     runtime = runtime or Runtime()
     if command == 'pause-install':
         from .state import State
-        state = State(config.db_path, image_mode=config.schedule.image_mode)
+        from .state import state_for_config
+        state = state_for_config(config)
         state.set_paused(True)
         state.disarm()   # only an explicit /nailblog resume (with its preflight) arms again
         print('NailBlog installed/startup paused')
@@ -202,6 +208,13 @@ async def execute(command, config, args=None, runtime=None):
     if command == 'autoflow-requeue':
         _autoflow_requeue(config, args, runtime)
         return
+    if command == 'operator-topic':
+        from .operator_topics import select
+        from .service import Service
+        selected = select(Service(config), slot=args.slot, title=args.title, category=args.category,
+                          approval_ref=args.approval_ref, now=runtime.now if runtime.now is not None else time.time())
+        print(json.dumps(selected, ensure_ascii=False, sort_keys=True))
+        return
     from .service import Service
     from .text import TextModel
     options = {'_test_transport': runtime._test_transport} if runtime._test_transport is not None else {}
@@ -235,7 +248,7 @@ def main(argv=None, *, runtime=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog='python -m nailblog')
     parser.add_argument('command', choices=('run', 'login-telegram', 'status', 'login', 'probe', 'pause-install', 'startup-gate',
-                                            'autoflow-requeue') + PIPELINES)
+                                            'autoflow-requeue', 'operator-topic') + PIPELINES)
     parser.add_argument('--config', default=os.environ.get('NAILBLOG_CONFIG', '/etc/nailblog/nailblog.toml'))
     parser.add_argument('--dry-run', action='store_true',
                         help='plan-week, trends, daily: work on a scratch copy of the state (empty when none exists); nothing is written to the real state directory')
@@ -243,6 +256,9 @@ def main(argv=None, *, runtime=None):
     parser.add_argument('--out', help='preview: output directory; probe: output report JSON and sibling PNG')
     parser.add_argument('--run', help='autoflow-requeue: run id of the held run (e.g. auto-20261028-0600-t1)')
     parser.add_argument('--slot', help='autoflow-requeue: new slot, ISO datetime with timezone (e.g. 2026-10-28T14:00:00+07:00)')
+    parser.add_argument('--title', help='operator-topic: Owner-selected title')
+    parser.add_argument('--category', help='operator-topic: category slug')
+    parser.add_argument('--approval-ref', help='operator-topic: non-secret reference to the Owner decision')
     parser.add_argument('--at', type=int, choices=sorted(DAILY_AT), help='daily: milestone hour (10, 13 or 20)')
     parser.add_argument('--date', type=date.fromisoformat, help='daily: the run day, YYYY-MM-DD (default: today in Vietnam)')
     args = parser.parse_args(argv)
@@ -256,15 +272,20 @@ def main(argv=None, *, runtime=None):
         parser.error('--dry-run belongs to plan-week, trends, daily and autoflow-requeue only')
     if args.command == 'autoflow-requeue' and (not args.run or not args.slot):
         parser.error('autoflow-requeue needs --run <run_id> and --slot <ISO datetime with timezone>')
-    if args.command != 'autoflow-requeue' and (args.run or args.slot):
+    if args.command not in ('autoflow-requeue', 'operator-topic') and (args.run or args.slot):
         parser.error('--run and --slot belong to autoflow-requeue only')
+    if args.command == 'operator-topic' and (args.run or not all((args.slot, args.title, args.category, args.approval_ref))):
+        parser.error('operator-topic requires --slot, --title, --category and --approval-ref')
+    if args.command != 'operator-topic' and (args.title or args.category or args.approval_ref):
+        parser.error('--title, --category and --approval-ref belong to operator-topic only')
     if args.command == 'daily' and args.at is None:
         parser.error('daily needs --at 10|13|20')
     if args.command != 'daily' and (args.at is not None or args.date is not None):
         parser.error('--at and --date belong to daily only')
     try:
         config = load_config(args.config)
-        if not args.dry_run:   # a --dry-run never creates the real state directory
+        if not args.dry_run and not (config.mode == 'live' and config.contract.environment == 'production'):
+            # Production state is provisioned and checked by state_for_config, not created here.
             Path(config.db_path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         asyncio.run(execute(args.command, config, args, runtime))
         return 0

@@ -90,6 +90,9 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
         self.config=settings(self.temp.name,mode='live',contract=ContractConfig(verified=True,media_origin=PRODUCTION_MEDIA_ORIGIN))
+        # This fixture tests workflow semantics with a fake PROD site and temp paths; POSIX isolation has separate tests.
+        for target in ('nailblog.production_state.ensure_production_state', 'nailblog.onepost._check_production_output'):
+            guard=patch(target);guard.start();self.addCleanup(guard.stop)
         self.now=[1792458000]
         self.service=Service(self.config,clock=lambda:self.now[0])
         self.service.state.set_paused(False)

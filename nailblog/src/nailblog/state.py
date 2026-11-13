@@ -87,7 +87,7 @@ def _claim_slot(db, topic_id, slot_at):
 
 
 class State:
-    def __init__(self, path, *, image_mode="fixed"):
+    def __init__(self, path, *, image_mode="fixed", initial_paused=False):
         self.path = str(path)
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -137,8 +137,8 @@ class State:
                 raise StateError("image_mode must be fixed, random or adaptive")
             if "armed_binding" not in {row["name"] for row in db.execute("PRAGMA table_info(control)")}:
                 db.execute("ALTER TABLE control ADD COLUMN armed_binding TEXT NOT NULL DEFAULT ''")
-            db.execute("INSERT OR IGNORE INTO control(id,paused,image_mode,last_result) VALUES(1,0,?,'not started')",
-                       (image_mode,))
+            db.execute("INSERT OR IGNORE INTO control(id,paused,image_mode,last_result) VALUES(1,?,?,'not started')",
+                       (int(initial_paused), image_mode))
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -500,9 +500,25 @@ def startup_binding(config, *, config_path=None, package_dir=None):
     return combined, kind
 
 
+def state_for_config(config, *, state=None, image_mode=None):
+    """Validate the production binding before any state constructor or migration."""
+    production = config.mode == 'live' and config.contract.environment == 'production'
+    if production:
+        from .production_state import check_production_runs, ensure_production_state
+        check_production_runs(config)
+        ensure_production_state(config.db_path)
+        if state is not None and state.path != config.db_path:
+            raise StateError('production_state_instance_mismatch')
+    if state is not None:
+        return state
+    mode = config.schedule.image_mode if image_mode is None else image_mode
+    return (State(config.db_path, image_mode=mode, initial_paused=True) if production
+            else State(config.db_path, image_mode=mode))
+
+
 def startup_gate(config, *, state=None, config_path=None, package_dir=None):
     """Keep the armed state across crash restarts; a new build, config file or mode pauses and disarms."""
-    state = state or State(config.db_path, image_mode=config.schedule.image_mode)
+    state = state_for_config(config, state=state)
     binding, kind = startup_binding(config, config_path=config_path, package_dir=package_dir)
     if binding == state.armed_binding():
         return {"decision": "unchanged", "armed": True, "paused": bool(state.control()["paused"]),

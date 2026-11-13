@@ -235,6 +235,14 @@ class Harness:
             admin=AdminConfig(category_ids=dict(CATEGORY_IDS), publish_timeout_seconds=30, daily_publish_limit=4),
             autoflow=AutoflowConfig(enabled=True, runs_dir=str(self.root / 'runs')))
         self.config = settings(temp.name, **{**values, **(overrides or {})})
+        if self.config.contract.environment == 'production':
+            # Synthetic production config and temp state: state binding is tested separately on POSIX.
+            guard = patch('nailblog.production_state.ensure_production_state')
+            guard.start()
+            case.addCleanup(guard.stop)
+            run_guard = patch('nailblog.production_state.check_production_runs')
+            run_guard.start()
+            case.addCleanup(run_guard.stop)
         for name, target in (('nailblog.onepost.ImagePipeline', self.pipeline),
                              ('nailblog.admin.Admin', lambda config: FakeAdmin(self.remote, config))):
             patcher = patch(name, side_effect=target)

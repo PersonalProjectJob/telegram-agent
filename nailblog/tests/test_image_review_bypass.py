@@ -6,6 +6,7 @@ import tomllib
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from nailblog.admin_images import validate_files, verify_reviews
 from nailblog.config import ContractConfig, ImageConfig, PRODUCTION_MEDIA_ORIGIN
@@ -123,6 +124,9 @@ class OnePostBypassTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         self.base = settings(self.temp.name, mode='live',
                              contract=ContractConfig(verified=True, media_origin=PRODUCTION_MEDIA_ORIGIN))
+        # Fake PROD workflow with temp paths; real POSIX isolation is tested separately.
+        for target in ('nailblog.production_state.ensure_production_state', 'nailblog.onepost._check_production_output'):
+            guard = patch(target); guard.start(); self.addCleanup(guard.stop)
         self.config = with_bypass(self.base, True)
         self.service = Service(self.config, clock=lambda: 1792458000)
         self.service.state.set_paused(False)

@@ -356,12 +356,19 @@ def chosen_topic(state, target, hhmm):
     return None
 
 
-def locked_topic(state, topic):
+def locked_topic(state, topic, config=None):
     """True once the daily `decide` step has LOCKED this approved topic for its slot: decide's marker of the day before
     the slot's Vietnam day exists and the topic carries decide's `chosen` label for that day and slot. Before that
     (picks and swaps are still allowed until the pick deadline) no paid run may start."""
     if topic.get("state") != "approved" or not topic.get("slot_at"):
         return False
+    if config is None and str(topic.get('week', '')).startswith('operator:'):
+        return False
+    if config is not None:
+        from .operator_topics import locked
+        decision = locked(state, config, topic)
+        if decision is not None:
+            return decision
     try:
         slot = datetime.fromisoformat(topic["slot_at"]).astimezone(VN_TZ)
     except ValueError:
@@ -391,7 +398,7 @@ def _backlog(state, target, hhmm, config=None):
     slot = slot_text(target, hhmm)
     pool = []
     for row in state.list_topics(("approved",)):
-        if (row["week"].startswith("daily:") or (group and row["category"] not in group)
+        if (row["week"].startswith(("daily:", "operator:")) or (group and row["category"] not in group)
                 or (meta_of(row).get("chosen") or {}).get("day") or state.posts_for_topic(row["id"])
                 or not _fresh(row, target) or state.slot_holder(slot, excluding=row["id"]) is not None):
             continue
@@ -409,6 +416,13 @@ async def decide(service, text, today, *, opener=None):
     for hhmm in slots_of(config):
         slot = slot_text(target, hhmm)
         marker = {"day": target.isoformat(), "slot": hhmm}
+        if config.contract.environment == 'production':
+            from .operator_topics import locked
+            operator = next((candidate for candidate in state.list_topics(('approved',))
+                             if candidate['slot_at'] == slot and locked(state, config, candidate) is True), None)
+            if operator is not None:
+                lines.append(f"{hhmm} — {operator['title'][:120]} (Owner đã chọn)")
+                continue
         row = chosen_topic(state, target, hhmm)
         if row is not None:
             if (meta_of(row).get("chosen") or {}).get("day") != marker["day"]:   # keep a label set by an interrupted run

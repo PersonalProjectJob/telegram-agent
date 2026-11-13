@@ -8,6 +8,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from nailblog import __main__ as cli
 from nailblog import autoflow
@@ -187,7 +188,9 @@ class StagingMarker(FxBase):
 
     async def test_production_environment_has_no_prefix(self):
         fx = self.fixture()
-        await self.to_images_wait(fx)
+        fx.configure(contract=ContractConfig(environment='production'))
+        with patch('nailblog.production_state.check_production_runs'):
+            await self.to_images_wait(fx)
         self.assertTrue(fx.media[0][2].startswith('NailBlog duyệt bài + ảnh'))
 
 

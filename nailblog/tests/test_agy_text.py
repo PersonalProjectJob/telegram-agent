@@ -124,7 +124,8 @@ class NativeTextTests(unittest.TestCase):
 class PolicyAndIdentityTests(unittest.TestCase):
     def test_policy_has_no_tools_and_matches_deploy_file(self):
         body = text_policy('nailblog-text-only')
-        for needle in (b'tools: []', b'subagent: false', b'commandExecutionPolicy: "off"', b'name: nailblog-text-only'):
+        for needle in (b'tools: []', b'subagent: false', b'excludeDefaultComponents: true',
+                       b'commandExecutionPolicy: "off"', b'name: nailblog-text-only'):
             self.assertIn(needle, body)
         self.assertNotIn(b'accept', body.lower())
         deployed = (Path(__file__).parents[1] / 'deploy/nailblog-text-only.md').read_bytes().replace(b'\r\n', b'\n')
@@ -281,6 +282,20 @@ class WorkerTextTests(Env):
         self.tamper()
         job_id, result = self.run_job()
         self.assertEqual(result['error'], 'cli_tool_policy_changed')
+        self.assertEqual(self.calls, [])
+
+    def test_old_policy_blocks_readiness_in_installed_and_preflight_mirror(self):
+        policy = text_policy('nailblog-text-only')
+        old = policy.replace(b'excludeDefaultComponents: true\n', b'')
+        self.assertNotEqual(__import__('hashlib').sha256(old).hexdigest(), text_policy_sha('nailblog-text-only'))
+        self.installed_policy().write_bytes(old)
+        self.assertFalse(self.worker.text_ready(self.private))
+        self.installed_policy().write_bytes(policy)
+        mirror = self.private / 'policy-preflight-text/.agents/agents/nailblog-text-only.md'
+        mirror.write_bytes(old)
+        self.assertFalse(self.worker.text_ready(self.private))
+        mirror.write_bytes(policy)
+        self.assertTrue(self.worker.text_ready(self.private))
         self.assertEqual(self.calls, [])
 
     def test_policy_changed_between_preflight_and_lock_blocks_dispatch(self):
@@ -465,6 +480,51 @@ class WorkerTextTests(Env):
 
 
 class AgyTextTests(Env):
+    def downgrade_job_policy(self, job):
+        request = json.loads((job / 'request.json').read_bytes())
+        old = text_policy(self.cfg.text_agent).replace(b'excludeDefaultComponents: true\n', b'')
+        old_sha = __import__('hashlib').sha256(old).hexdigest()
+        request['config']['text_policy_sha'] = old_sha
+        atomic(job / 'request.json', request)
+        if (job / 'receipt.json').exists():
+            receipt = json.loads((job / 'receipt.json').read_bytes())
+            receipt['request_sha'] = __import__('nailblog.publication', fromlist=['digest']).digest(request)
+            if 'policy_sha' in receipt: receipt['policy_sha'] = old_sha
+            atomic(job / 'receipt.json', receipt)
+
+    def test_old_policy_identity_unknown_job_is_not_redispatched(self):
+        self.behaviour = lambda args, timeout: (_ for _ in ()).throw(ImageError('cli_timeout_unknown'))
+        with self.assertRaises(AgyTextError): self.submit()
+        job = next(p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir())
+        self.downgrade_job_policy(job)
+        for _ in range(2):
+            with self.assertRaises(AgyTextError) as caught: self.submit()
+            self.assertEqual(caught.exception.code, 'unknown')
+        with Directory(self.cfg.queue_dir) as queue: self.assertIsNone(self.worker.scan(queue, self.private))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len([p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir()]), 1)
+
+    def test_old_completed_job_is_read_only_after_full_proof_verification(self):
+        self.assertEqual(self.submit(), ARTICLE)
+        job = next(p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir())
+        self.downgrade_job_policy(job)
+        self.assertEqual(self.submit(), ARTICLE)
+        self.assertEqual(len(self.calls), 1)
+        (job / 'native-transcript.json').write_bytes(b'[]')
+        with self.assertRaises(AgyTextError) as caught: self.submit()
+        self.assertEqual(caught.exception.code, 'failed')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_old_pending_job_is_held_without_dispatch(self):
+        self.autorun = False
+        with self.assertRaises(AgyTextError): self.submit()
+        job = next(p for p in Path(self.cfg.queue_dir).iterdir() if p.is_dir())
+        self.downgrade_job_policy(job)
+        with self.assertRaises(AgyTextError) as caught: self.submit()
+        self.assertEqual((caught.exception.code, caught.exception.detail),
+                         ('held', 'cli_text_held_legacy_policy_pending'))
+        self.assertEqual(self.calls, [])
+
     def test_ask_round_trip_returns_json_with_receipt_and_never_holds_model_lock(self):
         state = []
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .._runtime import ProcessLock
 from ..admin_images import validate_files, verify_reviews
-from ..publication import digest
+from ..publication import AdminError, binding as environment_binding, digest
 from ..writer import render_html
 from . import ImageError
 from .post import crop, decode, hashes, webp, thumbnail_cli
@@ -18,14 +18,30 @@ from .subscription import SubscriptionImages, verify_receipt, PROTOCOL
 CLI_PROCESSING = 'subscription-native-cover1376x768-body1200x675-v2-no-overlay'
 
 
+def _production_environment(config):
+    """Production requires manual Owner review and an explicit, valid environment binding."""
+    if config.contract.environment != 'production':
+        return None
+    if (config.autoflow.owner_approval is not True or config.contract.verified is not True or
+            not config.contract.media_origin):
+        raise ImageError('cli_production_owner_or_contract_required')
+    try:
+        return environment_binding(config)
+    except AdminError:
+        raise ImageError('cli_production_owner_or_contract_required') from None
+
+
 def validate_provenance(document, manifest, directory, config):
     from .pipeline import artifact, check_bypass_manifest, load_json
     from .subscription import read, uid, validate_request, verify_native_receipt
-    if (config is None or config.image.provider != 'subscription' or config.contract.environment != 'staging' or
+    if (config is None or config.image.provider != 'subscription' or config.contract.environment not in ('staging', 'production') or
             manifest.get('provider') != 'subscription' or manifest.get('processing') != CLI_PROCESSING or
             manifest.get('document_digest') != digest(document) or manifest.get('article_sha') != digest(document.get('article')) or
             document.get('image_source') != {'route': 'subscription', 'api_usd': None, 'plan_cost_included': 'unknown'}):
         raise ImageError('cli_provenance_invalid')
+    environment = _production_environment(config)
+    if environment is not None and manifest.get('environment') != environment:
+        raise ImageError('cli_provenance_environment_mismatch')
     names = ['cover', *[f'body-{i}' for i in range(1, len(document.get('image_hashes', [])))]]
     actual = validate_files(document['cover_path'], document['image_paths'], config=config)
     if actual != document['image_hashes'] or set(manifest.get('positions', {})) != set(names):
@@ -85,17 +101,21 @@ async def run(pipeline, article, out, run_id, *, enabled, paid_enabled, free_ena
     config = pipeline.config
     if not enabled or paid_enabled or free_enabled:
         raise ImageError('explicit_subscription_enable_required')
-    if (config.contract.environment != 'staging' or not config.image.review_bypass or
+    if (config.contract.environment not in ('staging', 'production') or not config.image.review_bypass or
             config.image.candidates != 1 or config.image.max_rounds != 1):
         raise ImageError('cli_staging_bypass_single_generation_required')
+    environment = _production_environment(config)
     positions = slots(article)
     if len(positions) > config.subscription.max_images_per_run:
         raise ImageError('cli_run_image_cap')
     for slot in positions: feasible_brief(slot['brief'], slot['subject'])
     directory = safe_directory(out)
-    binding = digest({'article': article, 'provider': 'subscription', 'subscription': asdict(config.subscription),
-                      'image': asdict(config.image), 'processing': CLI_PROCESSING, 'prompt_version': PROMPT_VERSION,
-                      'directory': str(directory)})
+    identity = {'article': article, 'provider': 'subscription', 'subscription': asdict(config.subscription),
+                'image': asdict(config.image), 'processing': CLI_PROCESSING, 'prompt_version': PROMPT_VERSION,
+                'directory': str(directory)}
+    if environment is not None:
+        identity['environment'] = environment
+    binding = digest(identity)
     provider = pipeline.provider
     with ProcessLock(directory):
         path = directory / 'manifest.json'
@@ -112,6 +132,8 @@ async def run(pipeline, article, out, run_id, *, enabled, paid_enabled, free_ena
         else:
             manifest = {'provider': 'subscription', 'run_id': run_id, 'binding': binding, 'article_sha': digest(article),
                         'processing': CLI_PROCESSING, 'status': 'working', 'positions': {}, 'candidates': {}, 'usage': []}
+            if environment is not None:
+                manifest['environment'] = environment
             write_atomic(path, manifest)
         visual = pipeline.historical_hashes()
         names = ['cover', *[f'body-{i}' for i in range(1, len(positions))]]

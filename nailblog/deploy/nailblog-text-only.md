@@ -4,6 +4,7 @@ description: JSON-only text answers for the NailBlog subscription worker
 model: inherit
 mainAgent: true
 subagent: false
+excludeDefaultComponents: true
 tools: []
 commandExecutionPolicy: "off"
 ---

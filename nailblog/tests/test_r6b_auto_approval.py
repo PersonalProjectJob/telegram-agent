@@ -107,6 +107,34 @@ class AutoE2ETests(AutoBase):
             await h.tick(60)
         self.assertEqual((h.rows(), h.counts(), h.client.cards, h.ask.calls, self.approval_rows(h)), ([], (0, 0), [], [], []))
 
+    async def test_production_requires_literal_true_even_if_loader_is_bypassed(self):
+        for value in (None, 0, 1, 'true'):
+            with self.subTest(value=value):
+                h = self.auto(slots=('06:00',), owner_approval=value, environment='production')
+                for _ in range(3):
+                    await h.tick(60)
+                self.assertEqual((h.rows(), h.counts(), h.client.cards, h.ask.calls, self.approval_rows(h)),
+                                 ([], (0, 0), [], [], []))
+
+    async def test_production_manual_flow_waits_for_each_owner_decision(self):
+        h = self.auto(slots=('06:00',), owner_approval=True, environment='production')
+        await h.until_stage('images_wait')
+        self.assertEqual(len(h.cards('images')), 1)
+        for _ in range(2):
+            await h.tick(60)
+        self.assertEqual((h.stages(), h.counts()), (['images_wait'], (0, 0)))
+        await h.ok_all('images')
+        await h.until_stage('draft_wait')
+        self.assertEqual(len(h.cards('draft')), 1)
+        for _ in range(2):
+            await h.tick(60)
+        self.assertEqual((h.stages(), h.counts()), (['draft_wait'], (1, 0)))
+        await h.ok_all('draft')
+        await h.until_stage('scheduled')
+        rows = self.approval_rows(h)
+        self.assertEqual(sorted(row['kind'] for row in rows), ['draft', 'images'])
+        self.assertTrue(all(row['status'] == 'approved' and row['decided_by'] != 'auto' for row in rows))
+
 
 class AutoHoldTests(AutoBase):
     async def test_a_fixable_cliche_post_is_held_never_overridden_and_never_created(self):

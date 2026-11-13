@@ -92,7 +92,11 @@ Install the exact reviewed `nailblog-text-only.md` bytes as
 `/home/startechai/snap/antigravity-cli/common/.gemini/config/agents/<subscription.text_agent>.md`
 (default `nailblog-text-only`; the name must match `^[a-z0-9][a-z0-9-]{0,63}$` and the
 file's `name:` line is generated from it by `text_policy()`), owned by startechai, mode 0640.
-Policy: `tools: []`, `subagent: false`, `commandExecutionPolicy: "off"`; the worker
+Policy: `excludeDefaultComponents: true`, `tools: []`, `subagent: false`,
+`commandExecutionPolicy: "off"`; Agy's 1.2.1 changelog describes the first option
+as excluding default prompt sections and built-in tools while preserving hooks. Its
+effect with the pinned 1.2.11 worker still requires a controlled runtime smoke; the
+native transcript verification continues to reject every tool call. The worker
 passes `--agent <text_agent>` and never accept-edits or any permission bypass. It checks
 the policy SHA before readiness and again under the model lock before dispatch. Text
 jobs run up to `subscription.text_timeout_seconds` (default 600). On timeout the worker
@@ -110,3 +114,71 @@ The worker refreshes `worker-ready.json` about every 15s even during a long job 
 records `busy_job`; a dead worker stops refreshing and the producer fails closed.
 Text is advertised in the heartbeat only when the text agent was verified, so a missing
 text policy never blocks image jobs.
+
+Policy updates change the text policy SHA in request identity and heartbeat. Before
+updating, stop the worker and reconcile pending jobs; preserve the queue and private
+dispatch markers. Install the exact new policy in the Snap agents directory and update
+the existing `private_dir/policy-preflight-text/.agents/agents/<text_agent>.md` mirror
+to the same bytes before restarting the matching worker and producer. An old mirror or
+installed policy fails readiness. Existing requests retain their job IDs. The producer
+can read a terminal receipt under the exact previous policy identity; a completed
+receipt must still pass the full native transcript and output checks. A pending legacy
+request is held, and the worker cannot dispatch it under the new policy. Unknown jobs
+remain final. Do not delete or rewrite those requests or markers.
+
+## Candidate staged text-policy rollout — not executed
+
+This is a review checklist, not an approval to deploy. It covers exactly the installed
+`nailblog/agy_text.py` and `nailblog/images/subscription.py`, plus the text-only policy
+and its preflight mirror. Do not install a wheel or copy a whole package: that could
+deploy the separate thumbnail work. The installed package paths, service configuration,
+artifact hashes and actual host state must be verified before any replacement. The
+existing 28 October decisions and completed daily steps must not be reopened.
+
+1. Independently review the final diff and offline test results. Record hashes of the
+   two candidate modules and policy; resolve the actual imported module paths for both
+   service users, verify they refer to the intended shared installation, and stop if
+   deployed versions or paths do not match the reviewed baseline. With the default
+   agent, old policy SHA is `b6951cc249463c9c89a82affaa233df48e8db7479f82c689e7dcbb5eb94ccac7`
+   and new SHA is `d5e28534d7f28dec13a71eefa2a956f1f61bda789277cbdb51ecfdd58dc5e3a2`;
+   a nondefault agent name requires computing its own SHA from `text_policy()`.
+2. Confirm staging configuration, current pause/arm status, service identities and
+   time windows. Pause and disarm using the existing operator procedure; stop the bot
+   and worker gracefully and verify both inactive and no Agy job in flight. Pausing the
+   bot alone does not stop daily scheduling. Inventory queue receipts and dispatch
+   journal without changing either; resolve or explicitly hold every unfinished job
+   before restarting the worker. Preserve all unknown jobs, markers and daily state.
+3. Back up the exact two installed modules, installed policy and existing preflight
+   mirror with metadata and SHA, into a protected location outside the package. Record
+   whether each mirror existed, plus service state and current hashes. Do not restore
+   an old queue, journal or database snapshot over later state during rollback.
+4. Install only the two reviewed modules and text policy; update the existing
+   `private_dir/policy-preflight-text/.agents/agents/<text_agent>.md` mirror to the
+   identical policy bytes. Preserve required ownership and modes. Verify all four
+   destination hashes against the reviewed artifacts, and confirm thumbnail modules,
+   image policy, configuration and service units are unchanged. Start the worker;
+   check fresh heartbeat, matching text identity and the agent discovery/preflight.
+   Keep the bot stopped and disarmed while validating.
+5. Only after the rollout is separately authorized, submit one harmless, schema-bound
+   text smoke with a fresh, explicitly recorded purpose through `AgyText` as the real
+   producer user and existing queue. Use the real worker, journal, model lock and quota;
+   never invoke Agy directly or use a previously unknown job. Verify the new marker,
+   fresh conversation, policy SHA, receipt and full native transcript, zero tool calls,
+   schema-valid output and producer-side receipt verification. Confirm the request is
+   independent of daily-planner and does not modify topics, website or 28 October
+   decisions. If any step fails, or a tool call occurs, record the outcome and stop;
+   do not retry an unknown smoke job. A smoke result proves only that run, not that
+   future model calls cannot attempt tools.
+6. Before restoring bot service, check the existing startup gate and verify paused and
+   disarmed state; only the Owner can decide to arm/resume. Do not run an old daily
+   proposal or bypass its deadline. Old completed receipts remain readable only after
+   full proof verification; legacy pending requests hold and unknown requests are final.
+
+Rollback: stop both services gracefully, verify no job is in flight, restore the four
+backed-up files (or prior absence of the mirror) with recorded metadata and compare
+hashes. Preserve all current queue, journal and database data, including smoke results;
+do not turn a new unknown into a new dispatch. Restart only after reviewing compatibility
+of any requests created under the new policy and confirm paused/disarmed state. If that
+compatibility or a clean stop cannot be established, leave services stopped for operator
+reconciliation. A concrete host-specific install/smoke script must be reviewed after
+the installed paths, live state and queue inventory are known; none is supplied here.

@@ -13,12 +13,26 @@ from .images import ImageError
 from .images.subscription import (Directory, TEXT_PROTOCOL, PURPOSE_RE, MAX_TEXT_ARGV_BYTES, TRANSIENT_REJECTIONS,
                                   check_agent, check_ready, text_argv_bytes, text_config_identity, text_job_id, uid,
                                   validate_text_request, verify_text_receipt)
-from .publication import digest
+from .publication import AdminError, binding, digest
+from .config import PRODUCTION_MEDIA_ORIGIN
 from .schedule import VN_TZ
 
 POLL_SECONDS = 1
 WAIT_MARGIN_SECONDS = 30
 MAX_ATTEMPTS = 16
+
+
+def text_purpose(config, purpose):
+    """Keep production jobs distinct from identically named staging jobs in the shared queue."""
+    if config.mode != 'live' or config.contract.environment != 'production':
+        return purpose
+    try:
+        if config.contract.media_origin != PRODUCTION_MEDIA_ORIGIN:
+            raise AdminError('environment_media_mismatch')
+        environment = binding(config)
+    except AdminError:
+        raise AgyTextError('invalid', 'production_environment_invalid') from None
+    return 'prod:' + digest({'environment': environment, 'purpose': purpose})
 
 
 class AgyTextError(Exception):
@@ -79,6 +93,7 @@ class AgyText:
             too_big = True
         if too_big or not prompt or not isinstance(purpose, str) or not PURPOSE_RE.fullmatch(purpose):
             raise AgyTextError('invalid')
+        purpose = text_purpose(self.config, purpose)
         try:
             cfg = self.cfg
             check_agent(cfg.text_agent)
@@ -133,7 +148,9 @@ class AgyText:
     def _wait(self, job, job_id):
         cfg = self.cfg
         request = json.loads(job.read('request.json', owner=uid(cfg.producer_user)))
-        validate_text_request(request, job_id, cfg)
+        validate_text_request(request, job_id, cfg, allow_legacy=True)
+        if request['config'] != text_config_identity(cfg) and not job.exists('receipt.json'):
+            raise AgyTextError('held', 'cli_text_held_legacy_policy_pending')
         # A job may start just before expires_at and then run up to text_timeout_seconds.
         limit = request['expires_at'] + cfg.text_timeout_seconds + WAIT_MARGIN_SECONDS
         while not job.exists('receipt.json'):

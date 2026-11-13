@@ -124,7 +124,8 @@ class ImagePipeline:
     def __init__(self, config, *, state=None, provider=None, clock=time.time, cover_renderer=thumbnail,
                  before_dispatch=None):
         self.config, self.clock = config, clock
-        self.state = state or State(config.db_path)
+        from ..state import state_for_config
+        self.state = state_for_config(config, state=state, image_mode='fixed')
         self.default_renderer = thumbnail
         if provider is None and config.image.provider == 'subscription':
             from .subscription import SubscriptionImages

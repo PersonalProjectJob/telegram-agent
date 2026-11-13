@@ -16,7 +16,8 @@ from PIL import Image
 
 from nailblog import autoflow
 from nailblog.approvals import ApprovalStore
-from nailblog.config import AdminConfig, AutoflowConfig, ImageConfig, ScheduleConfig
+from nailblog.config import (STAGING_API_ORIGIN, STAGING_SITE_ORIGIN, AdminConfig, AutoflowConfig, ContractConfig,
+                             ImageConfig, ScheduleConfig)
 from nailblog.onepost import OnePost
 from nailblog.publication import AdminError
 from nailblog.schedule import iso_slot
@@ -146,6 +147,7 @@ class Fx:
         # The real config object (frozen dataclasses), so deadlines come from config.schedule like everywhere else.
         self.config = settings(
             self.root, mode='live', slots=tuple(slots),
+            contract=ContractConfig(api_origin=STAGING_API_ORIGIN, site_origin=STAGING_SITE_ORIGIN, environment='staging'),
             autoflow=AutoflowConfig(enabled=True, runs_dir=str(self.root / 'runs')),
             admin=AdminConfig(category_ids=dict(GUIDS if category_ids is None else category_ids)),
             image=ImageConfig(review_bypass=True), schedule=ScheduleConfig(**(schedule or {})))

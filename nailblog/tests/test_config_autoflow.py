@@ -163,7 +163,7 @@ class AutoflowTests(ConfigCase):
         self.invalid("autoflow.enabled requires budget.ledger_db_path", LIVE, **live_sections(budget=None))
         self.invalid("budget.ledger_db_path must be an absolute path", LIVE,
                      **live_sections(budget='ledger_db_path = "ledger.sqlite3"'))
-        self.invalid("subscription requires staging", LIVE, **live_sections(contract=CONTRACT))
+        self.invalid("production live requires explicit production media_origin", LIVE, **live_sections(contract=CONTRACT))
         self.invalid("autoflow.enabled requires admin.daily_publish_limit >= the number of service.slots", LIVE,
                      **live_sections(admin="daily_publish_limit = 1"))
 

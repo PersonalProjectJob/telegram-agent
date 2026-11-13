@@ -23,7 +23,7 @@ from .planner import (format_topics_dm, next_week_start, propose, slots_of_confi
 from .quality import gate
 from .schedule import VN_TZ, is_due_for_publish
 from .sources import SourceError, fetch_feeds, fetch_posts
-from .state import State, startup_binding
+from .state import State, startup_binding, state_for_config
 from .text import TextModelError
 from .usage import UsageRecorder, write_atomic
 from .writer import (annotate_repair_outcome, build_jsonld, editorial_repair_issues, rebalance_paragraphs, han_fields, hold_unexpected_han, placeholder_images, render_html,
@@ -99,7 +99,7 @@ class Service:
             self.startup_binding = startup_binding(config, config_path=config_path)[0]
         except Exception:
             self.startup_binding = None
-        self.state = state or State(config.db_path, image_mode=config.schedule.image_mode)
+        self.state = state_for_config(config, state=state)
         self.clock = clock
         self.usage = UsageRecorder(self.state, config, clock=clock)
         self.notice_send = None  # Bound only after the existing client verifies the Owner.
@@ -538,6 +538,9 @@ class Service:
         """Trend poll and daily steps run in their own task so a long article never delays the minute tick.
         Only after the Owner is verified (a sender is bound) and not while paused; never two passes at once."""
         if self.notice_send is None or self.state.control()["paused"] or (self._jobs and not self._jobs.done()):
+            return
+        if (self.config.mode == 'live' and self.config.contract.environment == 'production'
+                and not self.writes_armed()):
             return
         self._jobs = asyncio.create_task(daily.run_due(self, stop))
 

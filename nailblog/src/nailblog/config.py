@@ -561,8 +561,8 @@ def load_config(path):
     text_model = _text_model(_table(data, "text_model"))
     if mode == "live":
         # image.provider now defaults to subscription, so these gates bind a live run, not a preview load.
-        if contract.environment != 'staging' or not image.review_bypass:
-            _fail('subscription requires staging and the existing Owner review_bypass grant')
+        if not image.review_bypass:
+            _fail('subscription requires the existing Owner review_bypass grant')
         if not subscription.queue_dir or not subscription.private_dir:
             _fail('subscription requires queue_dir and private_dir')
         if image.candidates != 1 or image.max_rounds != 1:
@@ -581,10 +581,18 @@ def load_config(path):
             _fail("autoflow.enabled requires autoflow.runs_dir")
         if not budget.ledger_db_path:
             _fail("autoflow.enabled requires budget.ledger_db_path (read-only legacy spend ledger, absolute path)")
-        if contract.environment != "staging":
-            _fail("autoflow.enabled requires contract.environment = staging")
         if admin.daily_publish_limit < len(slots):
             _fail("autoflow.enabled requires admin.daily_publish_limit >= the number of service.slots")
+    if mode == 'live' and contract.environment == 'production':
+        root = PurePosixPath('/var/lib/agentfleet/nailblog/prod')
+        if contract.media_origin != PRODUCTION_MEDIA_ORIGIN:
+            _fail('production live requires explicit production media_origin')
+        if PurePosixPath(db_path) != root / 'nailblog.sqlite3':
+            _fail('production live requires the isolated production state path')
+        if PurePosixPath(admin.profile_path) != root / 'browser':
+            _fail('production live requires the isolated production browser profile')
+        if autoflow.enabled and PurePosixPath(autoflow.runs_dir) != root / 'runs':
+            _fail('production autoflow requires the isolated production runs directory')
     return NailBlogConfig(
         db_path, (ids[0],), username, mode, TIMEZONE_NAME, tuple(sorted(slots)), late, session,
         _schedule(_table(data, "schedule")), text_model,

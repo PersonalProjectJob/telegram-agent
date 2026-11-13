@@ -70,6 +70,9 @@ class RetryBase(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         self.config = settings(self.temp.name, mode='live',
                                contract=ContractConfig(verified=True, media_origin=PRODUCTION_MEDIA_ORIGIN))
+        # Fake PROD workflow with temp paths; real POSIX isolation is tested separately.
+        for target in ('nailblog.production_state.ensure_production_state', 'nailblog.onepost._check_production_output'):
+            guard = patch(target); guard.start(); self.addCleanup(guard.stop)
         self.service = Service(self.config, clock=lambda: 1792458000)
         self.service.state.set_paused(False)
         self.service.state.arm(self.service.startup_binding)

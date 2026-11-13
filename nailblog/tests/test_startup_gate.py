@@ -17,7 +17,7 @@ class StartupGateTests(unittest.TestCase):
         (self.package / "a.py").write_text("X = 1\n", encoding="utf-8")
         self.config_file = self.root / "nailblog.toml"
         self.config_file.write_text("[service]\n", encoding="utf-8")
-        self.config = SimpleNamespace(mode="preview")
+        self.config = SimpleNamespace(mode="preview", contract=SimpleNamespace(environment="staging"))
         self.state = State(self.root / "state" / "nailblog.sqlite3")
 
     def gate(self):
@@ -72,7 +72,7 @@ class StartupGateTests(unittest.TestCase):
                 if change == "file":
                     self.config_file.write_text("[service]\n# changed\n", encoding="utf-8")
                 else:
-                    self.config = SimpleNamespace(mode="live")
+                    self.config = SimpleNamespace(mode="live", contract=SimpleNamespace(environment="staging"))
                 self.assertEqual(self.gate()["decision"], "paused_disarmed")
                 self.assertTrue(self.state.control()["paused"])
                 self.assertEqual(self.state.armed_binding(), "")

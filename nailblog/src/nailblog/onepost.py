@@ -34,6 +34,20 @@ def prepare_identity(config, topic, directory, *, article=None, image_input=None
                    'subscription_enabled': bool(subscription_enabled)})
 
 
+def _check_production_output(config, run_id, directory):
+    if config.mode != 'live' or config.contract.environment != 'production':
+        return
+    from .production_state import check_production_runs
+    from .state import StateError
+    try:
+        check_production_runs(config, required=True)
+        root = Path(config.autoflow.runs_dir)
+        if directory.parent != root or directory.name != run_id or directory.resolve().parent != root:
+            raise StateError('production_runs_invalid')
+    except (StateError, OSError):
+        raise AdminError('production_runs_invalid') from None
+
+
 class OnePost:
     def __init__(self, service):
         self.service, self.state, self.config = service, service.state, service.config
@@ -270,6 +284,7 @@ class OnePost:
         directory = Path(out)
         if not directory.is_absolute() or directory.is_symlink():
             raise AdminError('private_output_required')
+        _check_production_output(self.config, run_id, directory)
         topic = self.state.get_topic(topic_id)
         if not topic or topic['state'] != 'approved':
             raise AdminError('approved_topic_required')

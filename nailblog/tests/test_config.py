@@ -64,9 +64,9 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(load(directory, {"mode": "live"}, contract=LIVE_CONTRACT_STAGING, **live).mode, "live")
 
     def test_live_subscription_gates(self):
-        self.invalid("requires staging and the existing Owner review_bypass", {"mode": "live"},
+        self.invalid("production live requires explicit production media_origin", {"mode": "live"},
                      contract=LIVE_CONTRACT, image=LIVE_IMAGE, subscription=LIVE_SUBSCRIPTION)
-        self.invalid("requires staging and the existing Owner review_bypass", {"mode": "live"},
+        self.invalid("requires the existing Owner review_bypass", {"mode": "live"},
                      contract=LIVE_CONTRACT_STAGING, image="candidates = 1\nmax_rounds = 1", subscription=LIVE_SUBSCRIPTION)
         self.invalid("requires queue_dir and private_dir", {"mode": "live"}, contract=LIVE_CONTRACT_STAGING, image=LIVE_IMAGE)
         self.invalid("candidates = 1 and max_rounds = 1", {"mode": "live"}, contract=LIVE_CONTRACT_STAGING,

@@ -95,6 +95,34 @@ class NativeNudgeTests(unittest.TestCase):
 
 
 class NudgeWorkerProducerTests(Env):
+    def test_tool_after_completion_nudge_stays_unknown_and_never_redispatches(self):
+        # Synthetic reproduction of the observed ten-row sequence: assistant
+        # tool call at index 5 followed by a native tool result at index 6.
+        # The payload is intentionally synthetic, not a copy of the live job.
+        def response(args, limit):
+            prompt = args[args.index('--print') + 1]
+            rows = nudged_rows(prompt, count=2)
+            rows[5] = (5, 15, 3, 0, assistant_record(json.dumps(ARTICLE), tool=True), None, None)
+            call = proto(f1=b'call-id', f2=b'manage_task', f3=b'{"Action":"list"}')
+            rows.extend([(6, 132, 3, 0, proto(f1=132, f4=3, f5=proto(f4=call)), None, None),
+                         (7, 15, 3, 0, assistant_record(json.dumps(ARTICLE)), None, None),
+                         (8, 14, 3, 0, nudge_record(), None, None),
+                         (9, 15, 3, 0, assistant_record(json.dumps(ARTICLE)), None, None)])
+            session = str(uuid.uuid4())
+            write_conversation(self.conversations / (session + '.db'), rows)
+            return self.envelope(session, json.dumps(ARTICLE))
+
+        self.behaviour = response
+        for _ in range(2):
+            with self.assertRaises(AgyTextError) as raised:
+                self.submit()
+            self.assertEqual((raised.exception.code, raised.exception.detail),
+                             ('held', 'cli_text_held_native_rows'))
+        self.assertEqual(len(self.calls), 1)
+        with Directory(self.cfg.queue_dir) as queue:
+            self.assertIsNone(self.worker.scan(queue, self.private))
+        self.assertEqual(len(self.calls), 1)
+
     def configure_nudges(self, *, timeout=False, change=False):
         def response(args, limit):
             prompt=args[args.index('--print')+1]

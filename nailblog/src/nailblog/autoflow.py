@@ -198,6 +198,10 @@ class _Env:
     def owns_slot(self, row):
         """The topic is still approved, still on the run's slot, and no other approved topic holds that slot."""
         topic = self.state.get_topic(row['topic_id'])
+        if topic and self.config.contract.environment == 'production':
+            from .operator_topics import locked
+            if locked(self.state, self.config, topic) is False:
+                return False
         return bool(topic and topic['state'] == 'approved' and topic['slot_at'] == row['slot_at']
                     and self.state.slot_holder(row['slot_at'], excluding=row['topic_id']) is None)
 
@@ -647,6 +651,9 @@ def _new_runs(env):
     from .daily import locked_topic
     unlocked = []
     config = env.config
+    if config.mode == 'live' and config.contract.environment == 'production':
+        from .production_state import check_production_runs
+        check_production_runs(config)
     taken = set()          # one run per slot, ever: a swapped/dropped topic can never start a second paid run
     for existing in env.runs.rows():
         try:
@@ -673,7 +680,7 @@ def _new_runs(env):
         start = slot.timestamp() - config.schedule.window_start_hours * 3600
         if not start <= env.now < image_deadline(slot, config.schedule.window_end_hours).timestamp():
             continue
-        if not locked_topic(env.state, topic):
+        if not locked_topic(env.state, topic, config):
             local = slot.astimezone(VN_TZ)
             if env.state.daily_get((local.date() - timedelta(days=1)).isoformat(), 'decide') is not None:
                 unlocked.append((topic, local))     # decided, yet this topic was not chosen: say so, do not skip silently
@@ -698,8 +705,8 @@ async def run_due(service, stop, *, onepost, approvals, now):
     env = _Env(service, stop, onepost, approvals, now)
     if env.owner is None:
         return
-    if env.auto and config.contract.environment != 'staging':
-        return                                       # machine approval is staging only (D-034): fail closed
+    if config.contract.environment != 'staging' and config.autoflow.owner_approval is not True:
+        return                                       # outside staging require an explicit Owner-approval mode
     for topic, local in _new_runs(env):
         await env.dm(notice_key('unlocked', f"{topic['id']}|{topic['slot_at']}"),
                      f"NailBlog autoflow: slot {local:%H:%M} ngày {local:%d/%m} chưa có chủ đề được chốt: chủ đề "

@@ -171,6 +171,17 @@ class Admin:
         profile = Path(self.config.admin.profile_path)
         if not self.config.admin.profile_path or not profile.is_absolute() or profile.is_symlink():
             raise AdminError('private_profile_required')
+        if self.config.contract.environment == 'production':
+            from .production_state import PRODUCTION_ROOT
+            try:
+                root = PRODUCTION_ROOT
+                info = root.lstat()
+                if (os.name != 'posix' or profile != root / 'browser' or root.resolve() != root or
+                        profile.resolve() != profile or not root.is_dir() or info.st_uid != os.getuid() or
+                        info.st_mode & 0o777 != 0o700):
+                    raise AdminError('private_profile_required')
+            except OSError:
+                raise AdminError('private_profile_required') from None
         profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name == 'posix' and (profile.stat().st_mode & 0o077 or profile.stat().st_uid != os.getuid()):
             raise AdminError('private_profile_required')
@@ -627,6 +638,11 @@ class Admin:
             field = dialog.get_by_placeholder('Add hashtag (2-50 characters each)', exact=True)
             await field.fill(tag)
             await field.press('Enter')
+        # The form can change while uploads and editing are in progress. Recheck
+        # before materializing uploaded URLs and clicking Create. The service has
+        # already recorded its Create claim; the request guard checks the payload.
+        if await dialog.locator('select').nth(1).input_value() != 'Draft':
+            raise AdminError('form_draft_status_changed')
         before_create(payload)
         def valid(q):
             body = q.post_data_json

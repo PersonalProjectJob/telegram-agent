@@ -63,7 +63,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.tick(), [])
 
     def test_live_tick_announces_but_does_not_bypass_guarded_publish(self):
-        service = Service(replace(self.config, mode="live"), state=self.state, clock=lambda: self.now)
+        from nailblog.config import ContractConfig, STAGING_API_ORIGIN, STAGING_SITE_ORIGIN
+        service = Service(replace(self.config, mode="live", contract=ContractConfig(
+            api_origin=STAGING_API_ORIGIN, site_origin=STAGING_SITE_ORIGIN, environment='staging')),
+            state=self.state, clock=lambda: self.now)
         post = self.state.add_post(SLOT_TEXT, state="scheduled")
         with self.assertLogs("nailblog.service", "INFO") as logs:
             self.assertEqual(service.tick(), [post])
