@@ -13,8 +13,9 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
-SERVICES = {'listener': 'tg_triage', 'nailhub': 'nailhub'}
+SERVICES = {'listener': 'tg_triage', 'nailhub': 'nailhub', 'common': 'agentfleet_common'}
 TEST_ROOT_FILES = {
+    'common': (),
     'listener': ('.env.example', 'config/listener.example.toml', 'systemd/tg-triage.service'),
     'nailhub': ('config/nailhub.example.toml', 'systemd/tg-nailhub.service'),
 }

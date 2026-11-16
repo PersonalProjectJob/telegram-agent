@@ -15,16 +15,16 @@ from contextlib import closing, nullcontext, redirect_stdout
 from unittest.mock import Mock, patch
 
 from deploy.agentfleet_deploy import Deployment, DeploymentError, GuardError, Settings, guard_environment, main as deploy_main
-from deploy.build_wheel import build_stage, sha256, stage_archive, verify_record, verify_stage, inventory, TEST_ROOT_FILES, OPTIONAL_TEST_ROOT_FILES
+from deploy.build_wheel import build_stage, sha256, stage_archive, verify_record, verify_stage, inventory, TEST_ROOT_FILES, OPTIONAL_TEST_ROOT_FILES, SERVICES
 
 COMMIT = 'a' * 40
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def fixture_archive(service):
-    package = 'tg_triage' if service == 'listener' else 'nailhub'
-    distribution = 'tg-triage' if service == 'listener' else 'nailhub'
-    dependencies = '["telethon>=1.45,<2","playwright>=1.48,<2"]' if service == 'nailhub' else '["telethon>=1.45,<2"]'
+    package = SERVICES[service]
+    distribution = {'listener': 'tg-triage', 'nailhub': 'nailhub', 'common': 'agentfleet-common'}[service]
+    dependencies = '["telethon>=1.45,<2","playwright>=1.48,<2"]' if service == 'nailhub' else '[]' if service == 'common' else '["telethon>=1.45,<2"]'
     files = {'pyproject.toml': ('[project]\nname="' + distribution + '"\nversion="1.0.0"\n'
               'description="Offline fixture"\nrequires-python=">=3.11"\ndependencies=' + dependencies + '\n').encode(),
              'src/' + package + '/__init__.py': b'VERSION = "STAGED"\n',
@@ -537,6 +537,15 @@ class DeployTests(unittest.TestCase):
             deploy_main(['--service','nailhub','--stage',str(s.stage),'--unit','tg-triage'])
         self.assertEqual(caught.exception.code,2);self.assertIn('--test-paths',error.getvalue())
 
+    def test_cli_rejects_non_deployable_common_service(self):
+        from contextlib import redirect_stderr
+        for flags in ([], ['--test-paths']):
+            error = io.StringIO()
+            with self.subTest(flags=flags), redirect_stderr(error), self.assertRaises(SystemExit) as caught:
+                deploy_main(['--service', 'common', '--stage', str(self.root), *flags])
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn("invalid choice: 'common'", error.getvalue())
+
     def test_backup_requires_inactive_unit(self):
         s=self.setup_service();runner=FakeCommands(s)
         with self.assertRaisesRegex(DeploymentError,'Stop the target'):
@@ -582,7 +591,7 @@ class DeployTests(unittest.TestCase):
 class WheelTests(unittest.TestCase):
     def test_record_and_reproducibility_for_both_packages(self):
         with tempfile.TemporaryDirectory() as directory:
-            for service in ('listener','nailhub'):
+            for service in SERVICES:
                 a=Path(directory)/(service+'-a');b=Path(directory)/(service+'-b')
                 first=stage_archive(service,a,fixture_archive(service),COMMIT)
                 second=stage_archive(service,b,fixture_archive(service),COMMIT)
@@ -592,7 +601,12 @@ class WheelTests(unittest.TestCase):
                 self.assertEqual(verify_stage(a,service),first)
                 with zipfile.ZipFile(io.BytesIO(data)) as wheel:
                     metadata=next(n for n in wheel.namelist() if n.endswith('/METADATA'))
-                    self.assertIn(b'Requires-Dist: telethon>=1.45,<2',wheel.read(metadata))
+                    if service == 'common':
+                        self.assertNotIn(b'Requires-Dist:', wheel.read(metadata))
+                        self.assertIn('agentfleet_common/__init__.py', wheel.namelist())
+                        self.assertEqual(TEST_ROOT_FILES['common'], ())
+                    else:
+                        self.assertIn(b'Requires-Dist: telethon>=1.45,<2',wheel.read(metadata))
                     if service == 'nailhub':self.assertIn(b'Requires-Dist: playwright>=1.48,<2',wheel.read(metadata))
                     provenance=next(n for n in wheel.namelist() if n.endswith('/agentfleet.json'))
                     self.assertEqual(json.loads(wheel.read(provenance))['commit'],COMMIT)
