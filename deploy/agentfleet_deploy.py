@@ -536,7 +536,7 @@ class Deployment:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--service', required=True, choices=SERVICES)
+    parser.add_argument('--service', required=True, choices=DEFAULTS)
     parser.add_argument('--stage', required=True, type=Path)
     parser.add_argument('--allow-removed', action='append', default=[], metavar='RECORD_PATH',
                         help='Permit exactly this installed RECORD path to be absent from the wheel (repeatable)')
